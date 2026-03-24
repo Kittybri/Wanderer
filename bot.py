@@ -20,6 +20,7 @@ GROQ_API_KEY       = os.getenv("GROQ_API_KEY", "")
 FISH_AUDIO_API_KEY = os.getenv("FISH_AUDIO_API_KEY", "")
 WEATHER_API_KEY    = os.getenv("WEATHER_API_KEY", "")
 OWNER_ID           = int(os.getenv("OWNER_ID", "0") or "0")
+PARTNER_BOT_ID     = int(os.getenv("PARTNER_BOT_ID", "0") or "0")  # Scaramouche bot ID
 
 # ── Groq client (free, OpenAI-compatible) ─────────────────────────────────────
 from groq import Groq
@@ -60,7 +61,8 @@ def tts_safe(text: str, guild=None) -> str:
         return strip_narration(text)
 
 # ── Keywords ──────────────────────────────────────────────────────────────────
-WANDERER_KW  = ["wanderer","kunikuzushi","balladeer","scaramouche","hat","kuni","the wanderer"]
+WANDERER_KW  = ["wanderer","the wanderer","kuni"]  # His own names — he responds to these
+OLD_NAMES_KW = ["kunikuzushi","balladeer","scaramouche"]  # Redirect only if Scaramouche bot absent
 GENSHIN_KW   = ["genshin","teyvat","mondstadt","liyue","inazuma","sumeru","fontaine","natlan","traveler","paimon","archon","fatui","harbinger","nahida","traveller"]
 RUDE_KW      = ["shut up","stupid","dumb","idiot","hate you","annoying","go away","you suck","useless"]
 NICE_KW      = ["thank you","thanks","appreciate","you're great","love you","good job","amazing","i like you","i love you"]
@@ -316,11 +318,14 @@ async def fetch_channel_context(channel, limit: int = 25) -> str:
         is_dm_channel = not hasattr(channel, 'guild') or channel.guild is None
         msgs = []
         async for msg in channel.history(limit=limit):
-            if not is_dm_channel and msg.author.bot and msg.author.id != bot.user.id:
-                continue
+            if not is_dm_channel and msg.author.bot:
+                # Include partner bot messages, skip all others
+                if msg.author.id != bot.user.id and msg.author.id != PARTNER_BOT_ID:
+                    continue
+            author_name_label = "Scaramouche" if msg.author.id == PARTNER_BOT_ID else ("Wanderer (you)" if msg.author.bot else msg.author.display_name)
             text = msg.content[:150].strip()
             if not text: continue
-            author_name = "Wanderer (you)" if msg.author.bot else msg.author.display_name
+            author_name = author_name_label
             if msg.reference and msg.reference.resolved and not isinstance(msg.reference.resolved, discord.DeletedReferencedMessage):
                 ref = msg.reference.resolved
                 ref_preview = (ref.content or "")[:50].strip()
@@ -728,7 +733,12 @@ async def on_member_remove(member):
 @bot.event
 async def on_message(message):
     try:
-        if message.author.bot: return
+        if message.author.bot:
+            # Allow partner bot messages through for cross-bot interaction
+            if PARTNER_BOT_ID and message.author.id == PARTNER_BOT_ID:
+                pass  # Let it through
+            else:
+                return
 
         stripped = message.content.strip().lower()
         if stripped in ("!help", "!commands", "!wandererhelp"):
@@ -737,6 +747,32 @@ async def on_message(message):
                 await help_cmd(ctx)
             except Exception as e:
                 log_error("help_intercept", e)
+            return
+
+        # Cross-bot interaction — if message is from partner (Scaramouche) bot
+        if PARTNER_BOT_ID and message.author.id == PARTNER_BOT_ID:
+            try:
+                cl_partner = message.content.lower()
+                # Jealousy: Scaramouche is talking to someone in romance mode
+                if message.guild and random.random() < .25:
+                    # Find romance users in this channel
+                    ru = await mem.get_romance_users()
+                    for uid in ru:
+                        if await mem.get_user_last_channel(uid) == message.channel.id:
+                            member = message.guild.get_member(uid)
+                            if member:
+                                msg = await qai(
+                                    f"Scaramouche just said something to {member.display_name}: '{message.content[:80]}'. "
+                                    f"React as the Wanderer — jealous but won't admit it. 1 sentence.", 100)
+                                await message.channel.send(strip_narration(msg))
+                                break
+                # Sometimes respond directly to Scaramouche bot
+                elif random.random() < .2:
+                    msg = await qai(
+                        f"Scaramouche just said: '{message.content[:100]}'. "
+                        f"Respond as the Wanderer — complicated history, wry. 1-2 sentences.", 150)
+                    await message.reply(strip_narration(msg))
+            except Exception as e: log_error("cross_bot_wanderer", e)
             return
 
         await bot.process_commands(message)
@@ -828,9 +864,20 @@ async def on_message(message):
         try:
             cl = content.lower()
             # Name triggers
-            if any(n in cl for n in ["scaramouche","kunikuzushi"]):
-                msg = await qai("Someone used your old name. React as the Wanderer — sharp, uncomfortable, redirecting. 1-2 sentences. Don't dwell.", 120)
-                await message.reply(strip_narration(msg)); return
+            # Check if Scaramouche bot is present in server
+            partner_present = False
+            if PARTNER_BOT_ID and message.guild:
+                partner_present = message.guild.get_member(PARTNER_BOT_ID) is not None
+            if any(n in cl for n in ["scaramouche","kunikuzushi","balladeer"]):
+                if partner_present:
+                    # Scaramouche bot is here — acknowledge but don't redirect
+                    if random.random() < .3:  # Only sometimes comment
+                        msg = await qai("Someone mentioned Scaramouche. React as the Wanderer — complicated feelings, brief. 1 sentence. Don't make it a whole thing.", 80)
+                        await message.channel.send(strip_narration(msg))
+                else:
+                    # Solo — redirect properly
+                    msg = await qai("Someone used your old name or title. React as the Wanderer — sharp, uncomfortable, redirecting. 1-2 sentences.", 120)
+                    await message.reply(strip_narration(msg)); return
             if VILLAIN_TRIGGER in cl:
                 msg = await qai("Someone said 'you can't change' to the Wanderer. He has something to say about that. Pointed, personal, not performative. 2-3 sentences.", 250)
                 await message.reply(strip_narration(msg)); return
