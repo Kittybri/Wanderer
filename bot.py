@@ -913,22 +913,35 @@ async def on_message(message):
         # Special triggers
         try:
             cl = content.lower()
-            # Name triggers
-            # Check if Scaramouche bot is present in server
+            # Name triggers — only fire if Wanderer is being directly addressed
+            # Not just if the word appears anywhere in a message about the other bot
             partner_present = False
             if PARTNER_BOT_ID and message.guild:
                 partner_present = message.guild.get_member(PARTNER_BOT_ID) is not None
-            if any(n in cl for n in ["scaramouche","kunikuzushi","balladeer"]):
+
+            # Direct address patterns: message starts with the name, or mentions it after @
+            being_addressed = (
+                mentioned or is_reply or
+                any(cl.startswith(n) for n in ["scaramouche","kunikuzushi","balladeer"]) or
+                any(cl.startswith("hey " + n) or cl.startswith("yo " + n) for n in ["scaramouche","kunikuzushi","balladeer"])
+            )
+            if being_addressed and any(n in cl for n in ["scaramouche","kunikuzushi","balladeer"]):
                 if partner_present:
-                    # Scaramouche bot is here — acknowledge but don't redirect
-                    if random.random() < .3:  # Only sometimes comment
-                        msg = await qai("Someone mentioned Scaramouche. React as the Wanderer — complicated feelings, brief. 1 sentence. Don't make it a whole thing.", 80)
+                    if random.random() < .3:
+                        msg = await qai("Someone just called you Scaramouche directly. React as the Wanderer — sharp, brief. 1 sentence.", 80)
                         await message.channel.send(strip_narration(msg))
                 else:
-                    # Solo — redirect properly
-                    msg = await qai("Someone used your old name or title. React as the Wanderer — sharp, uncomfortable, redirecting. 1-2 sentences.", 120)
+                    msg = await qai("Someone used your old name directly. React as the Wanderer — sharp, uncomfortable, redirecting. 1-2 sentences.", 120)
                     await message.reply(strip_narration(msg)); return
-            if VILLAIN_TRIGGER in cl:
+            # If Scaramouche is mentioned in normal conversation (not addressing Wanderer by wrong name)
+            # — comment on it naturally, no redirect
+            if not being_addressed and any(n in cl for n in ["scaramouche","kunikuzushi","balladeer"]) and partner_present:
+                if random.random() < .4:
+                    msg = await qai(
+                        f"Someone said: '{content[:100]}'. They're talking about Scaramouche. "
+                        f"React as the Wanderer — complicated history, wry or pointed. "
+                        f"Don't make it a whole thing. 1 sentence.", 100)
+                    if msg: await message.channel.send(strip_narration(msg))
                 msg = await qai("Someone said 'you can't change' to the Wanderer. He has something to say about that. Pointed, personal, not performative. 2-3 sentences.", 250)
                 await message.reply(strip_narration(msg)); return
             content_words = set(re.sub(r"[^\w\s]", "", content.lower()).split())
