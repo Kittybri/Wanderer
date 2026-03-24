@@ -784,7 +784,7 @@ async def on_message(message):
                 return
 
         stripped = message.content.strip().lower()
-        if stripped in ("!help", "!commands", "!wandererhelp"):
+        if stripped in ("!wanhelp", "!wandererhelp", "!commands"):
             try:
                 ctx = await bot.get_context(message)
                 await help_cmd(ctx)
@@ -1925,8 +1925,8 @@ async def help_cmd(ctx):
         try: await ctx.send("Something went wrong displaying commands.")
         except: pass
 
-@bot.command(name="wandererhelp", aliases=["commands"])
-async def wandererhelp_cmd(ctx):
+@bot.command(name="wanhelp", aliases=["wandererhelp", "commands"])
+async def wanhelp_cmd(ctx):
     await help_cmd(ctx)
 
 @bot.event
