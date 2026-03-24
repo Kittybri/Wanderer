@@ -259,6 +259,7 @@ _tedtalk_active: set[int]        = set()
 _tedtalk_cache:  dict[int, dict] = {}
 # Pending commands waiting for user to specify which bot: {user_id: {cmd, ctx, args, ts}}
 _pending_cmd:    dict[int, dict] = {}
+_executing_now:  set[int]         = set()
 
 SHARED_COMMANDS = {
     "voice","dare","fortune","trivia","answer","roast","spar","duel","judge","prophecy",
@@ -614,27 +615,16 @@ class ResetView(discord.ui.View):
 
 @bot.before_invoke
 async def coordination_check(ctx):
-    """Before any shared command, check if partner bot is present and ask who to use."""
     if ctx.command is None: return
     if ctx.command.name not in SHARED_COMMANDS: return
     if not PARTNER_BOT_ID or not ctx.guild: return
-    partner = ctx.guild.get_member(PARTNER_BOT_ID)
-    if not partner: return
-
-    # Store pending
-    _pending_cmd[ctx.author.id] = {
-        "ts": time.time(),
-    }
-
-    # Only the bot with lower ID asks (prevents both asking)
+    if not ctx.guild.get_member(PARTNER_BOT_ID): return
+    if ctx.author.id in _executing_now: return
     if bot.user.id < PARTNER_BOT_ID:
-        await ctx.send(
-            f"{ctx.author.mention} Who are you asking — **Wanderer** or **Scaramouche**?",
-            delete_after=30
-        )
+        _pending_cmd[ctx.author.id] = {"ctx": ctx, "ts": time.time()}
+        await ctx.send(f"{ctx.author.mention} Who are you asking: Wanderer or Scaramouche?", delete_after=30)
+        raise commands.CommandError("awaiting_disambiguation")
 
-    # Raise to cancel execution — will be re-triggered when user answers
-    raise commands.CommandError("awaiting_disambiguation")
 
 @bot.event
 async def on_ready():
@@ -1942,3 +1932,4 @@ if __name__ == "__main__":
     if not DISCORD_TOKEN: raise SystemExit("❌ DISCORD_TOKEN not set")
     if not GROQ_API_KEY:  raise SystemExit("❌ GROQ_API_KEY not set")
     bot.run(DISCORD_TOKEN)
+
