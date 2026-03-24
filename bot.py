@@ -619,11 +619,8 @@ async def coordination_check(ctx):
     if ctx.command.name not in SHARED_COMMANDS: return
     if not PARTNER_BOT_ID or not ctx.guild: return
     if not ctx.guild.get_member(PARTNER_BOT_ID): return
-    if ctx.author.id in _executing_now: return
-    if bot.user.id < PARTNER_BOT_ID:
-        _pending_cmd[ctx.author.id] = {"ctx": ctx, "ts": time.time()}
-        await ctx.send(f"{ctx.author.mention} Who are you asking: Wanderer or Scaramouche?", delete_after=30)
-        raise commands.CommandError("awaiting_disambiguation")
+    # Wanderer always executes — Scaramouche handles the asking
+    return
 
 
 @bot.event
@@ -1932,4 +1929,3 @@ if __name__ == "__main__":
     if not DISCORD_TOKEN: raise SystemExit("❌ DISCORD_TOKEN not set")
     if not GROQ_API_KEY:  raise SystemExit("❌ GROQ_API_KEY not set")
     bot.run(DISCORD_TOKEN)
-
