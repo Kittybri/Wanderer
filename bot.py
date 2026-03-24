@@ -919,11 +919,19 @@ async def on_message(message):
             if PARTNER_BOT_ID and message.guild:
                 partner_present = message.guild.get_member(PARTNER_BOT_ID) is not None
 
-            # Direct address patterns: message starts with the name, or mentions it after @
+            # Direct address: only when actually calling Wanderer by wrong name
+            # Patterns: "scaramouche!" / "scaramouche," / "scaramouche?" / "hey scara" / @mention / reply
+            # Everything else ("scara says", "scara is", "scara did", "that scara", etc.) = third-person
+            direct_address_pattern = re.compile(
+                r'^(scaramouche|kunikuzushi|balladeer)\s*[,!?]'  # Name + punctuation = calling
+                r'|^(hey|yo|oi|excuse me|psst)\s+(scaramouche|kunikuzushi|balladeer)'  # hey + name
+                r'|^(scaramouche|kunikuzushi|balladeer)\s*$',  # Just the name alone
+                re.IGNORECASE
+            )
             being_addressed = (
-                mentioned or is_reply or
-                any(cl.startswith(n) for n in ["scaramouche","kunikuzushi","balladeer"]) or
-                any(cl.startswith("hey " + n) or cl.startswith("yo " + n) for n in ["scaramouche","kunikuzushi","balladeer"])
+                mentioned or
+                is_reply or
+                bool(direct_address_pattern.match(content))
             )
             if being_addressed and any(n in cl for n in ["scaramouche","kunikuzushi","balladeer"]):
                 if partner_present:
