@@ -257,6 +257,24 @@ _hostages:       dict[int, str]  = {}
 _pending_unsent: set[int]        = set()
 _tedtalk_active: set[int]        = set()
 _tedtalk_cache:  dict[int, dict] = {}
+# Pending commands waiting for user to specify which bot: {user_id: {cmd, ctx, args, ts}}
+_pending_cmd:    dict[int, dict] = {}
+
+SHARED_COMMANDS = {
+    "voice","dare","fortune","trivia","answer","roast","spar","duel","judge","prophecy",
+    "rate","ship","confess","compliment","haiku","story","stalk","debate","conspiracy",
+    "therapy","riddle","arena","possess","verdict","letter","nightmare","rank","stats",
+    "weather","lore","search","solve","insult","dm","reset","nsfw","romance","proactive",
+    "dms","mood","affection","trust","summarize","mute","unmute","translate","poll",
+    "opinion","tedtalk","remind","whoami","speak","say","teach","lecture","explain",
+    "recap","silence","ignore","unsilence","math","essay","write","find","lookup",
+    "roastbattle","fortunecookie","remindme","ping_me","allowdms","stopdms","romanceable",
+}
+
+MY_NAME       = "wanderer"    # This bot's name for disambiguation
+MY_NAMES      = {"wanderer","the wanderer","kuni"}
+PARTNER_NAMES = {"scaramouche","scara","balladeer","kunikuzushi"}
+
 
 def log_error(location: str, e: Exception):
     print(f"[ERROR:{location}] {type(e).__name__}: {e}")
@@ -593,6 +611,31 @@ class ResetView(discord.ui.View):
         except Exception as e: log_error("ResetView", e)
 
 # ── on_ready ──────────────────────────────────────────────────────────────────
+
+@bot.before_invoke
+async def coordination_check(ctx):
+    """Before any shared command, check if partner bot is present and ask who to use."""
+    if ctx.command is None: return
+    if ctx.command.name not in SHARED_COMMANDS: return
+    if not PARTNER_BOT_ID or not ctx.guild: return
+    partner = ctx.guild.get_member(PARTNER_BOT_ID)
+    if not partner: return
+
+    # Store pending
+    _pending_cmd[ctx.author.id] = {
+        "ts": time.time(),
+    }
+
+    # Only the bot with lower ID asks (prevents both asking)
+    if bot.user.id < PARTNER_BOT_ID:
+        await ctx.send(
+            f"{ctx.author.mention} Who are you asking — **Wanderer** or **Scaramouche**?",
+            delete_after=30
+        )
+
+    # Raise to cancel execution — will be re-triggered when user answers
+    raise commands.CommandError("awaiting_disambiguation")
+
 @bot.event
 async def on_ready():
     await mem.init()
@@ -782,6 +825,26 @@ async def on_message(message):
             await mem.upsert_user(message.author.id, str(message.author), message.author.display_name)
             if message.guild: await mem.track_channel(message.channel.id, message.guild.id)
         except Exception as e: log_error("on_message/upsert", e)
+
+        # ── Pending command resolution ───────────────────────────────────
+        if message.author.id in _pending_cmd:
+            pending = _pending_cmd[message.author.id]
+            # Expire after 30 seconds
+            if time.time() - pending["ts"] > 30:
+                del _pending_cmd[message.author.id]
+            else:
+                cl_check = content.lower().strip()
+                if any(n in cl_check for n in MY_NAMES):
+                    # User wants us — execute the command
+                    del _pending_cmd[message.author.id]
+                    try:
+                        await pending["func"](pending["ctx"], *pending["args"], **pending["kwargs"])
+                    except Exception as e: log_error("pending_cmd_exec", e)
+                    return
+                elif any(n in cl_check for n in PARTNER_NAMES):
+                    # User wants partner — clear our pending, let partner handle it
+                    del _pending_cmd[message.author.id]
+                    return
 
         is_dm = not bool(message.guild)
         dm_channel_id = message.author.id if is_dm else message.channel.id
@@ -1102,16 +1165,40 @@ async def _voluntary_dm_loop():
 # COMMANDS
 # ══════════════════════════════════════════════════════════════════════════════
 
-@bot.command(name="wander", aliases=["w", "ask"])
-async def wander_cmd(ctx, *, msg: str = None):
-    try:
-        if not msg: await safe_reply(ctx, random.choice(["What.", "Speak.", "Did you have something to say or not."])); return
-        user = await _setup(ctx); is_owner = bool(OWNER_ID and ctx.author.id == OWNER_ID)
-        async with ctx.typing():
-            reply = await get_response(ctx.author.id, ctx.channel.id, msg, user, ctx.author.display_name, ctx.author.mention, is_owner=is_owner, channel_obj=ctx.channel)
-        await safe_reply(ctx, reply)
-        await maybe_react(ctx.message, user.get("romance_mode", False) if user else False)
-    except Exception as e: log_error("wander_cmd", e); await safe_reply(ctx, "...")
+
+async def _handle_shared_command(ctx, cmd_name: str, cmd_func, *args, **kwargs):
+    """
+    If partner bot is in server, ask user which bot they meant.
+    If we have the lower ID we ask; otherwise we just store pending silently.
+    Only fires for shared commands when partner is present.
+    """
+    if not PARTNER_BOT_ID or not ctx.guild:
+        # No partner or not in server — just run
+        await cmd_func(ctx, *args, **kwargs)
+        return
+
+    partner = ctx.guild.get_member(PARTNER_BOT_ID)
+    if not partner:
+        # Partner not in server — just run
+        await cmd_func(ctx, *args, **kwargs)
+        return
+
+    # Store pending for this user
+    _pending_cmd[ctx.author.id] = {
+        "cmd": cmd_name,
+        "func": cmd_func,
+        "args": args,
+        "kwargs": kwargs,
+        "ctx": ctx,
+        "ts": time.time(),
+    }
+
+    # Only ask if we have lower bot ID (prevents both bots asking)
+    if bot.user.id < PARTNER_BOT_ID:
+        await ctx.send(
+            f"{ctx.author.mention} Who are you asking — **Wanderer** or **Scaramouche**?",
+            delete_after=30
+        )
 
 @bot.command(name="voice", aliases=["speak", "say"])
 async def voice_cmd(ctx, *, msg: str = None):
@@ -1355,36 +1442,6 @@ async def roast_cmd(ctx, member: discord.Member = None):
         await ctx.send(f"{ctx.author.mention} vs {member.mention}\n{reply}")
     except Exception as e: log_error("roast_cmd", e)
 
-@bot.command(name="hostage")
-async def hostage_cmd(ctx):
-    try:
-        await _setup(ctx)
-        if ctx.author.id in _hostages:
-            await safe_reply(ctx, f"You haven't done what I asked yet. — *{_hostages[ctx.author.id]}*"); return
-        demand = await qai(f"The Wanderer has taken {ctx.author.display_name}'s good mood hostage. State your demand — theatrical but not cruel. 1-2 sentences.", 150)
-        _hostages[ctx.author.id] = demand
-        await safe_reply(ctx, f"...I've taken your good mood hostage. Release it when you: {demand}")
-    except Exception as e: log_error("hostage_cmd", e)
-
-@bot.command(name="release", aliases=["freed", "ransom"])
-async def release_cmd(ctx, *, offering: str = None):
-    try:
-        if ctx.author.id not in _hostages: await safe_reply(ctx, "Nothing is being held. Right now."); return
-        demand = _hostages[ctx.author.id]
-        result = await qai(f"You held {ctx.author.display_name}'s good mood hostage with: '{demand}'. They offered: '{offering or 'nothing'}'. Accept or refuse as the Wanderer.", 150)
-        if any(w in result.lower() for w in ["accept", "fine", "release", "alright"]):
-            del _hostages[ctx.author.id]
-        await safe_reply(ctx, result)
-    except Exception as e: log_error("release_cmd", e)
-
-@bot.command(name="impersonate", aliases=["imitate", "be"])
-async def impersonate_cmd(ctx, *, character: str = None):
-    try:
-        if not character: await safe_reply(ctx, "Impersonate who?"); return
-        reply = await qai(f"Speak as {character} from Genshin for 2 sentences, but the Wanderer keeps interrupting with his own commentary. He finds this beneath him.", 250)
-        await safe_reply(ctx, reply)
-    except Exception as e: log_error("impersonate_cmd", e)
-
 @bot.command(name="opinion")
 async def opinion_cmd(ctx, *, character: str = None):
     try:
@@ -1555,16 +1612,6 @@ async def therapy_cmd(ctx, *, problem: str = None):
         await safe_reply(ctx, reply)
     except Exception as e: log_error("therapy_cmd", e)
 
-@bot.command(name="blackmail")
-async def blackmail_cmd(ctx, member: discord.Member = None):
-    try:
-        target = member or ctx.author
-        sample = " | ".join(await mem.get_recent_messages(target.id, 15))[:600]
-        reply = await qai(f"The Wanderer has been paying attention to {target.display_name}: '{sample}'. Point out the most revealing thing he noticed. Precise, not cruel. 2-3 sentences.", 250)
-        if member: await ctx.send(f"{member.mention} {reply}")
-        else: await safe_reply(ctx, reply)
-    except Exception as e: log_error("blackmail_cmd", e)
-
 @bot.command(name="riddle")
 async def riddle_cmd(ctx):
     try:
@@ -1579,15 +1626,6 @@ async def arena_cmd(ctx, member: discord.Member = None):
         reply = await qai(f"Narrate a Genshin-style battle between the Wanderer (Anemo) and {opponent}. He wins. Efficient, not theatrical. 4-5 sentences.", 400)
         await safe_reply(ctx, reply)
     except Exception as e: log_error("arena_cmd", e)
-
-@bot.command(name="interrogate")
-async def interrogate_cmd(ctx, member: discord.Member = None):
-    try:
-        if not member: await safe_reply(ctx, "Interrogate who?"); return
-        sample = " | ".join(await mem.get_recent_messages(member.id, 15))[:600]
-        reply = await qai(f"The Wanderer interrogates {member.display_name} using their own words: '{sample}'. Methodical, precise. 3-4 sentences.", 300)
-        await ctx.send(f"{member.mention} {reply}")
-    except Exception as e: log_error("interrogate_cmd", e)
 
 @bot.command(name="possess")
 async def possess_cmd(ctx, member: discord.Member = None):
@@ -1694,16 +1732,6 @@ async def solve_cmd(ctx, *, problem: str = None):
         reply = await get_response(ctx.author.id, ctx.channel.id, f"Solve or answer this accurately: {problem}", user, ctx.author.display_name, ctx.author.mention, use_search=True)
         await safe_reply(ctx, reply)
     except Exception as e: log_error("solve_cmd", e)
-
-@bot.command(name="rival", aliases=["setrival"])
-async def rival_cmd(ctx, member: discord.Member = None):
-    try:
-        await _setup(ctx)
-        if not member: await mem.set_rival(ctx.author.id, None); await safe_reply(ctx, "Rivalry dissolved. Fine."); return
-        if member.id == ctx.author.id: await safe_reply(ctx, "Your rival is yourself? That's either profound or just sad."); return
-        await mem.set_rival(ctx.author.id, member.id)
-        await safe_reply(ctx, f"{member.display_name}. Interesting choice.")
-    except Exception as e: log_error("rival_cmd", e)
 
 @bot.command(name="remind", aliases=["remindme"])
 async def remind_cmd(ctx, minutes: int = None, *, reminder: str = None):
@@ -1820,7 +1848,6 @@ async def help_cmd(ctx):
         c = 0x6B7FD7
         e1 = discord.Embed(title="Commands (1/3) — Talk & Fight", description="*I'll say this once.*", color=c)
         for n, v in [
-            ("💬 `!wander <msg>`", "Talk to him · `!w` `!ask`"),
             ("🔊 `!voice <msg>`", "Voice message · `!speak` `!say`"),
             ("📨 `!dm [msg]`", "He DMs you privately"),
             ("🤫 `!confess <text>`", "Tell him something"),
@@ -1834,11 +1861,8 @@ async def help_cmd(ctx):
             ("🧠 `!trivia`", "Genshin lore trivia"),
             ("✅ `!answer <text>`", "Answer a trivia question"),
             ("🧩 `!riddle`", "A cryptic Genshin riddle"),
-            ("🔒 `!hostage`", "Takes your good mood hostage"),
-            ("🔓 `!release <offering>`", "Try to satisfy his demand"),
             ("🥠 `!fortune`", "A fortune in his voice"),
             ("💭 `!opinion <char>`", "His honest take on any Genshin character"),
-            ("🎭 `!impersonate <char>`", "Speaks as them, interrupts himself"),
             ("📜 `!lore <topic>`", "Genshin lore from his perspective"),
         ]: e1.add_field(name=n, value=v, inline=False)
 
@@ -1846,8 +1870,6 @@ async def help_cmd(ctx):
         for n, v in [
             ("🔍 `!judge [@user]`", "Honest character assessment"),
             ("👁️ `!stalk [@user]`", "What he's noticed about you"),
-            ("🃏 `!blackmail [@user]`", "Most revealing thing you've said"),
-            ("🔦 `!interrogate @user`", "Precise interrogation"),
             ("👻 `!possess @user`", "Speaks as them, filtered through him"),
             ("📊 `!rate <thing>`", "Rates anything honestly"),
             ("💞 `!ship @u1 [@u2]`", "Compatibility — reluctant but honest"),
@@ -1872,7 +1894,6 @@ async def help_cmd(ctx):
             ("🌡️ `!mood`", "His mood toward you"),
             ("💜 `!affection`", "His affection score"),
             ("🔒 `!trust`", "His trust level toward you"),
-            ("🗡️ `!rival @user`", "Designate a rival"),
             ("⏰ `!remind <mins> <txt>`", "Reminder — he'll remember"),
             ("🌤️ `!weather <city>`", "Weather + his take on it"),
             ("📢 `!poll <question>`", "He puts a question to the room"),
@@ -1913,6 +1934,7 @@ async def on_command_error(ctx, error):
     try:
         if isinstance(error, commands.CommandNotFound): pass
         elif isinstance(error, commands.MissingRequiredArgument): await safe_reply(ctx, "Missing something.")
+        elif isinstance(error, commands.CommandError) and "awaiting_disambiguation" in str(error): pass
         else: log_error("on_command_error", error)
     except: pass
 
