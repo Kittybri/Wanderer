@@ -741,6 +741,9 @@ async def on_member_remove(member):
 @bot.event
 async def on_message(message):
     try:
+        # Always ignore own messages first
+        if message.author.id == bot.user.id:
+            return
         if message.author.bot:
             # Allow partner bot messages through for cross-bot interaction
             if PARTNER_BOT_ID and message.author.id == PARTNER_BOT_ID:
