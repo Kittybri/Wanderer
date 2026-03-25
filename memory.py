@@ -295,7 +295,7 @@ class Memory:
                 row = await cur.fetchone()
                 if not row: return False
                 count, last = row[0] or 0, row[1] or 0
-                return count >= 80 and (count - last) >= 50
+                return count >= 500 and (count - last) >= 50
 
     async def save_summary(self, user_id: int, summary: str):
         async with aiosqlite.connect(DB_PATH) as db:
@@ -410,7 +410,7 @@ class Memory:
                 return (await cur.fetchone())[0]
 
     # ── Conversation history ──────────────────────────────────────────────────
-    async def get_history(self, user_id: int, channel_id: int, limit: int = 35) -> list[dict]:
+    async def get_history(self, user_id: int, channel_id: int, limit: int = 200) -> list[dict]:
         async with aiosqlite.connect(DB_PATH) as db:
             async with db.execute("""
                 SELECT role,content FROM messages WHERE user_id=? AND channel_id=?
