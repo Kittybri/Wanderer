@@ -790,10 +790,19 @@ async def on_message(message):
         if message.content.strip().startswith("!"): return
 
         # If message @mentions the partner bot but NOT us, stay quiet — it's not for us
+        # Also if message is a REPLY to the partner bot but NOT mentioning us, stay quiet
         if PARTNER_BOT_ID and message.guild:
             partner_mentioned = any(u.id == PARTNER_BOT_ID for u in message.mentions)
             we_mentioned = bot.user in message.mentions
-            if partner_mentioned and not we_mentioned:
+            replying_to_partner = False
+            if message.reference:
+                try:
+                    ref_msg = message.reference.resolved or await message.channel.fetch_message(message.reference.message_id)
+                    if ref_msg and ref_msg.author.id == PARTNER_BOT_ID:
+                        replying_to_partner = True
+                except Exception:
+                    pass
+            if (partner_mentioned or replying_to_partner) and not we_mentioned:
                 return
 
         try:
