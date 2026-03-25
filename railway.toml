@@ -1,2 +1,5 @@
+[build]
+aptPkgs = ["ffmpeg"]
+
 [deploy]
 startCommand = "python bot.py"
