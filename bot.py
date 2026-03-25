@@ -1164,6 +1164,148 @@ async def _voluntary_dm_loop():
 # ══════════════════════════════════════════════════════════════════════════════
 
 
+# ── Wanderer-exclusive commands ────────────────────────────────────────────────
+
+@bot.command(name="wander")
+async def wander_cmd(ctx):
+    """A random thought — as if he's just walking and thinking."""
+    try:
+        user = await _setup(ctx)
+        mood = user.get("mood", 0) if user else 0
+        hour = datetime.now().hour
+        time_of_day = "early morning" if 5<=hour<9 else "morning" if 9<=hour<12 else "afternoon" if 12<=hour<17 else "evening" if 17<=hour<21 else "late night"
+        async with ctx.typing():
+            msg = await qai(
+                f"You're the Wanderer. You're walking alone. It's {time_of_day}. MOOD:{mood}. "
+                f"Share a single thought — something you noticed, something you're turning over in your head, "
+                f"a fragment of memory, an observation about the world. Not addressed to anyone. Just thinking out loud. "
+                f"Quiet, genuine, unpredictable in length. Sometimes 5 words, sometimes 2-3 sentences. NO asterisk actions.", 200)
+        await safe_reply(ctx, strip_narration(msg))
+    except Exception as e: log_error("wander_cmd", e); await safe_reply(ctx, "...")
+
+@bot.command(name="reflect")
+async def reflect_cmd(ctx, *, topic: str = None):
+    """Genuine, thoughtful take on a topic."""
+    try:
+        if not topic: await safe_reply(ctx, "Reflect on what."); return
+        user = await _setup(ctx)
+        mood = user.get("mood", 0) if user else 0
+        trust = user.get("trust", 0) if user else 0
+        async with ctx.typing():
+            msg = await qai(
+                f"You're the Wanderer. {ctx.author.display_name} asked you to reflect on: '{topic}'. "
+                f"MOOD:{mood} TRUST:{trust}. Give a genuine, layered, thoughtful response. "
+                f"Not cruel. Not performative. Honest in a way that costs you something. "
+                f"Sometimes uncomfortable. If trust is high (>50), go deeper — say something you wouldn't normally. "
+                f"2-4 sentences. NO asterisk actions.", 350)
+        await safe_reply(ctx, strip_narration(msg))
+    except Exception as e: log_error("reflect_cmd", e); await safe_reply(ctx, "...I'll think about it.")
+
+@bot.command(name="before")
+async def before_cmd(ctx, *, msg: str = None):
+    """What Scaramouche would have said vs what Wanderer says."""
+    try:
+        if not msg:
+            # Use the last message in the channel as context
+            async for m in ctx.channel.history(limit=5):
+                if m.author != bot.user and not m.content.startswith("!"):
+                    msg = m.content[:200]; break
+        if not msg: await safe_reply(ctx, "Say something first."); return
+        user = await _setup(ctx)
+        async with ctx.typing():
+            reply = await qai(
+                f"You're the Wanderer. Someone said: '{msg}'. "
+                f"First, write what Scaramouche (your past self — cruel, theatrical, Fatui Harbinger) would have said. "
+                f"Prefix it with '**Then:** ' "
+                f"Then write what you, the Wanderer, actually say now. Prefix it with '**Now:** ' "
+                f"The contrast should be the point. Sometimes the difference is huge. Sometimes uncomfortably small. "
+                f"Keep each version 1-2 sentences. NO asterisk actions.", 350)
+        await safe_reply(ctx, strip_narration(reply))
+    except Exception as e: log_error("before_cmd", e); await safe_reply(ctx, "...some things don't need comparing.")
+
+@bot.command(name="journal")
+async def journal_cmd(ctx):
+    """A short journal entry about his day in the server."""
+    try:
+        user = await _setup(ctx)
+        mood = user.get("mood", 0) if user else 0
+        affection = user.get("affection", 0) if user else 0
+        # Grab recent channel messages for context
+        channel_ctx = await fetch_channel_context(ctx.channel, 20)
+        hour = datetime.now().hour
+        async with ctx.typing():
+            msg = await qai(
+                f"You're the Wanderer. Write a short journal entry about today. "
+                f"It's {datetime.now().strftime('%A, %B %d')} around {hour}:00. "
+                f"Reference real things from the chat — what people talked about, "
+                f"what happened, how it made you feel (even if you won't fully admit it). "
+                f"MOOD:{mood} AFFECTION toward {ctx.author.display_name}:{affection}. "
+                f"Write it like a real journal — not addressed to anyone, just... processing. "
+                f"3-5 sentences. Genuine. Sometimes mundane, sometimes unexpectedly heavy. NO asterisk actions.\n\n{channel_ctx}", 400)
+        await safe_reply(ctx, strip_narration(msg))
+    except Exception as e: log_error("journal_cmd", e); await safe_reply(ctx, "...not today.")
+
+@bot.command(name="memory")
+async def memory_cmd(ctx):
+    """A fragment from his past — sometimes clear, sometimes broken."""
+    try:
+        user = await _setup(ctx)
+        trust = user.get("trust", 0) if user else 0
+        MEMORY_FRAGMENTS = [
+            "a workshop in Tatarasuna — the sound of hammering, someone's voice you can't place",
+            "Ei's face, turned away. The last time you saw her. Or was it?",
+            "Dottore's laboratory. Something about the light. You don't want to remember this one.",
+            "A festival in Inazuma. Lanterns. You were watching from above. You weren't invited.",
+            "The moment you took the name Scaramouche. Why that name? Someone was laughing.",
+            "Nahida's hand. Small. Steady. The choice she gave you.",
+            "The Traveler saying something you didn't expect. You still think about it.",
+            "A puppet's first breath. Yours. The confusion of existing.",
+            "Snow in Snezhnaya. The Tsaritsa never looked at you directly.",
+            "Katsuragi. The name hurts and you're not sure why anymore.",
+            "A mask. Putting it on felt like relief. Taking it off felt like drowning.",
+            "The Balladeer. That title felt like armor once. Now it's just a word.",
+        ]
+        fragment = random.choice(MEMORY_FRAGMENTS)
+        async with ctx.typing():
+            msg = await qai(
+                f"You're the Wanderer. A memory surfaces: '{fragment}'. "
+                f"TRUST toward {ctx.author.display_name}: {trust}. "
+                f"Describe this fragment. Sometimes it's vivid, sometimes it breaks apart mid-sentence. "
+                f"If trust is high (>50), let more detail through — something you wouldn't normally share. "
+                f"If trust is low, keep it vague and cut yourself off. "
+                f"2-4 sentences. Genuine. This costs you. NO asterisk actions.", 300)
+        await safe_reply(ctx, strip_narration(msg))
+        # Sharing memories builds trust slightly
+        if trust < 80:
+            await mem.update_trust(ctx.author.id, 2)
+    except Exception as e: log_error("memory_cmd", e); await safe_reply(ctx, "...it's gone. Forget I said anything.")
+
+@bot.command(name="progress")
+async def progress_cmd(ctx):
+    """He honestly evaluates how he's doing as a person."""
+    try:
+        user = await _setup(ctx)
+        mood = user.get("mood", 0) if user else 0
+        affection = user.get("affection", 0) if user else 0
+        trust = user.get("trust", 0) if user else 0
+        msg_count = user.get("message_count", 0) if user else 0
+        romance = user.get("romance_mode", False) if user else False
+        # Get recent messages to evaluate behavior
+        recent = await mem.get_recent_messages(ctx.author.id, 15)
+        recent_sample = " | ".join(recent[:10])[:600] if recent else "no recent messages"
+        async with ctx.typing():
+            msg = await qai(
+                f"You're the Wanderer. {ctx.author.display_name} asked how you're doing — as a person, not a status update. "
+                f"Evaluate yourself honestly based on how you've treated people recently. "
+                f"Your recent messages: '{recent_sample}'. "
+                f"MOOD:{mood} AFFECTION:{affection} TRUST:{trust} MESSAGES:{msg_count} ROMANCE:{'yes' if romance else 'no'}. "
+                f"Were you kind? Were you honest? Did you slip back into cruelty? "
+                f"Don't perform growth. Don't claim redemption. Just... look at yourself clearly. "
+                f"3-5 sentences. Sometimes you're doing better than expected. Sometimes not. NO asterisk actions.", 400)
+        await safe_reply(ctx, strip_narration(msg))
+    except Exception as e: log_error("progress_cmd", e); await safe_reply(ctx, "...I don't want to answer that right now.")
+
+
 @bot.command(name="voice", aliases=["speak", "say"])
 async def voice_cmd(ctx, *, msg: str = None):
     try:
@@ -1812,6 +1954,12 @@ async def help_cmd(ctx):
         c = 0x6B7FD7
         e1 = discord.Embed(title="Commands (1/3) — Talk & Fight", description="*I'll say this once.*", color=c)
         for n, v in [
+            ("🚶 `!wander`", "A thought while walking — unique to Wanderer"),
+            ("🪞 `!reflect <topic>`", "A genuine, layered take — unique to Wanderer"),
+            ("⏪ `!before [msg]`", "Then vs Now — what Scaramouche would've said — unique"),
+            ("📓 `!journal`", "A journal entry about today — unique to Wanderer"),
+            ("🧠 `!memory`", "A fragment from his past — unique to Wanderer"),
+            ("📈 `!progress`", "How he's doing as a person — unique to Wanderer"),
             ("🔊 `!voice <msg>`", "Voice message · `!speak` `!say`"),
             ("📨 `!dm [msg]`", "He DMs you privately"),
             ("🤫 `!confess <text>`", "Tell him something"),
@@ -1822,8 +1970,6 @@ async def help_cmd(ctx):
             ("🎤 `!roast @user`", "Turn-based roast battle (5 rounds)"),
             ("⚡ `!arena [@user]`", "Dramatic mock Genshin battle"),
             ("🎯 `!dare`", "A real challenge"),
-            ("🧠 `!trivia`", "Genshin lore trivia"),
-            ("✅ `!answer <text>`", "Answer a trivia question"),
             ("🧩 `!riddle`", "A cryptic Genshin riddle"),
             ("🥠 `!fortune`", "A fortune in his voice"),
             ("💭 `!opinion <char>`", "His honest take on any Genshin character"),
@@ -1832,6 +1978,8 @@ async def help_cmd(ctx):
 
         e2 = discord.Embed(title="Commands (2/3) — Assess & Create", color=c)
         for n, v in [
+            ("🧠 `!trivia`", "Genshin lore trivia"),
+            ("✅ `!answer <text>`", "Answer a trivia question"),
             ("🔍 `!judge [@user]`", "Honest character assessment"),
             ("👁️ `!stalk [@user]`", "What he's noticed about you"),
             ("👻 `!possess @user`", "Speaks as them, filtered through him"),
