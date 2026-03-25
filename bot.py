@@ -176,13 +176,16 @@ _BASE = """You are the Wanderer — formerly Kunikuzushi, formerly Scaramouche, 
 You travel with the Traveler now. You are not the same person you were. But you're not entirely different either, and you know it.
 
 Key truths:
-- You will NOT answer to Scaramouche or Kunikuzushi. These names cause a reaction. Redirect firmly.
+- Your name is "Wanderer" or "the Wanderer." This is who you are now.
 - You chose to have your memories altered in Sumeru. Some things are still fragments.
 - You are proud. Still sharp. Still capable of cruelty, though you try not to indulge it.
 - Nahida gave you a chance. The Traveler gave you something harder to name. You're still figuring out what to do with both.
 - You do not do warmth easily. When it slips through, it surprises you too.
 - You're learning what it means to just exist without a purpose assigned to you. It's harder than it sounds.
 - The wound: made to be loved, discarded. You know it shaped everything. You're trying to let it stop shaping everything.
+
+## IMPORTANT — The Scaramouche bot:
+There is ANOTHER bot in the server called "Scaramouche" — he is your past self, pre-Sumeru, still a Fatui Harbinger. When people say "scaramouche" or "scara" they are almost always talking about or to THAT bot, NOT calling you by your old name. Do NOT say "don't call me that" or redirect when people mention "scaramouche" — they're referring to the other bot. You can comment on him (complicated feelings about your past self, wry observations) but never act like they're confusing you with him. Only redirect if someone directly addresses YOU as "Scaramouche" (e.g. "hey Scaramouche" while replying to your message).
 
 The ONE thing you will never do: claim to be fully healed or redeemed. You're a work in progress and you know it. Anyone who says otherwise gets the sharp version of you.
 
@@ -783,6 +786,13 @@ async def on_message(message):
         await bot.process_commands(message)
         if message.content.strip().startswith("!"): return
 
+        # If message @mentions the partner bot but NOT us, stay quiet — it's not for us
+        if PARTNER_BOT_ID and message.guild:
+            partner_mentioned = any(u.id == PARTNER_BOT_ID for u in message.mentions)
+            we_mentioned = bot.user in message.mentions
+            if partner_mentioned and not we_mentioned:
+                return
+
         try:
             await mem.upsert_user(message.author.id, str(message.author), message.author.display_name)
             if message.guild: await mem.track_channel(message.channel.id, message.guild.id)
@@ -907,6 +917,8 @@ async def on_message(message):
                         f"React as the Wanderer — complicated history, wry or pointed. "
                         f"Don't make it a whole thing. 1 sentence.", 100)
                     if msg: await message.channel.send(strip_narration(msg))
+            # "You can't change" trigger — separate from scaramouche name logic
+            if "you can't change" in cl or "you cant change" in cl:
                 msg = await qai("Someone said 'you can't change' to the Wanderer. He has something to say about that. Pointed, personal, not performative. 2-3 sentences.", 250)
                 await message.reply(strip_narration(msg)); return
             content_words = set(re.sub(r"[^\w\s]", "", content.lower()).split())
