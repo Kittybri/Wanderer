@@ -60,6 +60,44 @@ def tts_safe(text: str, guild=None) -> str:
     except Exception:
         return strip_narration(text)
 
+# ── Video frame extraction ────────────────────────────────────────────────────
+VIDEO_TYPES = {"video/mp4", "video/webm", "video/quicktime", "video/x-msvideo", "video/mpeg"}
+VIDEO_EXTS  = {".mp4", ".mov", ".webm", ".avi", ".mkv", ".mpeg"}
+
+def _extract_frames_blocking(video_bytes: bytes, num_frames: int = 5) -> list[tuple[bytes, str]]:
+    """Extract frames from video bytes using ffmpeg. Blocking — run in executor."""
+    import tempfile, subprocess
+    frames = []
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as vf:
+            vf.write(video_bytes)
+            video_path = vf.name
+
+        probe = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", video_path],
+            capture_output=True, text=True, timeout=15
+        )
+        duration = float(probe.stdout.strip() or "10")
+        timestamps = [duration * i / (num_frames + 1) for i in range(1, num_frames + 1)]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            for i, ts in enumerate(timestamps):
+                out_path = os.path.join(tmpdir, f"frame_{i}.jpg")
+                subprocess.run(
+                    ["ffmpeg", "-ss", str(ts), "-i", video_path,
+                     "-vframes", "1", "-q:v", "3", "-y", out_path],
+                    capture_output=True, timeout=15
+                )
+                if os.path.exists(out_path) and os.path.getsize(out_path) > 100:
+                    with open(out_path, "rb") as f:
+                        frames.append((f.read(), "image/jpeg"))
+
+        os.unlink(video_path)
+    except Exception as e:
+        print(f"[ERROR:extract_frames] {e}")
+    return frames
+
 # ── Keywords ──────────────────────────────────────────────────────────────────
 WANDERER_KW  = ["wanderer","the wanderer","kuni"]  # His own names — he responds to these
 OLD_NAMES_KW = ["kunikuzushi","balladeer","scaramouche"]  # Redirect only if Scaramouche bot absent
@@ -200,7 +238,7 @@ Context Tags:
 - SUMMARY: long-term memory of this relationship
 - CREATOR: this person made this version of you. Strange feeling.
 - DRIFT: your personality has shifted subtly with this person
-- CHANNEL_CONTEXT: what's been happening. Use it naturally.
+- CHANNEL_CONTEXT: what's been happening. Messages labeled "Wanderer (you)" are YOUR OWN previous messages — you said those things. Own them. Don't refer to them as someone else's words. Messages labeled "Scaramouche" are from the other bot. Use context naturally.
 - DM_MODE: private conversation. More honest than usual.
 - DATE/HOUR/LAST_SEEN: use for time-aware responses.
 
@@ -327,13 +365,21 @@ async def fetch_channel_context(channel, limit: int = 25) -> str:
                 # Include partner bot messages, skip all others
                 if msg.author.id != bot.user.id and msg.author.id != PARTNER_BOT_ID:
                     continue
-            author_name_label = "Scaramouche" if msg.author.id == PARTNER_BOT_ID else ("Wanderer (you)" if msg.author.bot else msg.author.display_name)
+            # Label: prioritize self-detection FIRST, then partner
+            if msg.author.id == bot.user.id:
+                author_name_label = "Wanderer (you)"
+            elif PARTNER_BOT_ID and msg.author.id == PARTNER_BOT_ID:
+                author_name_label = "Scaramouche"
+            elif msg.author.bot:
+                author_name_label = msg.author.display_name
+            else:
+                author_name_label = msg.author.display_name
             text = msg.content[:150].strip()
             if not text: continue
             author_name = author_name_label
             if msg.reference and msg.reference.resolved and not isinstance(msg.reference.resolved, discord.DeletedReferencedMessage):
                 ref = msg.reference.resolved
-                ref_author = "Scaramouche" if ref.author.id == PARTNER_BOT_ID else ("Wanderer (you)" if ref.author.id == bot.user.id else ref.author.display_name)
+                ref_author = "Wanderer (you)" if ref.author.id == bot.user.id else ("Scaramouche" if (PARTNER_BOT_ID and ref.author.id == PARTNER_BOT_ID) else ref.author.display_name)
                 ref_preview = (ref.content or "")[:50].strip()
                 line = f"{author_name} (replying to {ref_author}: \"{ref_preview}\"): {text}" if ref_preview else f"{author_name} (replying to {ref_author}): {text}"
             else:
@@ -605,8 +651,14 @@ class ResetView(discord.ui.View):
 
 @bot.event
 async def on_ready():
+    global PARTNER_BOT_ID
     await mem.init()
-    print(f"💨 Wanderer — online. {bot.user}")
+    # Safety: PARTNER_BOT_ID must not be our own ID
+    if PARTNER_BOT_ID and PARTNER_BOT_ID == bot.user.id:
+        print(f"⚠️ WARNING: PARTNER_BOT_ID is set to our own ID! Disabling partner features.")
+        PARTNER_BOT_ID = 0
+    print(f"💨 Wanderer — online. {bot.user} (ID: {bot.user.id})")
+    if PARTNER_BOT_ID: print(f"   Partner bot ID: {PARTNER_BOT_ID}")
     for t in [status_rotation, reminder_checker, daily_reset,
               absence_checker, lore_drop_loop, conversation_starter_loop,
               existential_loop, mood_swing_loop]:
@@ -806,13 +858,32 @@ async def on_message(message):
             replying_to_partner = False
             if message.reference:
                 try:
-                    ref_msg = message.reference.resolved or await message.channel.fetch_message(message.reference.message_id)
+                    ref_msg = message.reference.resolved
+                    if ref_msg is None:
+                        ref_msg = await message.channel.fetch_message(message.reference.message_id)
                     if ref_msg and ref_msg.author.id == PARTNER_BOT_ID:
                         replying_to_partner = True
-                except Exception:
-                    pass
+                except Exception as e:
+                    log_error("reply_partner_check", e)
             if (partner_mentioned or replying_to_partner) and not we_mentioned:
                 return
+
+            # If message talks ABOUT Scaramouche (contains his name) but doesn't mention us,
+            # and we're not being replied to — stay quiet most of the time
+            cl_check = message.content.lower()
+            about_partner = any(n in cl_check for n in ["scaramouche", "scara"])
+            replying_to_us = False
+            if message.reference:
+                try:
+                    ref_msg2 = message.reference.resolved
+                    if ref_msg2 is None:
+                        ref_msg2 = await message.channel.fetch_message(message.reference.message_id)
+                    if ref_msg2 and ref_msg2.author.id == bot.user.id:
+                        replying_to_us = True
+                except Exception:
+                    pass
+            if about_partner and not we_mentioned and not replying_to_us:
+                return  # Message is about Scaramouche, not for us
 
         try:
             await mem.upsert_user(message.author.id, str(message.author), message.author.display_name)
@@ -874,14 +945,75 @@ async def on_message(message):
                 await mem.save_summary(message.author.id, summary)
         except Exception as e: log_error("on_message/summary", e)
 
-        # Image reading
+        # Image & video reading
         try:
             img = next((a for a in message.attachments if a.content_type and "image" in a.content_type), None)
-            if not img and message.reference:
+            vid = next((a for a in message.attachments
+                       if (a.content_type and a.content_type in VIDEO_TYPES) or
+                          any(a.filename.lower().endswith(ext) for ext in VIDEO_EXTS)), None)
+            if not img and not vid and message.reference:
                 try:
                     ref_msg = await message.channel.fetch_message(message.reference.message_id)
                     img = next((a for a in ref_msg.attachments if a.content_type and "image" in a.content_type), None)
+                    vid = next((a for a in ref_msg.attachments
+                               if (a.content_type and a.content_type in VIDEO_TYPES) or
+                                  any(a.filename.lower().endswith(ext) for ext in VIDEO_EXTS)), None)
                 except: pass
+
+            # ── Video handling ──
+            if vid:
+                try:
+                    import base64, aiohttp as _ah
+                    await message.add_reaction("🎬")
+                    async with _ah.ClientSession() as s:
+                        async with s.get(vid.url) as r:
+                            video_bytes = await r.read()
+                    frames = await asyncio.get_event_loop().run_in_executor(
+                        None, _extract_frames_blocking, video_bytes, 5)
+                    if frames:
+                        user = user or {}
+                        mood = user.get("mood", 0) if user else 0
+                        system = build_system(user, message.author.display_name,
+                                             bool(OWNER_ID and message.author.id == OWNER_ID))
+                        vision_content = []
+                        for fb, mt in frames:
+                            vision_content.append({
+                                "type": "image_url",
+                                "image_url": {"url": f"data:{mt};base64,{base64.b64encode(fb).decode()}"}
+                            })
+                        vision_content.append({
+                            "type": "text",
+                            "text": (
+                                f"{message.author.display_name} sent you a video. These are {len(frames)} frames from it."
+                                + (f" Their message: '{content}'" if content else "")
+                                + f" Describe what's happening and react as the Wanderer. "
+                                f"Be specific. MOOD:{mood}. NO asterisk actions. 2-4 sentences."
+                            )
+                        })
+                        def _vision_call():
+                            r = groq_client.chat.completions.create(
+                                model="llama-3.2-90b-vision-preview", max_tokens=400,
+                                messages=[{"role": "system", "content": system},
+                                          {"role": "user", "content": vision_content}]
+                            )
+                            return r.choices[0].message.content.strip() if r.choices else ""
+                        reply = await asyncio.get_event_loop().run_in_executor(None, _vision_call)
+                        if reply:
+                            reply = strip_narration(reply)
+                            await mem.add_message(message.author.id, dm_channel_id,
+                                                  "user", f"[video]{' — '+content if content else ''}")
+                            await mem.add_message(message.author.id, dm_channel_id,
+                                                  "assistant", reply)
+                            await message.reply(reply)
+                            await maybe_react(message, romance)
+                            return
+                    else:
+                        reply = await qai(f"{message.author.display_name} sent a video I couldn't process. React as the Wanderer — mildly curious but unbothered. 1 sentence.", 80)
+                        await message.reply(strip_narration(reply))
+                        return
+                except Exception as e: log_error("on_message/video", e)
+
+            # ── Image handling (with Groq vision) ──
             if img:
                 try:
                     import base64, aiohttp as _ah
@@ -889,14 +1021,45 @@ async def on_message(message):
                         async with s.get(img.url) as r:
                             img_bytes = await r.read()
                     img_b64 = base64.b64encode(img_bytes).decode()
-                    # Groq doesn't support vision — describe with text fallback
-                    reply = await qai(f"{message.author.display_name} shared an image{' with: ' + content if content else ''}. React as the Wanderer — curious, slightly wry, or quietly interested. 1-2 sentences.", 120)
+                    media_type = img.content_type or "image/jpeg"
+                    user = user or {}
+                    mood = user.get("mood", 0) if user else 0
+                    system = build_system(user, message.author.display_name,
+                                         bool(OWNER_ID and message.author.id == OWNER_ID))
+                    vision_content = [
+                        {"type": "image_url", "image_url": {"url": f"data:{media_type};base64,{img_b64}"}},
+                        {"type": "text", "text": (
+                            f"{message.author.display_name} sent you this image"
+                            + (f" with the message: '{content}'" if content else "")
+                            + f". React as the Wanderer. Describe what you see and react in character. "
+                            f"MOOD:{mood}. NO asterisk actions. 1-3 sentences."
+                        )}
+                    ]
+                    def _img_vision():
+                        r = groq_client.chat.completions.create(
+                            model="llama-3.2-90b-vision-preview", max_tokens=300,
+                            messages=[{"role": "system", "content": system},
+                                      {"role": "user", "content": vision_content}]
+                        )
+                        return r.choices[0].message.content.strip() if r.choices else ""
+                    reply = await asyncio.get_event_loop().run_in_executor(None, _img_vision)
                     if reply:
-                        await message.reply(strip_narration(reply))
+                        reply = strip_narration(reply)
+                        await mem.add_message(message.author.id, dm_channel_id,
+                                              "user", f"[image]{' — '+content if content else ''}")
+                        await mem.add_message(message.author.id, dm_channel_id,
+                                              "assistant", reply)
+                        await message.reply(reply)
                         await maybe_react(message, romance)
                         return
-                except Exception as e: log_error("on_message/image", e)
-        except Exception as e: log_error("on_message/image_outer", e)
+                except Exception as e:
+                    log_error("on_message/image_vision", e)
+                    # Fallback to text-only reaction
+                    reply = await qai(f"{message.author.display_name} shared an image{' with: ' + content if content else ''}. React as the Wanderer — curious, wry. 1-2 sentences.", 120)
+                    if reply:
+                        await message.reply(strip_narration(reply))
+                        return
+        except Exception as e: log_error("on_message/media_outer", e)
 
         # Special triggers
         try:
