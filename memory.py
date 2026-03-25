@@ -8,13 +8,17 @@ memory summaries, muted users, contradiction tracking, name progression.
 import aiosqlite
 import time
 import json
+import os
 
-DB_PATH = "scaramouche.db"
+# Use Railway volume if available, otherwise current directory
+_data_dir = "/data" if os.path.isdir("/data") else "."
+DB_PATH = os.path.join(_data_dir, "scaramouche.db")
 
 
 class Memory:
     # In-memory only (resets on restart — intentional for mute)
     _muted: dict[int, float] = {}
+    db_path: str = DB_PATH
 
     async def init(self):
         async with aiosqlite.connect(DB_PATH) as db:
