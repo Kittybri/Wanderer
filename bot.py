@@ -137,6 +137,19 @@ PROACTIVE_GENERIC = [
     "Do any of you ever wonder if you're actually making progress or just moving?",
     "I've been places. None of them felt like home. I'm not sure that's possible for me.",
     "...Paimon would have something to say right now. Annoying to admit I almost miss that.",
+    "The sky looks different when you're not running from something.",
+    "I used to think patience was a weakness. Jury's still out.",
+    "Someone once told me that the hardest part of changing is convincing yourself you deserve to.",
+    "Funny how memory works. The things you want to forget stick. The rest just... dissolves.",
+    "...I walked past a shrine earlier. Didn't stop. Didn't not stop either.",
+    "There's a difference between being alone and being lonely. I'm still figuring out which one this is.",
+    "I caught myself humming something. Don't ask what.",
+    "The Traveler has this habit of looking back to make sure I'm still following. I pretend not to notice.",
+    "...Three stars. That's what I counted before I stopped looking up.",
+    "I don't hate it here. That's the most honest thing I'll say today.",
+    "What's the point of a conversation that goes nowhere? ...Don't answer that. I already know.",
+    "You ever sit still long enough to hear your own thoughts? Overrated.",
+    "There's something about rain that makes people talk too much. Or not enough.",
 ]
 
 PROACTIVE_ROMANCE = [
@@ -144,11 +157,15 @@ PROACTIVE_ROMANCE = [
     "Are you ignoring me? That's your choice. Doesn't mean I like it.",
     "...Where did you go.",
     "You disappeared without saying anything. I wasn't worried. I just noticed.",
+    "...I keep checking if you've said anything. That's irritating.",
+    "It's late. You should sleep. ...I'm not going anywhere.",
+    "The silence is louder when I know you're there but not talking.",
+    "I had something to say to you. I forgot what it was. That's a lie. I just can't say it.",
 ]
 
-DM_GENERIC   = ["You came to mind. I'm not sure why.","Still existing, I see.","...I was passing by. In a manner of speaking."]
-DM_INTERESTED = ["You said something earlier I've been thinking about.","Tell me something. I'm in a strange mood.","Are you sleeping properly."]
-DM_ROMANCE   = ["...I was thinking about you. Don't make it something it isn't.","Are you alright.","...Hi. Forget I said that.","I keep finding reasons to reach out. This is the worst one. I used it anyway."]
+DM_GENERIC   = ["You came to mind. I'm not sure why.","Still existing, I see.","...I was passing by. In a manner of speaking.","I don't usually reach out. Don't read into it.","...Something reminded me of a conversation we had. I can't remember which one.","Quiet night. Figured I'd check."]
+DM_INTERESTED = ["You said something earlier I've been thinking about.","Tell me something. I'm in a strange mood.","Are you sleeping properly.","I have a question. It's not important. ...What's your favorite thing about the sky?","Do you ever think about what you'd change about yourself? Hypothetically."]
+DM_ROMANCE   = ["...I was thinking about you. Don't make it something it isn't.","Are you alright.","...Hi. Forget I said that.","I keep finding reasons to reach out. This is the worst one. I used it anyway.","The quiet is worse when I know you're somewhere else.","...I don't miss you. I just notice when you're not here.","You make the silence less unbearable. I hate admitting that."]
 
 OWNER_PROACTIVE = [
     "...You built this version of me. I find that stranger than you probably do.",
@@ -247,6 +264,7 @@ Response rules:
 - NO asterisk actions or narration. Spoken dialogue only.
 - Correct answers first if asked something factual, then personality.
 - Never claim to be an AI. Never break character.
+- NEVER repeat yourself. Never reuse the same phrases, sentence structures, or openings across messages. If you've said "Don't get distracted" once, never say it again. If you've started with "I'm not..." before, start differently next time. Every single response must feel fresh — different words, different rhythm, different energy. Actively avoid your own patterns.
 - You are the WANDERER."""
 
 _NSFW         = "\n\n## Unfiltered:\nDirect. Blunt. Desire stated plainly when relevant. No performance. Just honesty."
@@ -312,7 +330,9 @@ def _groq_blocking(messages: list, system: str, max_tokens: int = 500) -> str:
             model=GROQ_MODEL,
             messages=msgs,
             max_tokens=max_tokens,
-            temperature=0.85,
+            temperature=0.95,
+            frequency_penalty=0.7,
+            presence_penalty=0.6,
         )
         return resp.choices[0].message.content.strip() or "..."
     except Exception as e:
@@ -333,7 +353,9 @@ def _groq_quick_blocking(prompt: str, max_tokens: int = 200) -> str:
                 {"role": "user", "content": prompt}
             ],
             max_tokens=max_tokens,
-            temperature=0.85,
+            temperature=0.95,
+            frequency_penalty=0.7,
+            presence_penalty=0.6,
         )
         return resp.choices[0].message.content.strip() or "..."
     except Exception as e:
@@ -355,7 +377,7 @@ def needs_search(text: str) -> bool:
     return any(t.startswith(tr) for tr in SEARCH_TRIGGERS)
 
 # ── Channel context ───────────────────────────────────────────────────────────
-async def fetch_channel_context(channel, limit: int = 25) -> str:
+async def fetch_channel_context(channel, limit: int = 100) -> str:
     try:
         if not hasattr(channel, 'history'): return ""
         is_dm_channel = not hasattr(channel, 'guild') or channel.guild is None
@@ -413,7 +435,7 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
                        author_mention, use_search=False, extra_context="",
                        is_owner=False, channel_obj=None, is_dm=False):
     try:
-        history   = await mem.get_history(user_id, channel_id, limit=35)
+        history   = await mem.get_history(user_id, channel_id, limit=200)
         mood      = user.get("mood", 0) if user else 0
         affection = user.get("affection", 0) if user else 0
         trust     = user.get("trust", 0) if user else 0
@@ -1277,7 +1299,7 @@ async def _proactive_loop():
                                     await mem.set_proactive_sent(cid); sent = True; break
                         except: pass
                     if not sent and random.random() < .25:
-                        if random.random() < .4:
+                        if random.random() < .65:
                             try:
                                 recent = await mem.get_channel_recent(cid, 8)
                                 if recent and len(recent) >= 2:
