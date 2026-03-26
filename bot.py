@@ -33,6 +33,7 @@ _mmod.random = _rmod
 # ── Narration stripper ────────────────────────────────────────────────────────
 def strip_narration(text: str) -> str:
     try:
+        original = text
         text = re.sub(r'\*[^*]+\*', '', text)
         text = re.sub(r'\([^)]+\)', '', text)
         text = re.sub(r'\[[^\]]+\]', '', text)
@@ -40,7 +41,12 @@ def strip_narration(text: str) -> str:
         text = re.sub(r'<@!?\d+>', '', text)
         text = re.sub(r'<#\d+>', '', text)
         text = re.sub(r'<@&\d+>', '', text)
-        return re.sub(r'\s{2,}', ' ', text).strip().lstrip('.,; ')
+        text = re.sub(r'\s{2,}', ' ', text).strip().lstrip('.,; ')
+        if not text or len(text) < 3:
+            text = original.replace('*','').replace('[','').replace(']','').replace('(','').replace(')','')
+            text = re.sub(r'<@!?\d+>', '', text)
+            text = re.sub(r'\s{2,}', ' ', text).strip().lstrip('.,; ')
+        return text
     except Exception:
         return text
 
