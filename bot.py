@@ -64,28 +64,46 @@ def tts_safe(text: str, guild=None) -> str:
 VIDEO_TYPES = {"video/mp4", "video/webm", "video/quicktime", "video/x-msvideo", "video/mpeg"}
 VIDEO_EXTS  = {".mp4", ".mov", ".webm", ".avi", ".mkv", ".mpeg"}
 
+def _get_ffmpeg_path():
+    """Find ffmpeg binary — try imageio-ffmpeg first, then system PATH."""
+    try:
+        import imageio_ffmpeg
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        return "ffmpeg"
+
 def _extract_frames_blocking(video_bytes: bytes, num_frames: int = 5) -> list[tuple[bytes, str]]:
     """Extract frames from video bytes using ffmpeg. Blocking — run in executor."""
     import tempfile, subprocess
     frames = []
+    ffmpeg = _get_ffmpeg_path()
     try:
         with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as vf:
             vf.write(video_bytes)
             video_path = vf.name
 
+        # Get video duration using ffmpeg itself (no ffprobe needed)
         probe = subprocess.run(
-            ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
-             "-of", "default=noprint_wrappers=1:nokey=1", video_path],
+            [ffmpeg, "-i", video_path, "-f", "null", "-"],
             capture_output=True, text=True, timeout=15
         )
-        duration = float(probe.stdout.strip() or "10")
+        duration = 10.0
+        for line in probe.stderr.split("\n"):
+            if "Duration:" in line:
+                try:
+                    t = line.split("Duration:")[1].split(",")[0].strip()
+                    parts = t.split(":")
+                    duration = float(parts[0]) * 3600 + float(parts[1]) * 60 + float(parts[2])
+                except Exception:
+                    pass
+                break
         timestamps = [duration * i / (num_frames + 1) for i in range(1, num_frames + 1)]
 
         with tempfile.TemporaryDirectory() as tmpdir:
             for i, ts in enumerate(timestamps):
                 out_path = os.path.join(tmpdir, f"frame_{i}.jpg")
                 subprocess.run(
-                    ["ffmpeg", "-ss", str(ts), "-i", video_path,
+                    [ffmpeg, "-ss", str(ts), "-i", video_path,
                      "-vframes", "1", "-q:v", "3", "-y", out_path],
                     capture_output=True, timeout=15
                 )
@@ -2238,4 +2256,3 @@ if __name__ == "__main__":
     if not DISCORD_TOKEN: raise SystemExit("❌ DISCORD_TOKEN not set")
     if not GROQ_API_KEY:  raise SystemExit("❌ GROQ_API_KEY not set")
     bot.run(DISCORD_TOKEN)
-
