@@ -134,7 +134,12 @@ WANDERER_KW  = ["wanderer","the wanderer","kuni"]  # His own names — he respon
 OLD_NAMES_KW = ["kunikuzushi","balladeer","scaramouche"]  # Redirect only if Scaramouche bot absent
 GENSHIN_KW   = ["genshin","teyvat","mondstadt","liyue","inazuma","sumeru","fontaine","natlan","traveler","paimon","archon","fatui","harbinger","nahida","traveller"]
 RUDE_KW      = ["shut up","stupid","dumb","idiot","hate you","annoying","go away","you suck","useless"]
-NICE_KW      = ["thank you","thanks","appreciate","you're great","love you","good job","amazing","i like you","i love you"]
+NICE_KW      = ["thank you","thanks","appreciate","you're great","good job","amazing"]
+ROMANCE_KW   = ["i love you","love you","i like you","like you wanderer","love you wanderer",
+                "i love u","love u","ily","i have feelings for you","i have a crush on you",
+                "be mine","be my boyfriend","kiss you","kiss me","hold me","hug me",
+                "miss you","miss u","i need you","want to be with you","date me",
+                "you're cute","you're hot","marry me","love you so much","love u so much"]
 OTHER_BOT_KW = ["other bot","different bot","better bot","prefer","switch to"]
 HAT_KW       = [r"\bhat\b", r"\bheadwear\b"]
 FOOD_KW      = [r"\beating\b",r"\bfood\b",r"\bhungry\b",r"\bdinner\b",r"\blunch\b",r"\bbreakfast\b",r"\bsnack\b",r"\bramen\b"]
@@ -553,12 +558,24 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
         msg_l = user_message.lower()
         if any(k in msg_l for k in RUDE_KW):
             await mem.update_mood(user_id, -2); await mem.update_trust(user_id, -1)
-        elif any(k in msg_l for k in NICE_KW):
-            await mem.update_mood(user_id, +1); await mem.update_affection(user_id, +2)
-            await mem.update_trust(user_id, +1); await mem.update_drift(user_id, +1)
+        elif any(k in msg_l for k in ROMANCE_KW):
+            # Auto-enable romance mode if not already on
+            user_data = await mem.get_user(user_id)
+            if user_data and not user_data.get("romance_mode", False):
+                await mem.set_mode(user_id, "romance_mode", True)
+                print(f"[AUTO-ROMANCE] Enabled for {display_name}")
+            await mem.update_mood(user_id, +1)
+            await mem.update_affection(user_id, +1)
+            await mem.update_trust(user_id, +1)
+            await mem.update_drift(user_id, +1)
             _, threshold = await mem.increment_slow_burn(user_id)
             if threshold:
                 asyncio.ensure_future(_fire_slow_burn(user_id, channel_id, display_name))
+            await mem.update_last_statement(user_id, user_message[:200])
+        elif any(k in msg_l for k in NICE_KW):
+            await mem.update_mood(user_id, +1)
+            await mem.update_affection(user_id, +1)
+            await mem.update_trust(user_id, +1)
             await mem.update_last_statement(user_id, user_message[:200])
         else:
             positive = sum([
@@ -2133,15 +2150,6 @@ async def nsfw_cmd(ctx, mode: str = None):
         await safe_reply(ctx, "Unfiltered. Fine." if new else "Restrained again.")
     except Exception as e: log_error("nsfw_cmd", e)
 
-@bot.command(name="romance", aliases=["romanceable"])
-async def romance_cmd(ctx, mode: str = None):
-    try:
-        user = await _setup(ctx); cur = user.get("romance_mode", False) if user else False
-        new = True if mode == "on" else False if mode == "off" else not cur
-        await mem.set_mode(ctx.author.id, "romance_mode", new)
-        await safe_reply(ctx, random.choice(["...Don't make it something it isn't.", "Tch. Fine.", "...Alright."]) if new else random.choice(["Fine.", "...That's probably for the best."]))
-    except Exception as e: log_error("romance_cmd", e)
-
 @bot.command(name="proactive", aliases=["ping_me"])
 async def proactive_cmd(ctx, mode: str = None):
     try:
@@ -2258,7 +2266,6 @@ async def help_cmd(ctx):
             ("🔊 `!unmute [@user]`", "Stops ignoring someone"),
             ("🔄 `!reset`", "Wipe your memory · `!forget`"),
             ("🔞 `!nsfw [on/off]`", "Toggle unfiltered mode"),
-            ("💕 `!romance [on/off]`", "Toggle attached mode"),
             ("📡 `!proactive [on/off]`", "Toggle unprompted messages"),
             ("💌 `!dms [on/off]`", "Toggle voluntary DMs"),
             ("📚 `!tedtalk`", "Attach a file — he teaches it as a voice lecture"),
