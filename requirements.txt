@@ -8,3 +8,4 @@ ormsgpack>=1.5.0
 gtts>=2.5.0
 python-pptx>=0.6.21
 python-docx>=1.1.0
+imageio-ffmpeg>=0.5.1
