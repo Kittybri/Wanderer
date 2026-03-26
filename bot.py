@@ -431,7 +431,21 @@ async def fetch_channel_context(channel, limit: int = 100) -> str:
             else:
                 author_name_label = msg.author.display_name
             text = msg.content[:150].strip()
-            if not text: continue
+            # Detect voice messages (mp3 attachments with no text)
+            has_voice = any(a.filename.endswith(".mp3") for a in msg.attachments)
+            has_image = any(a.content_type and "image" in a.content_type for a in msg.attachments)
+            has_video = any(a.filename.endswith((".mp4",".mov",".webm",".avi")) for a in msg.attachments)
+            if not text:
+                if has_voice:
+                    text = "[sent a voice message]"
+                elif has_image:
+                    text = "[sent an image]"
+                elif has_video:
+                    text = "[sent a video]"
+                else:
+                    continue
+            elif has_voice:
+                text = f"[sent a voice message] {text}"
             author_name = author_name_label
             if msg.reference and msg.reference.resolved and not isinstance(msg.reference.resolved, discord.DeletedReferencedMessage):
                 ref = msg.reference.resolved
