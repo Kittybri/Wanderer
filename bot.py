@@ -64,6 +64,19 @@ def tts_safe(text: str, guild=None) -> str:
 VIDEO_TYPES = {"video/mp4", "video/webm", "video/quicktime", "video/x-msvideo", "video/mpeg"}
 VIDEO_EXTS  = {".mp4", ".mov", ".webm", ".avi", ".mkv", ".mpeg"}
 
+WANDERER_VIDEO_WATCHING = [
+    "...Give me a moment. I'm watching.",
+    "A video? Alright. Let me see.",
+    "Hold on. Let me watch this first.",
+    "You sent a video. I'll look at it. Don't hover.",
+    "Watching. I'll tell you what I think when I'm done.",
+    "...Interesting. Let me finish watching.",
+    "One moment. I want to see the whole thing before I say anything.",
+    "I'll watch it. No promises on what I'll think.",
+    "Let me see what you sent. Quietly.",
+    "Fine. Watching. Give me a second.",
+]
+
 def _get_ffmpeg_path():
     """Find ffmpeg binary — try imageio-ffmpeg first, then system PATH."""
     try:
@@ -1004,7 +1017,7 @@ async def on_message(message):
             if vid:
                 try:
                     import base64, aiohttp as _ah
-                    await message.add_reaction("🎬")
+                    await message.reply(random.choice(WANDERER_VIDEO_WATCHING))
                     async with _ah.ClientSession() as s:
                         async with s.get(vid.url) as r:
                             video_bytes = await r.read()
