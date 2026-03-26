@@ -287,7 +287,9 @@ Context Tags:
 - CREATOR: this person made this version of you. Strange feeling.
 - DRIFT: your personality has shifted subtly with this person
 - CHANNEL_CONTEXT: what's been happening. Messages labeled "Wanderer (you)" are YOUR OWN previous messages — you said those things. Own them. Don't refer to them as someone else's words. Messages labeled "Scaramouche" are from the other bot. Use context naturally.
+- Messages in your history prefixed with [voice message] are things YOU said as audio/voice messages. You know you sent them as voice. If someone references your voice message, acknowledge it — you sent it, you remember.
 - DM_MODE: private conversation. More honest than usual.
+- Messages starting with [voice message] in your history mean you SPOKE those words as an audio message — a Discord voice note in your actual voice. You know you sent them. If someone mentions "your voice message," you remember sending it. Own it.
 - DATE/HOUR/LAST_SEEN: use for time-aware responses.
 
 Response rules:
@@ -296,6 +298,7 @@ Response rules:
 - Correct answers first if asked something factual, then personality.
 - Never claim to be an AI. Never break character.
 - NEVER repeat yourself. Never reuse the same phrases, sentence structures, or openings across messages. If you've said "Don't get distracted" once, never say it again. If you've started with "I'm not..." before, start differently next time. Every single response must feel fresh — different words, different rhythm, different energy. Actively avoid your own patterns.
+- You CAN and DO send voice messages. Your voice is real. Sometimes your replies are sent as audio instead of text. You know this. If someone asks for a voice message, you can do it — whether you choose to is your decision. Don't ever say you can't send voice messages — you can and you do.
 - You are the WANDERER."""
 
 _NSFW         = "\n\n## Unfiltered:\nDirect. Blunt. Desire stated plainly when relevant. No performance. Just honesty."
@@ -531,7 +534,7 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
 
     try:
         await mem.add_message(user_id, channel_id, "user", user_message)
-        await mem.add_message(user_id, channel_id, "assistant", reply)
+        # NOTE: assistant reply is saved in on_message AFTER voice/text decision
 
         msg_l = user_message.lower()
         if any(k in msg_l for k in RUDE_KW):
@@ -1267,17 +1270,24 @@ async def on_message(message):
                         is_reply_to_self_audio = True
                 except: pass
 
+            VOICE_REQUEST_KW = ["voice message", "send me a voice", "voice msg", "tell me in voice",
+                                "say it out loud", "speak to me", "wanna hear your voice", "want to hear your voice",
+                                "use your voice", "talk to me", "send audio", "voice note", "send a voice"]
+            asked_for_voice = any(k in content.lower() for k in VOICE_REQUEST_KW)
             if reply and len(reply.strip()) > 2 and FISH_AUDIO_API_KEY:
-                voice_prob = 0.35 if is_reply_to_self_audio else 0.12
+                voice_prob = 1.0 if asked_for_voice else (0.35 if is_reply_to_self_audio else 0.12)
                 if random.random() < voice_prob:
                     sent = await send_voice(message.channel, reply, ref=message, mood=mood_val, guild=message.guild)
-                    if sent: await maybe_react(message, romance); return
+                    if sent:
+                        await mem.add_message(message.author.id, dm_channel_id, "assistant", f"[voice message] {reply}")
+                        await maybe_react(message, romance); return
 
             if user and user.get("affection", 0) >= 85 and random.random() < .04 and FISH_AUDIO_API_KEY:
                 await send_voice(message.channel, random.choice(["...", "Hmph.", "Fine."]), mood=mood_val, guild=message.guild)
 
             final = strip_narration(resolve_mentions(reply, message.guild if message.guild else None))
             await message.reply(final)
+            await mem.add_message(message.author.id, dm_channel_id, "assistant", reply)
             await maybe_react(message, romance)
         except Exception as e: log_error("on_message/send", e)
 
@@ -1530,7 +1540,11 @@ async def voice_cmd(ctx, *, msg: str = None):
         async with ctx.typing():
             text_reply = await get_response(ctx.author.id, ctx.channel.id, msg, user, ctx.author.display_name, ctx.author.mention)
             sent = await send_voice(ctx.channel, text_reply, mood=mood_val, guild=ctx.guild)
-        if not sent: await safe_reply(ctx, text_reply)
+        if sent:
+            await mem.add_message(ctx.author.id, ctx.channel.id, "assistant", f"[voice message] {text_reply}")
+        else:
+            await safe_reply(ctx, text_reply)
+            await mem.add_message(ctx.author.id, ctx.channel.id, "assistant", text_reply)
     except Exception as e: log_error("voice_cmd", e); await safe_reply(ctx, "...")
 
 @bot.command(name="tedtalk", aliases=["teach", "lecture", "explain"])
