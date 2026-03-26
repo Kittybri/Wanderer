@@ -870,7 +870,7 @@ async def on_message(message):
             return
 
         await bot.process_commands(message)
-        if message.content.strip().startswith("!"): return
+        if re.match(r'^![a-zA-Z]', message.content.strip()): return
 
         # If message @mentions the partner bot but NOT us, stay quiet — it's not for us
         # Also if message is a REPLY to the partner bot but NOT mentioning us, stay quiet
@@ -2238,3 +2238,4 @@ if __name__ == "__main__":
     if not DISCORD_TOKEN: raise SystemExit("❌ DISCORD_TOKEN not set")
     if not GROQ_API_KEY:  raise SystemExit("❌ GROQ_API_KEY not set")
     bot.run(DISCORD_TOKEN)
+
