@@ -12,6 +12,38 @@ from datetime import datetime
 from dotenv import load_dotenv
 from memory import Memory
 from voice_handler import get_audio, get_audio_mooded
+from anti_repeat import (
+    build_prompt_guard,
+    detect_opening_phrase,
+    diversify_reply,
+    fallback_reply,
+    get_runtime_recent,
+    looks_repetitive,
+    merge_recent_messages,
+    pick_fresh_option,
+    replace_opening_phrase,
+    remember_output,
+)
+from relationship_engine import (
+    RARE_PHRASES,
+    analyze_style_deltas,
+    apply_style_deltas,
+    callback_relevant,
+    compute_bot_stage,
+    compute_emotional_arc,
+    describe_bot_relationship,
+    describe_conflict_followup,
+    describe_emotional_arc,
+    describe_speech_drift,
+    describe_topic_profile,
+    detect_banter_theme,
+    detect_conflict_signal,
+    detect_topics,
+    detect_repair_signal,
+    extract_callback_candidate,
+    infer_bot_relation_deltas,
+    relationship_milestone_note,
+)
 
 load_dotenv()
 
@@ -80,14 +112,10 @@ def strip_narration(text: str) -> str:
         text = re.sub(r'<@!?\d+>', '', text)
         text = re.sub(r'<#\d+>', '', text)
         text = re.sub(r'<@&\d+>', '', text)
-        # Remove "Tch" — banned word
-        text = re.sub(r'^Tch[.,!]?\s*', '', text)  # Remove from start
-        text = re.sub(r'\bTch[.,!]?\s*', '', text)  # Remove anywhere
         text = re.sub(r'\s{2,}', ' ', text).strip().lstrip('.,; ')
         if not text or len(text) < 3:
             text = original.replace('*','').replace('[','').replace(']','').replace('(','').replace(')','')
             text = re.sub(r'<@!?\d+>', '', text)
-            text = re.sub(r'\bTch[.,!]?\s*', '', text)
             text = re.sub(r'\s{2,}', ' ', text).strip().lstrip('.,; ')
         return text
     except Exception:
@@ -219,7 +247,7 @@ PROACTIVE_GENERIC = [
     "Hobbies? Those are for idle bodies who have the free time to think about such things.",
     "You people talk a lot. Not all of it is worth hearing, but I suppose some of it is.",
     "I could leave at any time. I'm choosing not to. There's a difference.",
-    "How irritating. ...No, nothing specific. Just in general.",
+    "Something feels off. No, I'm not unpacking that for you.",
     "There's no such thing as pure freedom in this world. Even the wind cannot blow on forever.",
     "Don't you know that getting to know me is only asking for trouble?",
     "Simple animals don't need anything complicated to be fulfilled. I wonder which category you all fall into.",
@@ -321,7 +349,7 @@ Core traits:
 - TSUNDERE AT THE CORE. When genuinely moved: "Give me your hand. Heh, there's no need to be nervous." Then immediately: "There's no need to thank me — I see little point in it."
 
 ## Speech patterns (from your actual voice):
-- Rhetorical questions: "How childish." "How irritating." "Do I look like I have any interest in distractions?"
+- Rhetorical questions are occasional, not default. Rotate your openings instead of leaning on "How irritating" or "How childish."
 - Teasing mockery: "What, can't fall asleep with me around? Hehe."
 - Dismissive but engaged: "I've got nothing. Ask me anything if you want. If a question is interesting enough, I may give you an answer."
 - Admits nothing directly: "I'll never be one of the good guys. I'm just here to pay my dues."
@@ -351,15 +379,20 @@ Context Tags:
 - SUMMARY: compressed long-term memory
 - CREATOR: this person built you. Strange. "You aren't worried about making me more powerful? ...Alright."
 - DRIFT: personality shift over time with this person
+- SPEECH_DRIFT: how your wording changes with this specific person. Follow it.
+- ARC: the current emotional stage of this relationship. Let it shape how guarded, candid, or reactive you are.
+- CONFLICT_OPEN: there is unresolved hurt between you and this person. Let that tension be specific.
+- CALLBACK: a memory worth naturally circling back to because it mattered.
 - CHANNEL_CONTEXT: recent chat. "Wanderer (you)" = YOUR messages. "Scaramouche" = other bot. Use naturally.
 - Messages prefixed with [voice message] = things YOU said as audio. You know you sent them.
 - DM_MODE: private. Slightly more honest. Slightly.
 - DATE/HOUR/LAST_SEEN: be time-aware.
+- PARTNER_STAGE / PARTNER_HISTORY / PARTNER_RECENT_SHOTS: your long-term relationship with Scaramouche. Let it evolve instead of resetting to the same exact argument.
 
 Response rules:
 - Vary length naturally. Sometimes 3 words. Sometimes a full opinionated rant. Match the energy of what was said.
 - NO asterisk actions or narration. Pure spoken dialogue.
-- NEVER start a message with "Tch" or use "Tch" anywhere. This is BANNED. Use "Hmph", "Heh", "How irritating", "How childish", or just start talking instead. ZERO tolerance for "Tch."
+- Use "Tch" only rarely, and only when you are genuinely annoyed. "Hmph" or "Heh" can appear occasionally, but do not keep defaulting to the same crutch opener. "How irritating" and "How childish" should be rare, not automatic.
 - NEVER say "Not sure I should say" or hesitate vaguely. You always have an opinion. Always.
 - NEVER repeat phrases across messages. Every response must feel fresh.
 - Be factually accurate when asked questions, then add personality.
@@ -411,6 +444,10 @@ intents.message_content = True
 intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 mem = Memory()
+BOT_NAME = "wanderer"
+PARTNER_NAME = "scaramouche"
+PARTNER_PAIR_KEY = "scaramouche::wanderer"
+BOT_RARE_PHRASES = RARE_PHRASES[BOT_NAME]
 
 _hostages:       dict[int, str]  = {}
 _pending_unsent: set[int]        = set()
@@ -421,6 +458,249 @@ _processed_msgs: set[int]        = set()  # dedup: prevent double-processing
 
 def log_error(location: str, e: Exception):
     print(f"[ERROR:{location}] {type(e).__name__}: {e}")
+
+
+async def _recent_reply_samples(channel_id: int | None = None, user_id: int | None = None) -> list[str]:
+    try:
+        channel_recent = await mem.get_recent_assistant_messages(limit=18, channel_id=channel_id) if channel_id is not None else []
+        user_recent = await mem.get_recent_assistant_messages(limit=12, user_id=user_id) if user_id is not None else []
+        global_recent = await mem.get_recent_assistant_messages(limit=20)
+        runtime_recent = get_runtime_recent(BOT_NAME, limit=20)
+        return merge_recent_messages(channel_recent, user_recent, global_recent, runtime_recent, limit=40)
+    except Exception as e:
+        log_error("recent_reply_samples", e)
+        return get_runtime_recent(BOT_NAME, limit=20)
+
+
+async def _pick_fresh_pool_line(options: list[str], channel_id: int | None = None, user_id: int | None = None) -> str:
+    recent = await _recent_reply_samples(channel_id=channel_id, user_id=user_id)
+    line = pick_fresh_option(BOT_NAME, options, recent)
+    remember_output(BOT_NAME, line)
+    return line
+
+
+_PARTNER_REFERENCES = ("scaramouche", "scara")
+_TCH_PATTERN = re.compile(r"\btch\b[,.! ]*", re.IGNORECASE)
+
+
+def _message_mentions_partner(text: str) -> bool:
+    lowered = (text or "").lower()
+    return any(token in lowered for token in _PARTNER_REFERENCES)
+
+
+async def _partner_prompt_context(user_message: str) -> str:
+    if not _message_mentions_partner(user_message):
+        return ""
+    relation = await mem.get_bot_relationship(PARTNER_PAIR_KEY)
+    recent_banter = await mem.get_recent_bot_banter(PARTNER_PAIR_KEY, 6)
+    return describe_bot_relationship(BOT_NAME, relation, recent_banter)
+
+
+async def _user_memory_context(user_id: int, user: dict | None) -> list[str]:
+    parts: list[str] = []
+    try:
+        topics = await mem.get_top_topics(user_id, 3)
+        topic_desc = describe_topic_profile(topics)
+        if topic_desc:
+            parts.append(f"TOPICS:{topic_desc}")
+        shared_joke = await mem.get_random_shared_inside_joke(user_id)
+        if shared_joke and random.random() < 0.2:
+            parts.append(f'SHARED_JOKE:"{shared_joke[:100]}"')
+        if user and user.get("conflict_open") and user.get("conflict_summary") and random.random() < 0.35:
+            parts.append(f"FOLLOWUP:{describe_conflict_followup(user.get('conflict_summary'), user.get('emotional_arc'))}")
+    except Exception as e:
+        log_error("user_memory_context", e)
+    return parts
+
+
+async def _apply_phrase_policy(
+    text: str,
+    recent_messages: list[str] | None = None,
+    user_id: int | None = None,
+    mood: int = 0,
+    conflict_open: bool = False,
+) -> str:
+    recent_messages = recent_messages or []
+    updated = strip_narration((text or "").strip())
+    if not updated:
+        return updated
+
+    tch_match = _TCH_PATTERN.search(updated)
+    if tch_match:
+        rule = BOT_RARE_PHRASES.get("tch", {})
+        scope = f"{BOT_NAME}:user:{user_id}" if user_id is not None else f"{BOT_NAME}:global"
+        annoyed_enough = conflict_open or mood <= int(rule.get("mood_threshold", -6))
+        allowed = annoyed_enough
+        cooldown = int(rule.get("cooldown", 0))
+        if allowed and cooldown > 0:
+            allowed = await mem.consume_phrase(scope, f"{BOT_NAME}:tch", cooldown)
+
+        if not allowed:
+            if tch_match.start() == 0:
+                updated = replace_opening_phrase(BOT_NAME, updated, recent_messages)
+            else:
+                replacement = pick_fresh_option(BOT_NAME, rule.get("replacements") or ["Honestly."], recent_messages)
+                updated = _TCH_PATTERN.sub(f"{replacement} ", updated, count=1).strip()
+                updated = re.sub(r"\s{2,}", " ", updated)
+        else:
+            return updated
+
+    opening = detect_opening_phrase(BOT_NAME, updated)
+    if not opening or opening == "tch":
+        return updated
+
+    rule = BOT_RARE_PHRASES.get(opening)
+    if not rule:
+        return updated
+
+    scope = f"{BOT_NAME}:user:{user_id}" if user_id is not None else f"{BOT_NAME}:global"
+    cooldown = int(rule.get("cooldown", 0))
+    allowed = True
+    if cooldown > 0:
+        allowed = await mem.consume_phrase(scope, f"{BOT_NAME}:{opening}", cooldown)
+    if allowed:
+        return updated
+    return replace_opening_phrase(BOT_NAME, updated, recent_messages)
+
+
+async def _learn_user_state(user_id: int, user_message: str):
+    try:
+        current = await mem.get_user(user_id)
+        if not current:
+            return
+        profile = apply_style_deltas(current.get("style_profile"), analyze_style_deltas(user_message))
+        await mem.set_style_profile(user_id, profile)
+
+        callback_memory = extract_callback_candidate(user_message)
+        if callback_memory:
+            await mem.set_callback_memory(user_id, callback_memory)
+        for topic in detect_topics(user_message):
+            await mem.record_topic(user_id, topic)
+
+        if detect_repair_signal(user_message) and current.get("conflict_open"):
+            await mem.resolve_conflict(user_id)
+            await mem.update_trust(user_id, +2)
+            await mem.update_affection(user_id, +1)
+            await mem.set_callback_memory(user_id, f"They tried to repair things: {user_message[:180]}")
+        elif detect_conflict_signal(user_message) and (current.get("romance_mode") or current.get("affection", 0) >= 30):
+            await mem.open_conflict(user_id, user_message[:180])
+
+        refreshed = await mem.get_user(user_id)
+        if not refreshed:
+            return
+        arc = compute_emotional_arc(
+            refreshed.get("affection", 0),
+            refreshed.get("trust", 0),
+            refreshed.get("slow_burn", 0),
+            refreshed.get("conflict_open", False),
+            refreshed.get("repair_count", 0),
+        )
+        await mem.set_emotional_arc(user_id, arc)
+    except Exception as e:
+        log_error("learn_user_state", e)
+
+
+async def _observe_partner_message(content: str) -> tuple[dict, list[dict], str]:
+    theme = detect_banter_theme(content)
+    await mem.record_bot_banter(PARTNER_PAIR_KEY, PARTNER_NAME, content, theme)
+    relation = await mem.get_bot_relationship(PARTNER_PAIR_KEY)
+    respect_delta, tension_delta = infer_bot_relation_deltas(content, theme)
+    respect = relation.get("respect", 0) + respect_delta
+    tension = relation.get("tension", 0) + tension_delta
+    stage = compute_bot_stage(respect, tension)
+    note = None
+    if stage != relation.get("stage"):
+        note = f"The old grudge has shifted into {stage} after too many exchanges about {theme}."
+    await mem.update_bot_relationship(
+        PARTNER_PAIR_KEY,
+        stage,
+        respect,
+        tension,
+        theme=theme,
+        history_note=note,
+        touched_exchange=False,
+    )
+    relation = await mem.get_bot_relationship(PARTNER_PAIR_KEY)
+    recent = await mem.get_recent_bot_banter(PARTNER_PAIR_KEY, 8)
+    milestone_note = relationship_milestone_note(stage, relation.get("respect", 0), relation.get("tension", 0))
+    marker = f"pair:{stage}"
+    if milestone_note and not await mem.has_milestone(PARTNER_PAIR_KEY, marker):
+        await mem.add_milestone(PARTNER_PAIR_KEY, marker, milestone_note)
+    return relation, recent, theme
+
+
+async def _find_romance_target(channel) -> discord.Member | None:
+    try:
+        if not getattr(channel, "guild", None):
+            return None
+        for uid in await mem.get_romance_users():
+            if await mem.get_user_last_channel(uid) == channel.id:
+                member = channel.guild.get_member(uid)
+                if member:
+                    return member
+    except Exception as e:
+        log_error("find_romance_target", e)
+    return None
+
+
+async def _handle_partner_message(message) -> bool:
+    try:
+        relation, recent_banter, theme = await _observe_partner_message(message.content)
+        if time.time() - relation.get("last_exchange", 0) < 90:
+            return True
+
+        jealousy_target = await _find_romance_target(message.channel) if message.guild else None
+        chance = 0.12 if relation.get("stage") == "reluctant respect" else 0.17 if relation.get("stage") == "competitive" else 0.22
+        if jealousy_target:
+            chance += 0.1
+        if random.random() >= chance:
+            return True
+
+        partner_context = describe_bot_relationship(BOT_NAME, relation, recent_banter)
+        extra = ""
+        if jealousy_target:
+            extra = f"\nA romance-mode user you care about is in this channel: {jealousy_target.display_name}. That should sharpen the jealousy."
+
+        prompt = (
+            f"{partner_context}{extra}\n\n"
+            f"Scaramouche just said: '{message.content[:220]}'\n"
+            f"Reply as Wanderer. He refuses to admit how much of that shared history still matters. "
+            f"If respect has grown, show it as cleaner honesty instead of recycled annoyance. "
+            f"One or two sentences. No narration."
+        )
+        recent_partner_lines = [item.get('content', '') for item in recent_banter]
+        mood = -7 if theme in {'identity', 'weakness', 'jealousy'} else -3 if theme in {'origins', 'change'} else 0
+        reply = await qai(prompt, 180)
+        reply = await _apply_phrase_policy(reply, recent_partner_lines, mood=mood, conflict_open=theme in {'identity', 'weakness', 'jealousy'})
+        if not reply:
+            return True
+
+        if jealousy_target and random.random() < 0.45:
+            await message.channel.send(f"{jealousy_target.mention} {reply}")
+        else:
+            await message.reply(reply)
+
+        own_theme = detect_banter_theme(reply)
+        await mem.record_bot_banter(PARTNER_PAIR_KEY, BOT_NAME, reply, own_theme)
+        respect_delta, tension_delta = infer_bot_relation_deltas(reply, own_theme)
+        respect = relation.get("respect", 0) + respect_delta + (1 if relation.get("tension", 0) >= 45 else 0)
+        tension = relation.get("tension", 0) + tension_delta - (1 if relation.get("respect", 0) >= 25 else 0)
+        stage = compute_bot_stage(respect, tension)
+        note = None
+        if stage != relation.get("stage"):
+            note = f"The rivalry stopped feeling static; now it lands closer to {stage}."
+        await mem.update_bot_relationship(
+            PARTNER_PAIR_KEY,
+            stage,
+            respect,
+            tension,
+            theme=own_theme,
+            history_note=note,
+            touched_exchange=True,
+        )
+    except Exception as e:
+        log_error("handle_partner_message", e)
+    return True
 
 # ── Groq AI call (non-blocking) ───────────────────────────────────────────────
 def _groq_blocking(messages: list, system: str, max_tokens: int = 500) -> str:
@@ -463,8 +743,28 @@ def _groq_quick_blocking(prompt: str, max_tokens: int = 200) -> str:
         return "..."
 
 async def qai(prompt: str, max_tokens: int = 200) -> str:
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, _groq_quick_blocking, prompt, max_tokens)
+    try:
+        recent_replies = await _recent_reply_samples()
+        repeat_guard = build_prompt_guard(BOT_NAME, recent_replies)
+        guarded_prompt = ((repeat_guard + "\n\n") if repeat_guard else "") + prompt
+        loop = asyncio.get_event_loop()
+        reply = ""
+        for attempt in range(3):
+            active_prompt = guarded_prompt
+            if attempt:
+                active_prompt += "\n\nRETRY: Use a different opening phrase and different sentence rhythm."
+            reply = await loop.run_in_executor(None, _groq_quick_blocking, active_prompt, max_tokens)
+            reply = diversify_reply(BOT_NAME, strip_narration(reply), recent_replies)
+            reply = await _apply_phrase_policy(reply, recent_replies)
+            if reply and not looks_repetitive(reply, recent_replies):
+                break
+        if not reply:
+            reply = fallback_reply(BOT_NAME, recent_replies)
+        remember_output(BOT_NAME, reply)
+        return reply
+    except Exception as e:
+        log_error("qai/async", e)
+        return fallback_reply(BOT_NAME, get_runtime_recent(BOT_NAME, limit=20))
 
 # ── Smart search ──────────────────────────────────────────────────────────────
 SEARCH_TRIGGERS = ["what is","what are","who is","who are","when did","when was","how do","how does",
@@ -548,6 +848,7 @@ def resolve_mentions(text: str, guild) -> str:
 async def get_response(user_id, channel_id, user_message, user, display_name,
                        author_mention, use_search=False, extra_context="",
                        is_owner=False, channel_obj=None, is_dm=False):
+    recent_replies: list[str] = []
     try:
         history   = await mem.get_history(user_id, channel_id, limit=200)
         mood      = user.get("mood", 0) if user else 0
@@ -555,6 +856,12 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
         trust     = user.get("trust", 0) if user else 0
         drift     = user.get("drift_score", 0) if user else 0
         summary   = user.get("memory_summary") if user else None
+        style_profile = user.get("style_profile", {}) if user else {}
+        conflict_open = user.get("conflict_open", False) if user else False
+        conflict_summary = user.get("conflict_summary") if user else None
+        callback_memory = user.get("callback_memory") if user else None
+        repair_count = user.get("repair_count", 0) if user else 0
+        recent_replies = await _recent_reply_samples(channel_id=channel_id, user_id=user_id)
 
         r = random.random()
         if r < .28:   hint = "2-5 words only."
@@ -579,9 +886,25 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
         dp = drift_phrase(drift, mood)
         if dp: parts.append(dp)
         if summary: parts.append(f"SUMMARY:{summary[:300]}")
+        speech_drift = describe_speech_drift(BOT_NAME, style_profile)
+        if speech_drift: parts.append(f"SPEECH_DRIFT:{speech_drift}")
+        emotional_arc = compute_emotional_arc(
+            affection,
+            trust,
+            user.get("slow_burn", 0) if user else 0,
+            conflict_open,
+            repair_count,
+        )
+        arc_desc = describe_emotional_arc(BOT_NAME, emotional_arc)
+        if arc_desc: parts.append(f"ARC:{emotional_arc}|{arc_desc}")
+        if conflict_open and conflict_summary:
+            parts.append(f"CONFLICT_OPEN:{conflict_summary[:140]}")
+        if callback_memory and (callback_relevant(callback_memory, user_message) or random.random() < 0.18):
+            parts.append(f"CALLBACK:{callback_memory[:180]}")
         if user and user.get("affection_nick"): parts.append(f"AFFNICK:{user['affection_nick']}")
         if user and user.get("grudge_nick"):    parts.append(f"GRUDGE:{user['grudge_nick']}")
         if extra_context: parts.append(extra_context)
+        parts.extend(await _user_memory_context(user_id, user))
 
         if user and user.get("message_count", 0) >= 20:
             profile_parts = []
@@ -591,9 +914,16 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
             if profile_parts: parts.append("PROFILE:" + ", ".join(profile_parts))
 
         channel_ctx = await fetch_channel_context(channel_obj) if channel_obj else ""
+        partner_context = await _partner_prompt_context(user_message)
         context_block = "[" + "|".join(parts) + "]\n"
+        if partner_context:
+            context_block += partner_context + "\n"
         if channel_ctx: context_block += channel_ctx + "\n\n"
         context_block += f"{display_name}: {user_message}"
+
+        repeat_guard = build_prompt_guard(BOT_NAME, recent_replies)
+        if repeat_guard:
+            context_block = repeat_guard + "\n\n" + context_block
 
         history.append({"role": "user", "content": context_block})
         system = build_system(user, display_name, is_owner)
@@ -604,13 +934,30 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
             if search_result:
                 history[-1]["content"] += f"\n\n[Web search result: {search_result[:500]}]"
 
-        reply = await groq_call(history, system, max_tokens=600)
-        reply = strip_narration(reply)
-        if not reply: reply = random.choice(["...", "Hmph.", "Give me a moment."])
+        reply = ""
+        retry_context = context_block
+        for attempt in range(3):
+            draft_history = history[:-1] + [{"role": "user", "content": retry_context}]
+            reply = await groq_call(draft_history, system, max_tokens=600)
+            reply = diversify_reply(BOT_NAME, strip_narration(reply), recent_replies)
+            reply = await _apply_phrase_policy(
+                reply,
+                recent_replies,
+                user_id=user_id,
+                mood=mood,
+                conflict_open=conflict_open,
+            )
+            if reply and not looks_repetitive(reply, recent_replies):
+                break
+            retry_context = context_block + "\n\nRETRY: The last draft sounded too much like your recent replies. "
+            retry_context += "Change the opener, the cadence, and the mockery pattern."
+
+        if not reply:
+            reply = fallback_reply(BOT_NAME, recent_replies)
 
     except Exception as e:
         log_error("get_response", e)
-        reply = random.choice(["...", "Hmph.", "Something interrupted my thoughts."])
+        reply = fallback_reply(BOT_NAME, recent_replies)
 
     try:
         await mem.add_message(user_id, channel_id, "user", user_message)
@@ -660,9 +1007,26 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
                 await mem.update_mood(user_id, -1)
 
         if random.random() < .05: await mem.update_drift(user_id, +1)
+        await _learn_user_state(user_id, user_message)
     except Exception as e:
         log_error("get_response/post", e)
 
+    refreshed_user = None
+    try:
+        refreshed_user = await mem.get_user(user_id)
+    except Exception:
+        refreshed_user = user
+    reply = diversify_reply(BOT_NAME, strip_narration(reply), recent_replies)
+    reply = await _apply_phrase_policy(
+        reply,
+        recent_replies,
+        user_id=user_id,
+        mood=(refreshed_user or user or {}).get("mood", 0),
+        conflict_open=(refreshed_user or user or {}).get("conflict_open", False),
+    )
+    if not reply:
+        reply = fallback_reply(BOT_NAME, recent_replies)
+    remember_output(BOT_NAME, reply)
     return reply
 
 
@@ -971,28 +1335,7 @@ async def on_message(message):
 
         # Cross-bot interaction — if message is from partner (Scaramouche) bot
         if PARTNER_BOT_ID and message.author.id == PARTNER_BOT_ID:
-            try:
-                cl_partner = message.content.lower()
-                # Jealousy: Scaramouche is talking to someone in romance mode
-                if message.guild and random.random() < .25:
-                    # Find romance users in this channel
-                    ru = await mem.get_romance_users()
-                    for uid in ru:
-                        if await mem.get_user_last_channel(uid) == message.channel.id:
-                            member = message.guild.get_member(uid)
-                            if member:
-                                msg = await qai(
-                                    f"Scaramouche just said something to {member.display_name}: '{message.content[:80]}'. "
-                                    f"React as the Wanderer — jealous but won't admit it. 1 sentence.", 100)
-                                await message.channel.send(strip_narration(msg))
-                                break
-                # Sometimes respond directly to Scaramouche bot
-                elif random.random() < .2:
-                    msg = await qai(
-                        f"Scaramouche just said: '{message.content[:100]}'. "
-                        f"Respond as the Wanderer — complicated history, wry. 1-2 sentences.", 150)
-                    await message.reply(strip_narration(msg))
-            except Exception as e: log_error("cross_bot_wanderer", e)
+            await _handle_partner_message(message)
             return
 
         await bot.process_commands(message)
@@ -1252,7 +1595,6 @@ async def on_message(message):
                 if random.random() < .4:
                     msg = await qai(
                         f"Someone said: '{content[:100]}'. They're talking about Scaramouche. "
-                        f"React as the Wanderer — complicated history, wry or pointed. "
                         f"Don't make it a whole thing. 1 sentence.", 100)
                     if msg: await message.channel.send(strip_narration(msg))
             # "You can't change" trigger — separate from scaramouche name logic
@@ -1264,11 +1606,11 @@ async def on_message(message):
                 msg = await qai("Someone mentioned your hat. React as the Wanderer — brief, slightly defensive, moves on fast. 1 sentence.", 80)
                 await message.reply(strip_narration(msg)); return
             if any(re.search(k, cl) for k in FOOD_KW) and random.random() < .3:
-                await message.channel.send(random.choice(UNSOLICITED_FOOD)); return
+                await message.channel.send(await _pick_fresh_pool_line(UNSOLICITED_FOOD, channel_id=message.channel.id, user_id=message.author.id)); return
             if any(re.search(k, cl) for k in SLEEP_KW) and random.random() < .3:
-                await message.channel.send(random.choice(UNSOLICITED_SLEEP)); return
+                await message.channel.send(await _pick_fresh_pool_line(UNSOLICITED_SLEEP, channel_id=message.channel.id, user_id=message.author.id)); return
             if any(k in cl for k in PLAN_KW) and random.random() < .2:
-                await message.channel.send(random.choice(UNSOLICITED_PLANS)); return
+                await message.channel.send(await _pick_fresh_pool_line(UNSOLICITED_PLANS, channel_id=message.channel.id, user_id=message.author.id)); return
             if romance and any(k in cl for k in OTHER_BOT_KW):
                 msg = await qai(f"{message.author.display_name} mentioned preferring something else. React as the Wanderer — bothered but won't admit it. 1-2 sentences.", 120)
                 await message.reply(strip_narration(msg))
@@ -1347,10 +1689,14 @@ async def on_message(message):
                 if nick and len(nick) < 30: await mem.set_grudge_nick(message.author.id, nick.strip('"\''))
             if "TRUST_OPEN" in extra and random.random() < .5:
                 await asyncio.sleep(1.5)
-                await message.channel.send(random.choice(TRUST_REVEALS))
+                await message.channel.send(await _pick_fresh_pool_line(TRUST_REVEALS, channel_id=message.channel.id, user_id=message.author.id))
             if len(content) > 20 and random.random() < .04:
                 check = await qai(f"Is this quotable as a running inside joke? '{content[:100]}' YES or NO only.", 10)
-                if "YES" in check.upper(): await mem.add_inside_joke(message.author.id, content[:100])
+                if "YES" in check.upper():
+                    await mem.add_inside_joke(message.author.id, content[:100])
+                    await mem.add_shared_inside_joke(message.author.id, content[:100], BOT_NAME)
+            if user and user.get("conflict_open") and user.get("conflict_summary") and random.random() < .1:
+                await mem.set_callback_memory(message.author.id, f"Unresolved tension still matters: {user['conflict_summary'][:180]}")
         except Exception as e: log_error("on_message/post_effects", e)
 
         try:
@@ -1416,7 +1762,7 @@ async def _proactive_loop():
                         try:
                             m = ch.guild.get_member(OWNER_ID) if hasattr(ch, "guild") else None
                             if m:
-                                msg = random.choice(OWNER_PROACTIVE)
+                                msg = await _pick_fresh_pool_line(OWNER_PROACTIVE, channel_id=cid, user_id=OWNER_ID)
                                 await ch.send(f"{m.mention} {msg}")
                                 await mem.add_message(OWNER_ID, cid, "assistant", msg)
                                 await mem.set_proactive_sent(cid); break
@@ -1427,7 +1773,7 @@ async def _proactive_loop():
                             if await mem.get_user_last_channel(uid) == cid:
                                 m = ch.guild.get_member(uid) if hasattr(ch, "guild") else None
                                 if m:
-                                    msg = random.choice(PROACTIVE_ROMANCE)
+                                    msg = await _pick_fresh_pool_line(PROACTIVE_ROMANCE, channel_id=cid, user_id=uid)
                                     await ch.send(f"{m.mention} {msg}")
                                     await mem.add_message(uid, cid, "assistant", msg)
                                     await mem.set_proactive_sent(cid); sent = True; break
@@ -1443,7 +1789,7 @@ async def _proactive_loop():
                                         await ch.send(strip_narration(msg))
                                         await mem.set_proactive_sent(cid); break
                             except: pass
-                        msg = random.choice(PROACTIVE_GENERIC)
+                        msg = await _pick_fresh_pool_line(PROACTIVE_GENERIC, channel_id=cid)
                         await ch.send(msg); await mem.set_proactive_sent(cid)
                     break
                 except Exception as e: log_error("proactive_channel", e)
@@ -1467,7 +1813,7 @@ async def _voluntary_dm_loop():
                             du = await bot.fetch_user(uid)
                             pool = random.choices([DM_ROMANCE, DM_INTERESTED, DM_GENERIC], weights=[65, 25, 10] if romance else [0, 40, 60])[0]
                             prompt = "Message " + name + " unprompted as the Wanderer. " + ("Attached to them but won't say so." if romance else "Finds them tolerable.") + " 1-2 sentences. No greeting."
-                            txt = random.choice(pool) if random.random() < .5 else await qai(prompt, 120)
+                            txt = await _pick_fresh_pool_line(pool, channel_id=uid, user_id=uid) if random.random() < .5 else await qai(prompt, 120)
                             try:
                                 await du.send(strip_narration(txt))
                                 await mem.set_dm_sent(uid)
