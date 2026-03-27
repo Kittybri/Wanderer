@@ -17,6 +17,8 @@ load_dotenv()
 
 DISCORD_TOKEN      = os.getenv("DISCORD_TOKEN", "")
 GROQ_API_KEY       = os.getenv("GROQ_API_KEY", "")
+GROQ_API_KEY_2     = os.getenv("GROQ_API_KEY_2", "")
+GROQ_API_KEY_3     = os.getenv("GROQ_API_KEY_3", "")
 FISH_AUDIO_API_KEY = os.getenv("FISH_AUDIO_API_KEY", "")
 WEATHER_API_KEY    = os.getenv("WEATHER_API_KEY", "")
 OWNER_ID           = int(os.getenv("OWNER_ID", "0") or "0")
@@ -24,7 +26,44 @@ PARTNER_BOT_ID     = int(os.getenv("PARTNER_BOT_ID", "0") or "0")  # Scaramouche
 
 # ── Groq client (free, OpenAI-compatible) ─────────────────────────────────────
 from groq import Groq
-groq_client = Groq(api_key=GROQ_API_KEY)
+_groq_keys = [k for k in [GROQ_API_KEY, GROQ_API_KEY_2, GROQ_API_KEY_3] if k]
+
+class RotatingGroq:
+    """Groq client that rotates API keys on rate limit errors."""
+    def __init__(self):
+        self._clients = [Groq(api_key=k) for k in _groq_keys]
+        self._idx = 0
+        print(f"[GROQ] Loaded {len(self._clients)} API key(s)")
+
+    @property
+    def _client(self):
+        return self._clients[self._idx % len(self._clients)]
+
+    def _rotate(self):
+        old = self._idx
+        self._idx = (self._idx + 1) % len(self._clients)
+        print(f"[GROQ] Key {old+1} rate-limited, rotating to key {self._idx+1}")
+
+    @property
+    def chat(self):
+        return self._client.chat
+
+    def call_with_retry(self, **kwargs):
+        """Try current key, rotate on rate limit, try remaining keys."""
+        last_err = None
+        for _ in range(len(self._clients)):
+            try:
+                return self._client.chat.completions.create(**kwargs)
+            except Exception as e:
+                err_str = str(e)
+                if "rate_limit" in err_str.lower() or "429" in err_str:
+                    last_err = e
+                    self._rotate()
+                else:
+                    raise
+        raise last_err  # All keys exhausted
+
+groq_client = RotatingGroq()
 GROQ_MODEL = "llama-3.3-70b-versatile"
 
 import random as _rmod, memory as _mmod
@@ -371,7 +410,7 @@ def log_error(location: str, e: Exception):
 def _groq_blocking(messages: list, system: str, max_tokens: int = 500) -> str:
     try:
         msgs = [{"role": "system", "content": system}] + messages
-        resp = groq_client.chat.completions.create(
+        resp = groq_client.call_with_retry(
             model=GROQ_MODEL,
             messages=msgs,
             max_tokens=max_tokens,
@@ -391,7 +430,7 @@ async def groq_call(messages: list, system: str, max_tokens: int = 500) -> str:
 
 def _groq_quick_blocking(prompt: str, max_tokens: int = 200) -> str:
     try:
-        resp = groq_client.chat.completions.create(
+        resp = groq_client.call_with_retry(
             model=GROQ_MODEL,
             messages=[
                 {"role": "system", "content": _BASE},
@@ -1084,7 +1123,7 @@ async def on_message(message):
                             )
                         })
                         def _vision_call():
-                            r = groq_client.chat.completions.create(
+                            r = groq_client.call_with_retry(
                                 model="llama-3.2-90b-vision-preview", max_tokens=400,
                                 messages=[{"role": "system", "content": system},
                                           {"role": "user", "content": vision_content}]
@@ -1129,7 +1168,7 @@ async def on_message(message):
                         )}
                     ]
                     def _img_vision():
-                        r = groq_client.chat.completions.create(
+                        r = groq_client.call_with_retry(
                             model="llama-3.2-90b-vision-preview", max_tokens=300,
                             messages=[{"role": "system", "content": system},
                                       {"role": "user", "content": vision_content}]
@@ -1629,10 +1668,7 @@ async def _do_tedtalk(ctx, attachment, topic, msg_id=None):
                 try:
                     pdf_b64 = base64.b64encode(file_bytes).decode()
                     def _ext():
-                        from groq import Groq as _G
-                        c = _G(api_key=GROQ_API_KEY)
-                        # Groq doesn't support PDFs directly — extract text via text prompt
-                        return "PDF uploaded. Extract all key educational content, concepts, definitions, and important points."
+                        return "PDF content extraction"
                     material_content = await asyncio.get_event_loop().run_in_executor(None, _ext)
                     # Actually just decode if possible
                     try:
@@ -2308,5 +2344,5 @@ async def on_command_error(ctx, error):
 
 if __name__ == "__main__":
     if not DISCORD_TOKEN: raise SystemExit("❌ DISCORD_TOKEN not set")
-    if not GROQ_API_KEY:  raise SystemExit("❌ GROQ_API_KEY not set")
+    if not _groq_keys:  raise SystemExit("❌ No GROQ_API_KEY set (need at least GROQ_API_KEY)")
     bot.run(DISCORD_TOKEN)
