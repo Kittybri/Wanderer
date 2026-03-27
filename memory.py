@@ -50,7 +50,14 @@ class Memory:
                     drift_score      INTEGER DEFAULT 0,
                     memory_summary   TEXT    DEFAULT NULL,
                     summary_msg_count INTEGER DEFAULT 0,
-                    last_statement   TEXT    DEFAULT NULL
+                    last_statement   TEXT    DEFAULT NULL,
+                    style_profile    TEXT    DEFAULT NULL,
+                    emotional_arc    TEXT    DEFAULT 'guarded',
+                    conflict_open    INTEGER DEFAULT 0,
+                    conflict_summary TEXT    DEFAULT NULL,
+                    callback_memory  TEXT    DEFAULT NULL,
+                    callback_ts      REAL    DEFAULT 0,
+                    repair_count     INTEGER DEFAULT 0
                 );
                 CREATE TABLE IF NOT EXISTS messages (
                     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -111,6 +118,50 @@ class Memory:
                     active      INTEGER DEFAULT 1,
                     ts          REAL
                 );
+                CREATE TABLE IF NOT EXISTS phrase_cooldowns (
+                    scope       TEXT,
+                    phrase_key  TEXT,
+                    last_used   REAL DEFAULT 0,
+                    PRIMARY KEY (scope, phrase_key)
+                );
+                CREATE TABLE IF NOT EXISTS bot_relationships (
+                    pair_key       TEXT PRIMARY KEY,
+                    stage          TEXT DEFAULT 'enemy',
+                    respect        INTEGER DEFAULT 5,
+                    tension        INTEGER DEFAULT 70,
+                    shared_history TEXT DEFAULT NULL,
+                    last_exchange  REAL DEFAULT 0,
+                    last_theme     TEXT DEFAULT NULL
+                );
+                CREATE TABLE IF NOT EXISTS bot_banter_log (
+                    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                    pair_key  TEXT,
+                    speaker   TEXT,
+                    content   TEXT,
+                    theme     TEXT DEFAULT NULL,
+                    ts        REAL
+                );
+                CREATE TABLE IF NOT EXISTS user_topics (
+                    user_id    INTEGER,
+                    topic      TEXT,
+                    count      INTEGER DEFAULT 0,
+                    last_seen  REAL DEFAULT 0,
+                    PRIMARY KEY (user_id, topic)
+                );
+                CREATE TABLE IF NOT EXISTS shared_inside_jokes (
+                    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id   INTEGER,
+                    joke      TEXT,
+                    source    TEXT DEFAULT 'shared',
+                    ts        REAL
+                );
+                CREATE TABLE IF NOT EXISTS relationship_milestones (
+                    scope      TEXT,
+                    marker     TEXT,
+                    note       TEXT,
+                    ts         REAL DEFAULT 0,
+                    PRIMARY KEY (scope, marker)
+                );
             """)
             migrations = [
                 ("allow_dms",          "INTEGER DEFAULT 1"),
@@ -133,6 +184,13 @@ class Memory:
                 ("memory_summary",     "TEXT DEFAULT NULL"),
                 ("summary_msg_count",  "INTEGER DEFAULT 0"),
                 ("last_statement",     "TEXT DEFAULT NULL"),
+                ("style_profile",      "TEXT DEFAULT NULL"),
+                ("emotional_arc",      "TEXT DEFAULT 'guarded'"),
+                ("conflict_open",      "INTEGER DEFAULT 0"),
+                ("conflict_summary",   "TEXT DEFAULT NULL"),
+                ("callback_memory",    "TEXT DEFAULT NULL"),
+                ("callback_ts",        "REAL DEFAULT 0"),
+                ("repair_count",       "INTEGER DEFAULT 0"),
             ]
             for col, default in migrations:
                 try:
@@ -163,7 +221,9 @@ class Memory:
                 SELECT user_id,username,display_name,romance_mode,nsfw_mode,proactive,allow_dms,
                        mood,affection,trust,rival_id,grudge_nick,affection_nick,message_count,
                        milestone_last,first_seen,last_seen,last_active,greeted_today,anniversary_last,
-                       slow_burn,slow_burn_fired,drift_score,memory_summary,last_statement
+                       slow_burn,slow_burn_fired,drift_score,memory_summary,last_statement,
+                       style_profile,emotional_arc,conflict_open,conflict_summary,
+                       callback_memory,callback_ts,repair_count
                 FROM users WHERE user_id=?
             """, (user_id,)) as cur:
                 row = await cur.fetchone()
@@ -181,7 +241,82 @@ class Memory:
                     "slow_burn": row[20] or 0, "slow_burn_fired": bool(row[21]),
                     "drift_score": row[22] or 0, "memory_summary": row[23],
                     "last_statement": row[24],
+                    "style_profile": json.loads(row[25]) if row[25] else {},
+                    "emotional_arc": row[26] or "guarded",
+                    "conflict_open": bool(row[27]),
+                    "conflict_summary": row[28],
+                    "callback_memory": row[29],
+                    "callback_ts": row[30] or 0,
+                    "repair_count": row[31] or 0,
                 }
+
+    async def record_topic(self, user_id: int, topic: str):
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "INSERT INTO user_topics (user_id,topic,count,last_seen) VALUES (?,?,1,?) "
+                "ON CONFLICT(user_id,topic) DO UPDATE SET count=count+1,last_seen=excluded.last_seen",
+                (user_id, topic[:40], time.time()),
+            )
+            await db.commit()
+
+    async def get_top_topics(self, user_id: int, limit: int = 3) -> list[dict]:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                "SELECT topic,count,last_seen FROM user_topics WHERE user_id=? ORDER BY count DESC,last_seen DESC LIMIT ?",
+                (user_id, limit),
+            ) as cur:
+                rows = await cur.fetchall()
+        return [{"topic": row[0], "count": row[1] or 0, "last_seen": row[2] or 0} for row in rows]
+
+    async def add_shared_inside_joke(self, user_id: int, joke: str, source: str = "shared"):
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("SELECT COUNT(*) FROM shared_inside_jokes WHERE user_id=?", (user_id,)) as cur:
+                count = (await cur.fetchone())[0]
+            if count >= 12:
+                await db.execute(
+                    "DELETE FROM shared_inside_jokes WHERE id=(SELECT id FROM shared_inside_jokes WHERE user_id=? ORDER BY ts ASC LIMIT 1)",
+                    (user_id,),
+                )
+            await db.execute(
+                "INSERT INTO shared_inside_jokes (user_id,joke,source,ts) VALUES (?,?,?,?)",
+                (user_id, joke[:220], source[:40], time.time()),
+            )
+            await db.commit()
+
+    async def get_random_shared_inside_joke(self, user_id: int) -> str | None:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                "SELECT joke FROM shared_inside_jokes WHERE user_id=? ORDER BY RANDOM() LIMIT 1",
+                (user_id,),
+            ) as cur:
+                row = await cur.fetchone()
+        return row[0] if row else None
+
+    async def has_milestone(self, scope: str, marker: str) -> bool:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                "SELECT 1 FROM relationship_milestones WHERE scope=? AND marker=?",
+                (scope, marker),
+            ) as cur:
+                return bool(await cur.fetchone())
+
+    async def add_milestone(self, scope: str, marker: str, note: str):
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "INSERT INTO relationship_milestones (scope,marker,note,ts) VALUES (?,?,?,?) "
+                "ON CONFLICT(scope,marker) DO UPDATE SET note=excluded.note,ts=excluded.ts",
+                (scope[:80], marker[:80], note[:220], time.time()),
+            )
+            await db.commit()
+
+    async def get_recent_milestones(self, scope: str, limit: int = 3) -> list[str]:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                "SELECT note FROM relationship_milestones WHERE scope=? ORDER BY ts DESC LIMIT ?",
+                (scope, limit),
+            ) as cur:
+                rows = await cur.fetchall()
+        return [row[0] for row in rows if row and row[0]]
 
     async def set_mode(self, user_id: int, field: str, value: bool):
         allowed = {"nsfw_mode","romance_mode","proactive","allow_dms"}
@@ -285,6 +420,150 @@ class Memory:
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute("UPDATE users SET drift_score=MAX(0,MIN(100,drift_score+?)) WHERE user_id=?", (delta, user_id))
             await db.commit()
+
+    async def set_style_profile(self, user_id: int, profile: dict):
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "UPDATE users SET style_profile=? WHERE user_id=?",
+                (json.dumps(profile, ensure_ascii=True)[:1200], user_id),
+            )
+            await db.commit()
+
+    async def set_emotional_arc(self, user_id: int, arc: str):
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("UPDATE users SET emotional_arc=? WHERE user_id=?", (arc[:40], user_id))
+            await db.commit()
+
+    async def open_conflict(self, user_id: int, summary: str):
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "UPDATE users SET conflict_open=1, conflict_summary=? WHERE user_id=?",
+                (summary[:300], user_id),
+            )
+            await db.commit()
+
+    async def resolve_conflict(self, user_id: int):
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "UPDATE users SET conflict_open=0, conflict_summary=NULL, repair_count=repair_count+1 WHERE user_id=?",
+                (user_id,),
+            )
+            await db.commit()
+
+    async def set_callback_memory(self, user_id: int, callback_memory: str):
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "UPDATE users SET callback_memory=?, callback_ts=? WHERE user_id=?",
+                (callback_memory[:300], time.time(), user_id),
+            )
+            await db.commit()
+
+    async def consume_phrase(self, scope: str, phrase_key: str, cooldown_seconds: int) -> bool:
+        now = time.time()
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                "SELECT last_used FROM phrase_cooldowns WHERE scope=? AND phrase_key=?",
+                (scope, phrase_key),
+            ) as cur:
+                row = await cur.fetchone()
+            if row and (now - (row[0] or 0)) < cooldown_seconds:
+                return False
+            await db.execute(
+                "INSERT INTO phrase_cooldowns (scope, phrase_key, last_used) VALUES (?,?,?) "
+                "ON CONFLICT(scope, phrase_key) DO UPDATE SET last_used=excluded.last_used",
+                (scope, phrase_key, now),
+            )
+            await db.commit()
+        return True
+
+    async def get_bot_relationship(self, pair_key: str) -> dict:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "INSERT INTO bot_relationships (pair_key) VALUES (?) ON CONFLICT(pair_key) DO NOTHING",
+                (pair_key,),
+            )
+            await db.commit()
+            async with db.execute(
+                "SELECT stage,respect,tension,shared_history,last_exchange,last_theme FROM bot_relationships WHERE pair_key=?",
+                (pair_key,),
+            ) as cur:
+                row = await cur.fetchone()
+        if not row:
+            return {
+                "pair_key": pair_key,
+                "stage": "enemy",
+                "respect": 5,
+                "tension": 70,
+                "shared_history": "",
+                "last_exchange": 0,
+                "last_theme": "",
+            }
+        return {
+            "pair_key": pair_key,
+            "stage": row[0] or "enemy",
+            "respect": row[1] or 0,
+            "tension": row[2] or 0,
+            "shared_history": row[3] or "",
+            "last_exchange": row[4] or 0,
+            "last_theme": row[5] or "",
+        }
+
+    async def update_bot_relationship(
+        self,
+        pair_key: str,
+        stage: str,
+        respect: int,
+        tension: int,
+        theme: str | None = None,
+        history_note: str | None = None,
+        touched_exchange: bool = False,
+    ):
+        relation = await self.get_bot_relationship(pair_key)
+        history = relation.get("shared_history", "")
+        notes = [note for note in history.split(" || ") if note]
+        if history_note:
+            cleaned = history_note[:180]
+            if not notes or notes[-1] != cleaned:
+                notes.append(cleaned)
+                notes = notes[-6:]
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "UPDATE bot_relationships SET stage=?, respect=?, tension=?, shared_history=?, last_exchange=?, last_theme=? WHERE pair_key=?",
+                (
+                    stage[:40],
+                    max(0, min(100, respect)),
+                    max(0, min(100, tension)),
+                    " || ".join(notes),
+                    time.time() if touched_exchange else relation.get("last_exchange", 0),
+                    (theme or relation.get("last_theme") or "")[:60],
+                    pair_key,
+                ),
+            )
+            await db.commit()
+
+    async def record_bot_banter(self, pair_key: str, speaker: str, content: str, theme: str | None = None):
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "INSERT INTO bot_banter_log (pair_key,speaker,content,theme,ts) VALUES (?,?,?,?,?)",
+                (pair_key, speaker[:40], content[:500], (theme or "")[:60], time.time()),
+            )
+            await db.execute(
+                "DELETE FROM bot_banter_log WHERE pair_key=? AND id NOT IN (SELECT id FROM bot_banter_log WHERE pair_key=? ORDER BY ts DESC LIMIT 40)",
+                (pair_key, pair_key),
+            )
+            await db.commit()
+
+    async def get_recent_bot_banter(self, pair_key: str, limit: int = 8) -> list[dict]:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                "SELECT speaker,content,theme,ts FROM bot_banter_log WHERE pair_key=? ORDER BY ts DESC LIMIT ?",
+                (pair_key, limit),
+            ) as cur:
+                rows = await cur.fetchall()
+        return [
+            {"speaker": row[0], "content": row[1], "theme": row[2] or "", "ts": row[3] or 0}
+            for row in rows
+        ]
 
     # ── Memory summary ────────────────────────────────────────────────────────
     async def needs_summary(self, user_id: int) -> bool:
@@ -446,10 +725,34 @@ class Memory:
             await db.execute("INSERT INTO messages (user_id,channel_id,role,content,ts) VALUES (?,?,?,?,?)", (user_id,channel_id,role,content,time.time()))
             await db.commit()
 
+    async def get_recent_assistant_messages(
+        self,
+        limit: int = 25,
+        channel_id: int | None = None,
+        user_id: int | None = None,
+    ) -> list[str]:
+        query = "SELECT content FROM messages WHERE role='assistant'"
+        params: list[int] = []
+        if channel_id is not None:
+            query += " AND channel_id=?"
+            params.append(channel_id)
+        if user_id is not None:
+            query += " AND user_id=?"
+            params.append(user_id)
+        query += " ORDER BY ts DESC LIMIT ?"
+        params.append(limit)
+
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(query, params) as cur:
+                rows = await cur.fetchall()
+        return [row[0] for row in rows if row and row[0]]
+
     async def reset_user(self, user_id: int):
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute("DELETE FROM messages WHERE user_id=?", (user_id,))
             await db.execute("DELETE FROM inside_jokes WHERE user_id=?", (user_id,))
+            await db.execute("DELETE FROM shared_inside_jokes WHERE user_id=?", (user_id,))
+            await db.execute("DELETE FROM user_topics WHERE user_id=?", (user_id,))
             await db.execute("""UPDATE users SET mood=0,affection=0,trust=0,rival_id=NULL,grudge_nick=NULL,
                 affection_nick=NULL,message_count=0,milestone_last=0,slow_burn=0,slow_burn_fired=0,
                 drift_score=0,memory_summary=NULL,last_statement=NULL WHERE user_id=?""", (user_id,))
