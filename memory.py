@@ -476,6 +476,25 @@ class Memory:
             await db.commit()
         return True
 
+    async def consume_phrase_with_status(self, scope: str, phrase_key: str, cooldown_seconds: int) -> tuple[bool, int]:
+        now = time.time()
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                "SELECT last_used FROM phrase_cooldowns WHERE scope=? AND phrase_key=?",
+                (scope, phrase_key),
+            ) as cur:
+                row = await cur.fetchone()
+            if row and (now - (row[0] or 0)) < cooldown_seconds:
+                remaining = max(0, int(cooldown_seconds - (now - (row[0] or 0))))
+                return False, remaining
+            await db.execute(
+                "INSERT INTO phrase_cooldowns (scope, phrase_key, last_used) VALUES (?,?,?) "
+                "ON CONFLICT(scope, phrase_key) DO UPDATE SET last_used=excluded.last_used",
+                (scope, phrase_key, now),
+            )
+            await db.commit()
+        return True, 0
+
     async def get_bot_relationship(self, pair_key: str) -> dict:
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute(
