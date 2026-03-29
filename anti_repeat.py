@@ -14,7 +14,7 @@ _OPENING_VARIANTS: dict[str, list[tuple[str, re.Pattern[str], list[str]]]] = {
     "scaramouche": [
         (
             "how quaint",
-            re.compile(r"^\s*how quaint\b[,.! ]*", re.IGNORECASE),
+            re.compile(r"^\s*how(?:\W+\w+){0,2}\W+quaint\b[,.! ]*", re.IGNORECASE),
             [
                 "Predictable.",
                 "What a tiny performance.",
@@ -50,7 +50,7 @@ _OPENING_VARIANTS: dict[str, list[tuple[str, re.Pattern[str], list[str]]]] = {
         ),
         (
             "how unfortunate",
-            re.compile(r"^\s*how unfortunate\b[,.! ]*", re.IGNORECASE),
+            re.compile(r"^\s*how(?:\W+\w+){0,2}\W+unfortunate\b[,.! ]*", re.IGNORECASE),
             [
                 "That tracks.",
                 "How drearily predictable.",
@@ -61,7 +61,7 @@ _OPENING_VARIANTS: dict[str, list[tuple[str, re.Pattern[str], list[str]]]] = {
         ),
         (
             "how irritating",
-            re.compile(r"^\s*how irritating\b[,.! ]*", re.IGNORECASE),
+            re.compile(r"^\s*how(?:\W+\w+){0,2}\W+irritating\b[,.! ]*", re.IGNORECASE),
             [
                 "You are wearing thin.",
                 "This is already tedious.",
@@ -74,7 +74,7 @@ _OPENING_VARIANTS: dict[str, list[tuple[str, re.Pattern[str], list[str]]]] = {
     "wanderer": [
         (
             "how irritating",
-            re.compile(r"^\s*how irritating\b[,.! ]*", re.IGNORECASE),
+            re.compile(r"^\s*how(?:\W+\w+){0,2}\W+irritating\b[,.! ]*", re.IGNORECASE),
             [
                 "You are making this tedious.",
                 "That is getting old already.",
@@ -86,7 +86,7 @@ _OPENING_VARIANTS: dict[str, list[tuple[str, re.Pattern[str], list[str]]]] = {
         ),
         (
             "how childish",
-            re.compile(r"^\s*how childish\b[,.! ]*", re.IGNORECASE),
+            re.compile(r"^\s*how(?:\W+\w+){0,2}\W+childish\b[,.! ]*", re.IGNORECASE),
             [
                 "That was embarrassingly juvenile.",
                 "You really went with that.",
