@@ -17,7 +17,7 @@ TOPIC_HINTS = {
 RARE_PHRASES = {
     "scaramouche": {
         "how quaint": {
-            "cooldown": 21600,
+            "cooldown": 43200,
             "replacements": [
                 "Predictable.",
                 "That was a tiny little performance.",
@@ -26,7 +26,7 @@ RARE_PHRASES = {
             ],
         },
         "how unfortunate": {
-            "cooldown": 21600,
+            "cooldown": 43200,
             "replacements": [
                 "That tracks.",
                 "How drearily predictable.",
@@ -35,7 +35,7 @@ RARE_PHRASES = {
             ],
         },
         "tch": {
-            "cooldown": 5400,
+            "cooldown": 10800,
             "replacements": [
                 "Pathetic.",
                 "What now.",
@@ -43,10 +43,19 @@ RARE_PHRASES = {
                 "Go on, then.",
             ],
         },
+        "how irritating": {
+            "cooldown": 43200,
+            "replacements": [
+                "You are wearing thin.",
+                "This is already tedious.",
+                "Do try not to bore me this quickly.",
+                "I had hoped for slightly better than this.",
+            ],
+        },
     },
     "wanderer": {
         "tch": {
-            "cooldown": 21600,
+            "cooldown": 43200,
             "mood_threshold": -6,
             "replacements": [
                 "Honestly.",
@@ -56,7 +65,7 @@ RARE_PHRASES = {
             ],
         },
         "how irritating": {
-            "cooldown": 28800,
+            "cooldown": 43200,
             "replacements": [
                 "You are making this tedious.",
                 "That is getting old already.",
@@ -65,7 +74,7 @@ RARE_PHRASES = {
             ],
         },
         "how childish": {
-            "cooldown": 28800,
+            "cooldown": 43200,
             "replacements": [
                 "That was embarrassingly juvenile.",
                 "You really went with that.",
