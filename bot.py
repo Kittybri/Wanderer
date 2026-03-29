@@ -12,6 +12,7 @@ from datetime import datetime
 from dotenv import load_dotenv
 from memory import Memory
 from voice_handler import get_audio, get_audio_mooded
+from character_vision import ask_character_bot
 from anti_repeat import (
     build_prompt_guard,
     detect_opening_phrase,
@@ -136,6 +137,34 @@ def tts_safe(text: str, guild=None) -> str:
         return strip_narration(text)
     except Exception:
         return strip_narration(text)
+
+
+def debug_event(tag: str, detail: str):
+    print(f"[DEBUG:{tag}] {detail}")
+
+
+async def _vision_image_reply(
+    *,
+    prompt: str,
+    system: str,
+    image_bytes: bytes,
+    mime_type: str,
+    max_chars: int = 900,
+) -> str:
+    loop = asyncio.get_event_loop()
+
+    def _run():
+        return ask_character_bot(
+            BOT_NAME,
+            prompt,
+            image_bytes=image_bytes,
+            mime_type=mime_type,
+            system_prompt=system,
+            temperature=0.35,
+        )
+
+    reply = await loop.run_in_executor(None, _run)
+    return strip_narration((reply or "").strip())[:max_chars]
 
 # ── Video frame extraction ────────────────────────────────────────────────────
 VIDEO_TYPES = {"video/mp4", "video/webm", "video/quicktime", "video/x-msvideo", "video/mpeg"}
@@ -533,7 +562,9 @@ async def _apply_phrase_policy(
         allowed = annoyed_enough
         cooldown = int(rule.get("cooldown", 0))
         if allowed and cooldown > 0:
-            allowed = await mem.consume_phrase(scope, f"{BOT_NAME}:tch", cooldown)
+            allowed, remaining = await mem.consume_phrase_with_status(scope, f"{BOT_NAME}:tch", cooldown)
+            if not allowed:
+                debug_event("phrase", f"{BOT_NAME} blocked 'tch' scope={scope} remaining={remaining}s annoyed={annoyed_enough}")
 
         if not allowed:
             if tch_match.start() == 0:
@@ -543,6 +574,7 @@ async def _apply_phrase_policy(
                 updated = _TCH_PATTERN.sub(f"{replacement} ", updated, count=1).strip()
                 updated = re.sub(r"\s{2,}", " ", updated)
         else:
+            debug_event("phrase", f"{BOT_NAME} allowed 'tch' scope={scope}")
             return updated
 
     opening = detect_opening_phrase(BOT_NAME, updated)
@@ -553,13 +585,21 @@ async def _apply_phrase_policy(
     if not rule:
         return updated
 
-    scope = f"{BOT_NAME}:user:{user_id}" if user_id is not None else f"{BOT_NAME}:global"
+    scopes = [f"{BOT_NAME}:global"]
+    if user_id is not None:
+        scopes.insert(0, f"{BOT_NAME}:user:{user_id}")
     cooldown = int(rule.get("cooldown", 0))
     allowed = True
     if cooldown > 0:
-        allowed = await mem.consume_phrase(scope, f"{BOT_NAME}:{opening}", cooldown)
+        for scope in scopes:
+            allowed, remaining = await mem.consume_phrase_with_status(scope, f"{BOT_NAME}:{opening}", cooldown)
+            if not allowed:
+                debug_event("phrase", f"{BOT_NAME} blocked '{opening}' scope={scope} remaining={remaining}s")
+                break
     if allowed:
+        debug_event("phrase", f"{BOT_NAME} allowed '{opening}' scopes={','.join(scopes)}")
         return updated
+    debug_event("phrase", f"{BOT_NAME} diversified opener '{opening}'")
     return replace_opening_phrase(BOT_NAME, updated, recent_messages)
 
 
@@ -570,20 +610,25 @@ async def _learn_user_state(user_id: int, user_message: str):
             return
         profile = apply_style_deltas(current.get("style_profile"), analyze_style_deltas(user_message))
         await mem.set_style_profile(user_id, profile)
+        debug_event("memory", f"{BOT_NAME} style_profile user={user_id} traits={','.join(sorted([k for k, v in profile.items() if v >= 8])[:3]) or 'none'}")
 
         callback_memory = extract_callback_candidate(user_message)
         if callback_memory:
             await mem.set_callback_memory(user_id, callback_memory)
+            debug_event("memory", f"{BOT_NAME} callback user={user_id} text={callback_memory[:80]}")
         for topic in detect_topics(user_message):
             await mem.record_topic(user_id, topic)
+            debug_event("memory", f"{BOT_NAME} topic user={user_id} topic={topic}")
 
         if detect_repair_signal(user_message) and current.get("conflict_open"):
             await mem.resolve_conflict(user_id)
             await mem.update_trust(user_id, +2)
             await mem.update_affection(user_id, +1)
             await mem.set_callback_memory(user_id, f"They tried to repair things: {user_message[:180]}")
+            debug_event("memory", f"{BOT_NAME} conflict_resolved user={user_id}")
         elif detect_conflict_signal(user_message) and (current.get("romance_mode") or current.get("affection", 0) >= 30):
             await mem.open_conflict(user_id, user_message[:180])
+            debug_event("memory", f"{BOT_NAME} conflict_opened user={user_id} text={user_message[:80]}")
 
         refreshed = await mem.get_user(user_id)
         if not refreshed:
@@ -596,6 +641,7 @@ async def _learn_user_state(user_id: int, user_message: str):
             refreshed.get("repair_count", 0),
         )
         await mem.set_emotional_arc(user_id, arc)
+        debug_event("memory", f"{BOT_NAME} arc user={user_id} arc={arc}")
     except Exception as e:
         log_error("learn_user_state", e)
 
@@ -626,6 +672,8 @@ async def _observe_partner_message(content: str) -> tuple[dict, list[dict], str]
     marker = f"pair:{stage}"
     if milestone_note and not await mem.has_milestone(PARTNER_PAIR_KEY, marker):
         await mem.add_milestone(PARTNER_PAIR_KEY, marker, milestone_note)
+        debug_event("relationship", f"{BOT_NAME} milestone marker={marker} note={milestone_note[:90]}")
+    debug_event("relationship", f"{BOT_NAME} partner stage={relation.get('stage')} respect={relation.get('respect')} tension={relation.get('tension')} theme={theme}")
     return relation, recent, theme
 
 
@@ -1507,35 +1555,27 @@ async def on_message(message):
             # ── Image handling (with Groq vision) ──
             if img:
                 try:
-                    import base64, aiohttp as _ah
+                    import aiohttp as _ah
                     async with _ah.ClientSession() as s:
                         async with s.get(img.url) as r:
                             img_bytes = await r.read()
-                    img_b64 = base64.b64encode(img_bytes).decode()
                     media_type = img.content_type or "image/jpeg"
                     user = user or {}
                     mood = user.get("mood", 0) if user else 0
                     system = build_system(user, message.author.display_name,
                                          bool(OWNER_ID and message.author.id == OWNER_ID))
-                    vision_content = [
-                        {"type": "image_url", "image_url": {"url": f"data:{media_type};base64,{img_b64}"}},
-                        {"type": "text", "text": (
+                    reply = await _vision_image_reply(
+                        prompt=(
                             f"{message.author.display_name} sent you this image"
                             + (f" with the message: '{content}'" if content else "")
                             + f". React as the Wanderer. Describe what you see and react in character. "
                             f"MOOD:{mood}. NO asterisk actions. 1-3 sentences."
-                        )}
-                    ]
-                    def _img_vision():
-                        r = groq_client.call_with_retry(
-                            model="llama-3.2-90b-vision-preview", max_tokens=300,
-                            messages=[{"role": "system", "content": system},
-                                      {"role": "user", "content": vision_content}]
-                        )
-                        return r.choices[0].message.content.strip() if r.choices else ""
-                    reply = await asyncio.get_event_loop().run_in_executor(None, _img_vision)
+                        ),
+                        system=system,
+                        image_bytes=img_bytes,
+                        mime_type=media_type,
+                    )
                     if reply:
-                        reply = strip_narration(reply)
                         await mem.add_message(message.author.id, dm_channel_id,
                                               "user", f"[image]{' — '+content if content else ''}")
                         await mem.add_message(message.author.id, dm_channel_id,
@@ -1695,8 +1735,10 @@ async def on_message(message):
                 if "YES" in check.upper():
                     await mem.add_inside_joke(message.author.id, content[:100])
                     await mem.add_shared_inside_joke(message.author.id, content[:100], BOT_NAME)
+                    debug_event("memory", f"{BOT_NAME} shared_joke user={message.author.id} text={content[:80]}")
             if user and user.get("conflict_open") and user.get("conflict_summary") and random.random() < .1:
                 await mem.set_callback_memory(message.author.id, f"Unresolved tension still matters: {user['conflict_summary'][:180]}")
+                debug_event("memory", f"{BOT_NAME} conflict_followup user={message.author.id}")
         except Exception as e: log_error("on_message/post_effects", e)
 
         try:
@@ -1758,6 +1800,9 @@ async def _proactive_loop():
                 try:
                     ch = bot.get_channel(cid)
                     if not ch or not await mem.can_proactive(cid, 3600): continue
+                    perms = ch.permissions_for(ch.guild.me) if getattr(ch, "guild", None) and ch.guild.me else None
+                    if perms and (not perms.view_channel or not perms.send_messages):
+                        continue
                     if OWNER_ID and random.random() < .3:
                         try:
                             m = ch.guild.get_member(OWNER_ID) if hasattr(ch, "guild") else None
@@ -1792,6 +1837,8 @@ async def _proactive_loop():
                         msg = await _pick_fresh_pool_line(PROACTIVE_GENERIC, channel_id=cid)
                         await ch.send(msg); await mem.set_proactive_sent(cid)
                     break
+                except discord.Forbidden:
+                    continue
                 except Exception as e: log_error("proactive_channel", e)
         except Exception as e: log_error("proactive_loop", e)
         await asyncio.sleep(random.randint(5400, 14400))
@@ -1819,6 +1866,9 @@ async def _voluntary_dm_loop():
                                 await mem.set_dm_sent(uid)
                                 await mem.add_message(uid, uid, "assistant", txt); break
                             except: continue
+                        except discord.Forbidden:
+                            await mem.set_mode(uid, "allow_dms", False)
+                            debug_event("dm", f"{BOT_NAME} disabling DMs for user={uid} after Forbidden")
                         except Exception as e: log_error("dm_send", e)
         except Exception as e: log_error("voluntary_dm_loop", e)
         await asyncio.sleep(random.randint(2700, 21600))
@@ -2048,8 +2098,20 @@ async def _do_tedtalk(ctx, attachment, topic, msg_id=None):
                 except Exception as e: await ctx.send(f"PDF error: {e}"); return
 
             elif "image" in ct or attachment.filename.lower().endswith((".png",".jpg",".jpeg",".webp",".gif")):
-                await ctx.send("Note: I can't read images directly with my current setup. Convert to PDF or PPTX for best results.")
-                return
+                try:
+                    system = build_system({}, str(ctx.author.display_name), bool(OWNER_ID and ctx.author.id == OWNER_ID))
+                    material_content = await _vision_image_reply(
+                        prompt=(
+                            "Extract all educational content visible in this image. "
+                            "Include every concept, formula, definition, diagram label, and key point."
+                        ),
+                        system=system,
+                        image_bytes=file_bytes,
+                        mime_type=ct if ct else "image/jpeg",
+                        max_chars=4000,
+                    )
+                except Exception as e:
+                    await ctx.send(f"Couldn't read the image: {e}"); return
 
             elif attachment.filename.lower().endswith((".pptx",".ppt")):
                 try:
@@ -2701,6 +2763,7 @@ async def wanhelp_cmd(ctx):
 async def on_command_error(ctx, error):
     try:
         if isinstance(error, commands.CommandNotFound): pass
+        elif isinstance(error, commands.MemberNotFound): pass
         elif isinstance(error, commands.MissingRequiredArgument): await safe_reply(ctx, "Missing something.")
         else: log_error("on_command_error", error)
     except: pass
