@@ -44,6 +44,7 @@ from relationship_engine import (
     describe_arc_unlocks,
     describe_live_world_context,
     describe_lore_hook,
+    describe_triangle_jealousy,
     describe_specific_lore_tree,
     describe_relationship_progression,
     describe_scenario_context,
@@ -337,6 +338,24 @@ TRUST_REVEALS = [
     "Sometimes I miss being certain about everything. It was easier, being that cruel.",
 ]
 
+SOFTNESS_RARE_LINES = {
+    "repair": [
+        "...I still remember the fight. I also remember that you came back anyway.",
+        "You don't have to fix everything tonight. Staying is enough for now.",
+        "I'm still irritated. That doesn't mean I wanted the distance.",
+    ],
+    "jealous_soft": [
+        "Go bother whoever you like. ...No, that's not what I meant.",
+        "If you're going to come back, then stay for a while.",
+        "I noticed the silence when you weren't here. That's all.",
+    ],
+    "duet_peace": [
+        "For once, neither of us ruined the moment. Don't make a thing out of it.",
+        "...That was almost peaceful. Strange.",
+        "It's quieter when no one's trying to win. I don't hate it.",
+    ],
+}
+
 LORE_DROPS = [
     "Sumeru is the land of knowledge, but the most important things there can't be written down.",
     "The Irminsul holds every memory Teyvat ever had. I used to think that was power. Now I think it's just weight.",
@@ -593,8 +612,34 @@ def _partner_autoplay_name() -> str:
     return PARTNER_NAME
 
 
-def _voice_style_for(user: dict | None, mood: int = 0) -> str:
+def _user_local_hour(user: dict | None) -> int:
+    try:
+        tz = ZoneInfo((user or {}).get("timezone_name") or "America/Los_Angeles")
+        return datetime.now(tz).hour
+    except Exception:
+        return datetime.now().hour
+
+
+def _voice_style_for(
+    user: dict | None,
+    mood: int = 0,
+    scene_tag: str = "",
+    *,
+    is_dm: bool = False,
+    duo_mode: str = "",
+    jealousy_level: int = 0,
+) -> str:
     arc = (user or {}).get("emotional_arc", "guarded")
+    if scene_tag == "combat_action":
+        return "combat"
+    if duo_mode in {"argue", "compare", "truthdare"}:
+        return "duo_teasing"
+    if jealousy_level >= 45:
+        return "jealous"
+    if (user or {}).get("repair_progress", 0) > 0 and mood > -4:
+        return "repair"
+    if is_dm and _user_local_hour(user) in {0, 1, 2, 3, 4}:
+        return "late_night"
     if (user or {}).get("conflict_open"):
         return "tense"
     if arc in {"tender", "attached"} or ((user or {}).get("affection", 0) >= 70):
@@ -614,6 +659,151 @@ def _utility_reply(subject: str, facts: list[str], character_line: str, sources:
     if sources:
         body.append(sources)
     return "\n".join(body)
+
+
+async def _achievement_context(user_id: int) -> str:
+    try:
+        achievements = await mem.get_hidden_achievements(f"user:{user_id}", 5)
+        keys = [item.get("achievement_key", "") for item in achievements if item.get("achievement_key")]
+        if not keys:
+            return ""
+        return ", ".join(keys[:4])
+    except Exception as e:
+        log_error("achievement_context", e)
+        return ""
+
+
+async def _maybe_send_softness_beat(
+    channel,
+    *,
+    user_id: int,
+    channel_id: int,
+    user: dict | None,
+    trigger: str,
+    guild=None,
+) -> bool:
+    pools = {"trust_reveal": TRUST_REVEALS, **SOFTNESS_RARE_LINES}
+    cooldowns = {
+        "trust_reveal": 86400,
+        "repair": 43200,
+        "jealous_soft": 64800,
+        "duet_peace": 64800,
+    }
+    pool = pools.get(trigger) or []
+    if not pool:
+        return False
+    scopes = [f"{BOT_NAME}:soft:user:{user_id}", f"{BOT_NAME}:soft:global"]
+    cooldown = cooldowns.get(trigger, 43200)
+    for scope in scopes:
+        allowed, remaining = await mem.consume_phrase_with_status(scope, f"{BOT_NAME}:soft:{trigger}", cooldown)
+        if not allowed:
+            debug_event("phrase", f"{BOT_NAME} blocked softness '{trigger}' scope={scope} remaining={remaining}s")
+            return False
+    line = await _pick_fresh_pool_line(pool, channel_id=channel_id, user_id=user_id)
+    scene_tag = "repair" if trigger == "repair" else ""
+    duo_mode = "duet" if trigger == "duet_peace" else ""
+    jealousy_level = 60 if trigger == "jealous_soft" else 0
+    if guild and user and user.get("voice_enabled", True) and random.random() < 0.18:
+        sent = await send_voice(
+            channel,
+            line,
+            mood=user.get("mood", 0),
+            guild=guild,
+            user=user,
+            scene_tag=scene_tag,
+            is_dm=not bool(guild),
+            duo_mode=duo_mode,
+            jealousy_level=jealousy_level,
+        )
+        if sent:
+            await mem.add_message(user_id, channel_id, "assistant", f"[voice message] {line}")
+        else:
+            await channel.send(line)
+            await mem.add_message(user_id, channel_id, "assistant", line)
+    else:
+        await channel.send(line)
+        await mem.add_message(user_id, channel_id, "assistant", line)
+    if trigger == "trust_reveal":
+        if await mem.unlock_hidden_achievement(f"user:{user_id}", "wanderer_rare_confession", "He let a rare confession slip through."):
+            debug_event("memory", f"{BOT_NAME} achievement unlocked user={user_id} key=wanderer_rare_confession")
+    return True
+
+
+async def _maybe_refresh_dynamic_nicknames(message, user: dict | None, triangle: dict | None):
+    if not user:
+        return
+    try:
+        triangle = triangle or {}
+        jealousy = int(triangle.get("jealousy_level", 0) or 0)
+        arc = user.get("emotional_arc") or compute_emotional_arc(
+            user.get("affection", 0),
+            user.get("trust", 0),
+            user.get("slow_burn", 0),
+            user.get("conflict_open", False),
+            user.get("repair_count", 0),
+        )
+        affection_ready = user.get("affection", 0) >= 45 or user.get("trust", 0) >= 40 or jealousy >= 50 or arc in {"tender", "devoted", "attached"}
+        if affection_ready and (not user.get("affection_nick") or random.random() < 0.08 or jealousy >= 60):
+            prompt = (
+                f"The Wanderer is choosing a dynamic nickname for {message.author.display_name}. "
+                f"ARC:{arc} AFFECTION:{user.get('affection', 0)} TRUST:{user.get('trust', 0)} "
+                f"JEALOUSY:{jealousy} PARTNER_PREF:{triangle.get('favored_bot', 'none')}. "
+                "Make it observant, restrained, and specific. If jealousy is high, make it clipped and more proprietary. "
+                "1-3 words only. Just the nickname."
+            )
+            nick = (await qai(prompt, 20) or "").strip().strip("\"'`*")
+            if nick and len(nick) < 30:
+                await mem.set_affection_nick(message.author.id, nick)
+
+        grudge_ready = user.get("mood", 0) <= -7 or user.get("conflict_open") or jealousy >= 40
+        if grudge_ready and (not user.get("grudge_nick") or random.random() < 0.08 or jealousy >= 55):
+            prompt = (
+                f"The Wanderer is choosing a hostile nickname for {message.author.display_name}. "
+                f"MOOD:{user.get('mood', 0)} CONFLICT:{user.get('conflict_open')} JEALOUSY:{jealousy}. "
+                "Make it dry, sharp, and personal. 1-3 words only."
+            )
+            nick = (await qai(prompt, 20) or "").strip().strip("\"'`*")
+            if nick and len(nick) < 30:
+                await mem.set_grudge_nick(message.author.id, nick)
+        elif user.get("grudge_nick") and not user.get("conflict_open") and user.get("mood", 0) > -4 and jealousy < 20 and random.random() < 0.08:
+            await mem.set_grudge_nick(message.author.id, None)
+    except Exception as e:
+        log_error("dynamic_nicknames", e)
+
+
+async def _maybe_finalize_hidden_achievements(session: dict | None, text: str = ""):
+    if not session:
+        return
+    user_id = int(session.get("initiator_user_id", 0) or 0)
+    if not user_id:
+        return
+    mode = session.get("mode", "")
+    lowered = (text or "").lower()
+    try:
+        if mode == "duet" and not any(token in lowered for token in ["idiot", "pathetic", "shut up", "weak", "hate you"]):
+            if await mem.unlock_hidden_achievement(f"user:{user_id}", "peaceful_duet", "The duo scene stayed unexpectedly peaceful."):
+                debug_event("memory", f"{BOT_NAME} achievement unlocked user={user_id} key=peaceful_duet")
+        if mode == "trial":
+            if await mem.unlock_hidden_achievement(f"user:{user_id}", "survived_duo_trial", "They made it through a full two-bot trial."):
+                debug_event("memory", f"{BOT_NAME} achievement unlocked user={user_id} key=survived_duo_trial")
+    except Exception as e:
+        log_error("finalize_hidden_achievements", e)
+
+
+async def _recent_rival_topic(channel) -> str:
+    try:
+        async for candidate in channel.history(limit=14):
+            if candidate.author.bot:
+                continue
+            content = re.sub(r"\s+", " ", (candidate.content or "").strip())
+            if not content or content.startswith("!") or len(content) < 20:
+                continue
+            if any(token in content.lower() for token in [BOT_NAME, PARTNER_NAME.lower()]):
+                continue
+            return content[:160]
+    except Exception as e:
+        log_error("recent_rival_topic", e)
+    return ""
 
 
 def _is_in_quiet_hours(user: dict | None) -> bool:
@@ -1265,6 +1455,13 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
         if lore_tree: parts.append(lore_tree)
         live_world = describe_live_world_context(BOT_NAME, text=user_message)
         if live_world: parts.append(live_world)
+        triangle = await mem.get_triangle_state(user_id, BOT_NAME, PARTNER_NAME)
+        triangle_desc = describe_triangle_jealousy(BOT_NAME, triangle, PARTNER_NAME)
+        if triangle_desc:
+            parts.append(f"JEALOUSY_TRIANGLE:{triangle_desc}")
+        achievement_ctx = await _achievement_context(user_id)
+        if achievement_ctx:
+            parts.append(f"HIDDEN_PROGRESS:{achievement_ctx}")
         scene_desc = describe_scene_state(await mem.get_scene_state(channel_id))
         if scene_desc:
             parts.append(f"SCENE:{scene_desc}")
@@ -1587,18 +1784,55 @@ async def _fire_slow_burn(user_id, channel_id, display_name):
 
 
 # ── Voice helpers ─────────────────────────────────────────────────────────────
-async def get_audio_with_mood(text: str, mood: int, user: dict | None = None) -> bytes | None:
+async def get_audio_with_mood(
+    text: str,
+    mood: int,
+    user: dict | None = None,
+    *,
+    scene_tag: str = "",
+    is_dm: bool = False,
+    duo_mode: str = "",
+    jealousy_level: int = 0,
+) -> bytes | None:
     try:
-        return await get_audio_mooded(strip_narration(text), FISH_AUDIO_API_KEY, mood, _voice_style_for(user, mood))
+        style = _voice_style_for(
+            user,
+            mood,
+            scene_tag,
+            is_dm=is_dm,
+            duo_mode=duo_mode,
+            jealousy_level=jealousy_level,
+        )
+        return await get_audio_mooded(strip_narration(text), FISH_AUDIO_API_KEY, mood, style)
     except Exception as e:
         log_error("get_audio_with_mood", e)
         return None
 
-async def send_voice(channel, text, ref=None, mood=0, guild=None, user: dict | None = None):
+async def send_voice(
+    channel,
+    text,
+    ref=None,
+    mood=0,
+    guild=None,
+    user: dict | None = None,
+    *,
+    scene_tag: str = "",
+    is_dm: bool = False,
+    duo_mode: str = "",
+    jealousy_level: int = 0,
+):
     try:
         if user and not user.get("voice_enabled", True):
             return False
-        audio = await get_audio_with_mood(tts_safe(text, guild), mood, user=user)
+        audio = await get_audio_with_mood(
+            tts_safe(text, guild),
+            mood,
+            user=user,
+            scene_tag=scene_tag,
+            is_dm=is_dm,
+            duo_mode=duo_mode,
+            jealousy_level=jealousy_level,
+        )
         if not audio: return False
         f = discord.File(io.BytesIO(audio), filename="wanderer.mp3")
         kwargs = {"file": f}
@@ -1665,6 +1899,7 @@ async def _reply_and_store(ctx, text: str):
     try:
         duo = await mem.get_duo_session(ctx.channel.id)
         await mem.add_message(ctx.author.id, ctx.channel.id, "assistant", text)
+        await _maybe_finalize_hidden_achievements(duo, text)
         if duo and duo.get("awaiting_bot") == BOT_NAME and duo.get("autoplay_remaining", 0) <= 1 and duo.get("mode") in {"trial", "mission", "interrogate", "truthdare", "compare"}:
             await mem.resolve_duo_story(ctx.channel.id, duo.get("mode", ""), text[:180])
         await mem.bump_duo_session(ctx.channel.id, BOT_NAME, partner_bot=PARTNER_NAME)
@@ -1724,6 +1959,7 @@ async def on_ready():
     bot.loop.create_task(_proactive_loop())
     bot.loop.create_task(_voluntary_dm_loop())
     bot.loop.create_task(_duo_autoplay_loop())
+    bot.loop.create_task(_rival_event_loop())
 
 @tasks.loop(minutes=47)
 async def status_rotation():
@@ -1904,6 +2140,16 @@ async def on_message(message):
                 except Exception as e:
                     log_error("reply_partner_check", e)
             if (partner_mentioned or replying_to_partner) and not we_mentioned:
+                try:
+                    await mem.record_bot_attention(
+                        message.author.id,
+                        PARTNER_NAME,
+                        amount=3,
+                        direct=True,
+                        topic=(message.content or "").strip()[:140],
+                    )
+                except Exception as e:
+                    log_error("partner_attention/direct", e)
                 return
 
             # If message talks ABOUT Scaramouche (contains his name) but doesn't mention us,
@@ -1921,6 +2167,16 @@ async def on_message(message):
                 except Exception:
                     pass
             if about_partner and not we_mentioned and not replying_to_us:
+                try:
+                    await mem.record_bot_attention(
+                        message.author.id,
+                        PARTNER_NAME,
+                        amount=1,
+                        direct=False,
+                        topic=(message.content or "").strip()[:140],
+                    )
+                except Exception as e:
+                    log_error("partner_attention/about", e)
                 return  # Message is about Scaramouche, not for us
 
             try:
@@ -2103,6 +2359,39 @@ async def on_message(message):
         is_reply = (message.reference and message.reference.resolved and
                     not isinstance(message.reference.resolved, discord.DeletedReferencedMessage) and
                     message.reference.resolved.author == bot.user)
+        partner_focus = _message_mentions_partner(content)
+        partner_direct = False
+        if PARTNER_BOT_ID and message.guild:
+            partner_direct = any(u.id == PARTNER_BOT_ID for u in message.mentions)
+            if not partner_direct and message.reference:
+                try:
+                    pref = message.reference.resolved
+                    if pref is None:
+                        pref = await message.channel.fetch_message(message.reference.message_id)
+                    partner_direct = bool(pref and pref.author.id == PARTNER_BOT_ID)
+                except Exception as e:
+                    log_error("partner_direct", e)
+        direct_to_me = bool(is_dm or mentioned or is_reply)
+        triangle = None
+        try:
+            await mem.record_bot_attention(
+                message.author.id,
+                BOT_NAME,
+                amount=3 if direct_to_me else 1,
+                direct=direct_to_me,
+                topic=content[:140] if direct_to_me else "",
+            )
+            if partner_focus or partner_direct:
+                await mem.record_bot_attention(
+                    message.author.id,
+                    PARTNER_NAME,
+                    amount=3 if partner_direct else 1,
+                    direct=partner_direct,
+                    topic=content[:140],
+                )
+            triangle = await mem.get_triangle_state(message.author.id, BOT_NAME, PARTNER_NAME)
+        except Exception as e:
+            log_error("attention_tracking", e)
 
         # Special triggers
         try:
@@ -2191,7 +2480,9 @@ async def on_message(message):
             await maybe_react(message, romance); return
 
         parts = []
+        duo_session = None
         try:
+            duo_session = await mem.get_duo_session(message.channel.id) if not is_dm else None
             if random.random() < .12:
                 old = await mem.get_random_old_message(message.author.id)
                 if old: parts.append(f'RECALL:"{old[:120]}"')
@@ -2227,15 +2518,53 @@ async def on_message(message):
             reply = random.choice(["...", "Hmph.", "Give me a moment."])
 
         try:
-            if user and user.get("affection", 0) >= 50 and not user.get("affection_nick") and random.random() < .05:
+            if False and user and user.get("affection", 0) >= 50 and not user.get("affection_nick") and random.random() < .05:
                 nick = await qai(f"The Wanderer has started calling {message.author.display_name} something specific — not warm, but particular. 1-4 words. Just the nickname.", 20)
                 if nick and len(nick) < 30: await mem.set_affection_nick(message.author.id, nick.strip('"\''))
-            if user and user.get("mood", 0) <= -8 and not user.get("grudge_nick"):
+            if False and user and user.get("mood", 0) <= -8 and not user.get("grudge_nick"):
                 nick = await qai(f"The Wanderer has a grudge against {message.author.display_name}. One degrading nickname. 1-3 words.", 20)
                 if nick and len(nick) < 30: await mem.set_grudge_nick(message.author.id, nick.strip('"\''))
-            if "TRUST_OPEN" in extra and random.random() < .5:
+            if False and "TRUST_OPEN" in extra and random.random() < .5:
                 await asyncio.sleep(1.5)
                 await message.channel.send(await _pick_fresh_pool_line(TRUST_REVEALS, channel_id=message.channel.id, user_id=message.author.id))
+            await _maybe_refresh_dynamic_nicknames(message, user, triangle)
+            if "TRUST_OPEN" in extra and random.random() < .5:
+                await asyncio.sleep(1.5)
+                await _maybe_send_softness_beat(
+                    message.channel,
+                    user_id=message.author.id,
+                    channel_id=message.channel.id,
+                    user=user,
+                    trigger="trust_reveal",
+                    guild=message.guild,
+                )
+            elif user and user.get("conflict_open") and detect_repair_signal(content) and random.random() < .35:
+                await _maybe_send_softness_beat(
+                    message.channel,
+                    user_id=message.author.id,
+                    channel_id=message.channel.id,
+                    user=user,
+                    trigger="repair",
+                    guild=message.guild,
+                )
+            elif triangle and int(triangle.get("jealousy_level", 0) or 0) >= 50 and direct_to_me and not (partner_focus or partner_direct) and random.random() < .18:
+                await _maybe_send_softness_beat(
+                    message.channel,
+                    user_id=message.author.id,
+                    channel_id=message.channel.id,
+                    user=user,
+                    trigger="jealous_soft",
+                    guild=message.guild,
+                )
+            elif duo_session and duo_session.get("mode") == "duet" and random.random() < .14:
+                await _maybe_send_softness_beat(
+                    message.channel,
+                    user_id=message.author.id,
+                    channel_id=message.channel.id,
+                    user=user,
+                    trigger="duet_peace",
+                    guild=message.guild,
+                )
             if len(content) > 20 and random.random() < .04:
                 check = await qai(f"Is this quotable as a running inside joke? '{content[:100]}' YES or NO only.", 10)
                 if "YES" in check.upper():
@@ -2249,6 +2578,9 @@ async def on_message(message):
 
         try:
             mood_val = user.get("mood", 0) if user else 0
+            scene_tag = detect_scenario(content, is_dm=is_dm)
+            duo_mode = duo_session.get("mode", "") if duo_session else ""
+            jealousy_level = int((triangle or {}).get("jealousy_level", 0) or 0)
             is_reply_to_self_audio = False
             if message.reference:
                 try:
@@ -2264,13 +2596,34 @@ async def on_message(message):
             if reply and len(reply.strip()) > 2 and FISH_AUDIO_API_KEY:
                 voice_prob = 1.0 if asked_for_voice else (0.35 if is_reply_to_self_audio else 0.12)
                 if random.random() < voice_prob:
-                    sent = await send_voice(message.channel, reply, ref=message, mood=mood_val, guild=message.guild, user=user)
+                    sent = await send_voice(
+                        message.channel,
+                        reply,
+                        ref=message,
+                        mood=mood_val,
+                        guild=message.guild,
+                        user=user,
+                        scene_tag=scene_tag,
+                        is_dm=is_dm,
+                        duo_mode=duo_mode,
+                        jealousy_level=jealousy_level,
+                    )
                     if sent:
                         await mem.add_message(message.author.id, dm_channel_id, "assistant", f"[voice message] {reply}")
                         await maybe_react(message, romance); return
 
             if user and user.get("affection", 0) >= 85 and random.random() < .04 and FISH_AUDIO_API_KEY:
-                await send_voice(message.channel, random.choice(["...", "Hmph.", "Fine."]), mood=mood_val, guild=message.guild, user=user)
+                await send_voice(
+                    message.channel,
+                    random.choice(["...", "Hmph.", "Fine."]),
+                    mood=mood_val,
+                    guild=message.guild,
+                    user=user,
+                    scene_tag=scene_tag,
+                    is_dm=is_dm,
+                    duo_mode=duo_mode,
+                    jealousy_level=jealousy_level,
+                )
 
             final = strip_narration(resolve_mentions(reply, message.guild if message.guild else None))
             await message.reply(final)
@@ -2417,6 +2770,7 @@ async def _duo_autoplay_loop():
                     )
                     await channel.send(reply)
                     await mem.add_message(target_message.author.id, channel.id, "assistant", reply)
+                    await _maybe_finalize_hidden_achievements(session, reply)
                     if session.get("awaiting_bot") == BOT_NAME and session.get("autoplay_remaining", 0) <= 1 and session.get("mode") in {"trial", "mission", "interrogate", "truthdare", "compare"}:
                         await mem.resolve_duo_story(channel.id, session.get("mode", ""), reply[:180])
                     await mem.bump_duo_session(channel.id, BOT_NAME, partner_bot=PARTNER_NAME)
@@ -2425,6 +2779,65 @@ async def _duo_autoplay_loop():
         except Exception as e:
             log_error("duo_autoplay_loop", e)
         await asyncio.sleep(8)
+
+
+async def _rival_event_loop():
+    await bot.wait_until_ready()
+    await asyncio.sleep(45)
+    while not bot.is_closed():
+        try:
+            channels = await mem.get_active_channels()
+            random.shuffle(channels)
+            for channel_id, _ in channels:
+                try:
+                    channel = bot.get_channel(channel_id)
+                    if not channel or not getattr(channel, "guild", None):
+                        continue
+                    if not PARTNER_BOT_ID or not channel.guild.get_member(PARTNER_BOT_ID):
+                        continue
+                    perms = channel.permissions_for(channel.guild.me) if channel.guild.me else None
+                    if perms and (not perms.view_channel or not perms.send_messages):
+                        continue
+                    speaker_mode = await mem.get_channel_speaker_mode(channel_id)
+                    if speaker_mode not in {"auto", "both"}:
+                        continue
+                    if await mem.get_duo_session(channel_id):
+                        continue
+                    topic = await _recent_rival_topic(channel)
+                    if not topic:
+                        continue
+                    allowed, remaining = await mem.consume_shared_cooldown(f"rival_event:{channel_id}", 21600)
+                    if not allowed:
+                        debug_event("relationship", f"{BOT_NAME} rival_event_cooldown channel={channel_id} remaining={remaining}s")
+                        continue
+                    opener = await qai(
+                        f"Users were discussing: '{topic}'. Start a spontaneous disagreement with {PARTNER_NAME}. "
+                        "One or two sentences. Sound dry, thoughtful, and mildly irritated that they are oversimplifying it.",
+                        140,
+                    )
+                    opener = strip_narration(opener)
+                    if not opener:
+                        continue
+                    await mem.set_duo_session(
+                        channel_id,
+                        "compare",
+                        topic,
+                        BOT_NAME,
+                        awaiting_bot=PARTNER_NAME,
+                        autoplay_turns=2,
+                        autoplay_delay=random.randint(4, 8),
+                        ttl_seconds=480,
+                    )
+                    await mem.start_duo_story(channel_id, "compare", topic, PARTNER_NAME)
+                    await channel.send(opener)
+                    await mem.bump_duo_session(channel_id, BOT_NAME, partner_bot=PARTNER_NAME)
+                    debug_event("relationship", f"{BOT_NAME} rival_event channel={channel_id} topic={topic[:90]}")
+                    break
+                except Exception as e:
+                    log_error("rival_event_channel", e)
+        except Exception as e:
+            log_error("rival_event_loop", e)
+        await asyncio.sleep(random.randint(2400, 5400))
 
 
 # ══════════════════════════════════════════════════════════════════════════════

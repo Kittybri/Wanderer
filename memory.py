@@ -330,6 +330,27 @@ class Memory:
                     ts          REAL DEFAULT 0,
                     updated_ts  REAL DEFAULT 0
                 );
+                CREATE TABLE IF NOT EXISTS user_bot_attention (
+                    user_id          INTEGER,
+                    bot_name         TEXT,
+                    score            INTEGER DEFAULT 0,
+                    direct_score     INTEGER DEFAULT 0,
+                    mention_count    INTEGER DEFAULT 0,
+                    last_topic       TEXT DEFAULT NULL,
+                    last_interaction REAL DEFAULT 0,
+                    PRIMARY KEY (user_id, bot_name)
+                );
+                CREATE TABLE IF NOT EXISTS hidden_achievements (
+                    scope           TEXT,
+                    achievement_key TEXT,
+                    note            TEXT DEFAULT NULL,
+                    unlocked_ts     REAL DEFAULT 0,
+                    PRIMARY KEY (scope, achievement_key)
+                );
+                CREATE TABLE IF NOT EXISTS shared_cooldowns (
+                    scope      TEXT PRIMARY KEY,
+                    last_used  REAL DEFAULT 0
+                );
             """)
             for stmt in (
                 "ALTER TABLE duo_sessions ADD COLUMN initiator_user_id INTEGER DEFAULT 0",
@@ -1194,6 +1215,109 @@ class Memory:
         ]
 
     # ── Memory summary ────────────────────────────────────────────────────────
+    async def record_bot_attention(
+        self,
+        user_id: int,
+        bot_name: str,
+        amount: int = 1,
+        *,
+        direct: bool = False,
+        topic: str = "",
+    ):
+        now = time.time()
+        inc = max(1, int(amount))
+        direct_inc = inc if direct else 0
+        mention_inc = 1 if direct else 0
+        async with aiosqlite.connect(self.shared_db_path) as db:
+            await db.execute(
+                "INSERT INTO user_bot_attention (user_id,bot_name,score,direct_score,mention_count,last_topic,last_interaction) "
+                "VALUES (?,?,?,?,?,?,?) "
+                "ON CONFLICT(user_id,bot_name) DO UPDATE SET "
+                "score=MIN(250, user_bot_attention.score + excluded.score), "
+                "direct_score=MIN(250, user_bot_attention.direct_score + excluded.direct_score), "
+                "mention_count=user_bot_attention.mention_count + excluded.mention_count, "
+                "last_topic=CASE WHEN excluded.last_topic IS NOT NULL AND excluded.last_topic!='' THEN excluded.last_topic ELSE user_bot_attention.last_topic END, "
+                "last_interaction=excluded.last_interaction",
+                (user_id, (bot_name or "")[:40], inc, direct_inc, mention_inc, topic[:140], now),
+            )
+            await db.commit()
+
+    async def get_triangle_state(self, user_id: int, current_bot: str, partner_bot: str) -> dict:
+        async with aiosqlite.connect(self.shared_db_path) as db:
+            async with db.execute(
+                "SELECT bot_name,score,direct_score,mention_count,last_topic,last_interaction FROM user_bot_attention "
+                "WHERE user_id=? AND bot_name IN (?,?)",
+                (user_id, current_bot[:40], partner_bot[:40]),
+            ) as cur:
+                rows = await cur.fetchall()
+        payload = {
+            "favored_bot": "",
+            "margin": 0,
+            "jealousy_level": 0,
+            "current_score": 0,
+            "current_direct": 0,
+            "partner_score": 0,
+            "partner_direct": 0,
+            "partner_topic": "",
+            "partner_last_interaction": 0,
+        }
+        for row in rows:
+            name = (row[0] or "").lower()
+            if name == (current_bot or "").lower():
+                payload["current_score"] = row[1] or 0
+                payload["current_direct"] = row[2] or 0
+            elif name == (partner_bot or "").lower():
+                payload["partner_score"] = row[1] or 0
+                payload["partner_direct"] = row[2] or 0
+                payload["partner_topic"] = row[4] or ""
+                payload["partner_last_interaction"] = row[5] or 0
+        margin = (payload["partner_score"] + payload["partner_direct"]) - (payload["current_score"] + payload["current_direct"])
+        payload["margin"] = margin
+        if margin >= 6:
+            payload["favored_bot"] = partner_bot
+            payload["jealousy_level"] = max(0, min(100, margin * 6))
+        elif margin <= -6:
+            payload["favored_bot"] = current_bot
+        return payload
+
+    async def unlock_hidden_achievement(self, scope: str, achievement_key: str, note: str = "") -> bool:
+        now = time.time()
+        async with aiosqlite.connect(self.shared_db_path) as db:
+            cur = await db.execute(
+                "INSERT OR IGNORE INTO hidden_achievements (scope,achievement_key,note,unlocked_ts) VALUES (?,?,?,?)",
+                (scope[:80], achievement_key[:80], note[:240], now),
+            )
+            await db.commit()
+            return bool(cur.rowcount)
+
+    async def get_hidden_achievements(self, scope: str, limit: int = 8) -> list[dict]:
+        async with aiosqlite.connect(self.shared_db_path) as db:
+            async with db.execute(
+                "SELECT achievement_key,note,unlocked_ts FROM hidden_achievements WHERE scope=? ORDER BY unlocked_ts DESC LIMIT ?",
+                (scope[:80], limit),
+            ) as cur:
+                rows = await cur.fetchall()
+        return [
+            {"achievement_key": row[0] or "", "note": row[1] or "", "unlocked_ts": row[2] or 0}
+            for row in rows
+        ]
+
+    async def consume_shared_cooldown(self, scope: str, cooldown_seconds: int) -> tuple[bool, int]:
+        now = time.time()
+        async with aiosqlite.connect(self.shared_db_path) as db:
+            async with db.execute("SELECT last_used FROM shared_cooldowns WHERE scope=?", (scope[:120],)) as cur:
+                row = await cur.fetchone()
+            if row and (now - (row[0] or 0)) < cooldown_seconds:
+                remaining = max(0, int(cooldown_seconds - (now - (row[0] or 0))))
+                return False, remaining
+            await db.execute(
+                "INSERT INTO shared_cooldowns (scope,last_used) VALUES (?,?) "
+                "ON CONFLICT(scope) DO UPDATE SET last_used=excluded.last_used",
+                (scope[:120], now),
+            )
+            await db.commit()
+        return True, 0
+
     async def needs_summary(self, user_id: int) -> bool:
         async with aiosqlite.connect(DB_PATH) as db:
             async with db.execute(
@@ -1392,6 +1516,8 @@ class Memory:
             await db.commit()
         async with aiosqlite.connect(self.shared_db_path) as db:
             await db.execute("DELETE FROM shared_inside_jokes WHERE user_id=?", (user_id,))
+            await db.execute("DELETE FROM user_bot_attention WHERE user_id=?", (user_id,))
+            await db.execute("DELETE FROM hidden_achievements WHERE scope LIKE ?", (f"%user:{user_id}",))
             await db.execute("DELETE FROM relationship_milestones WHERE scope LIKE ?", (f"%user:{user_id}",))
             await db.commit()
 

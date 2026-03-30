@@ -490,6 +490,34 @@ def describe_emotional_event(
     return ""
 
 
+def describe_triangle_jealousy(bot_name: str, triangle: dict | None, partner_name: str) -> str:
+    triangle = triangle or {}
+    favored = triangle.get("favored_bot") or ""
+    jealousy = int(triangle.get("jealousy_level", 0) or 0)
+    if not favored or favored.lower() != (partner_name or "").lower() or jealousy < 20:
+        return ""
+    topic = triangle.get("partner_topic") or "recent attention"
+    if bot_name == "scaramouche":
+        if jealousy >= 60:
+            return (
+                f"jealousy triangle: they have been leaning toward {partner_name}; react with sharper possessiveness, "
+                f"rank-conscious contempt, and more personalized needling about {topic}"
+            )
+        return (
+            f"jealousy triangle: they have been giving {partner_name} slightly more attention; let that irritate you into "
+            f"tighter, more specific mockery about {topic}"
+        )
+    if jealousy >= 60:
+        return (
+            f"jealousy triangle: they have been leaning toward {partner_name}; react with clipped distance, quieter protectiveness, "
+            f"and irritation you do not want to explain, especially around {topic}"
+        )
+    return (
+        f"jealousy triangle: they have been giving {partner_name} slightly more attention; let that sharpen your distance and make "
+        f"your answers more particular around {topic}"
+    )
+
+
 def describe_scenario_context(bot_name: str, scenario: str) -> str:
     if bot_name == "scaramouche":
         mapping = {
