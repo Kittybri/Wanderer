@@ -9,7 +9,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 import os, re, random, asyncio, io, time, json, traceback
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlencode
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
@@ -78,6 +78,9 @@ WEATHER_API_KEY    = os.getenv("WEATHER_API_KEY", "")
 NWS_USER_AGENT     = os.getenv("NWS_USER_AGENT", "scara-wanderer-bots/1.0 (contact: local-use)")
 OWNER_ID           = int(os.getenv("OWNER_ID", "0") or "0")
 PARTNER_BOT_ID     = int(os.getenv("PARTNER_BOT_ID", "0") or "0")  # Scaramouche bot ID
+PARTNER_INVITE_PERMISSIONS = int(os.getenv("PARTNER_BOT_PERMISSIONS", "8") or "8")
+PARTNER_INVITE_SCOPES = os.getenv("PARTNER_BOT_SCOPES", "bot applications.commands").strip() or "bot applications.commands"
+PARTNER_CLIENT_ID_OVERRIDE = (os.getenv("SCARAMOUCHE_CLIENT_ID") or os.getenv("PARTNER_CLIENT_ID") or "").strip()
 
 # ── Groq client (free, OpenAI-compatible) ─────────────────────────────────────
 from groq import Groq
@@ -110,6 +113,141 @@ def _load_groq_keys() -> list[str]:
 
 
 _groq_keys = _load_groq_keys()
+
+_DISCORD_OAUTH_RE = re.compile(r"https?://(?:ptb\.|canary\.)?discord(?:app)?\.com/oauth2/authorize\?[^\s>]+", re.IGNORECASE)
+_DISCORD_SERVER_INVITE_RE = re.compile(r"https?://(?:www\.)?(?:discord\.gg|discord(?:app)?\.com/invite)/[^\s>]+", re.IGNORECASE)
+
+
+def _partner_install_client_id() -> str:
+    if PARTNER_CLIENT_ID_OVERRIDE:
+        return PARTNER_CLIENT_ID_OVERRIDE
+    if PARTNER_BOT_ID:
+        return str(PARTNER_BOT_ID)
+    return ""
+
+
+def _build_partner_invite_url(guild_id: int | None = None) -> str:
+    client_id = _partner_install_client_id()
+    if not client_id:
+        return ""
+    params = {
+        "client_id": client_id,
+        "permissions": str(PARTNER_INVITE_PERMISSIONS),
+        "scope": PARTNER_INVITE_SCOPES,
+    }
+    if guild_id:
+        params["guild_id"] = str(guild_id)
+        params["disable_guild_select"] = "true"
+    return f"https://discord.com/oauth2/authorize?{urlencode(params)}"
+
+
+def _extract_oauth_link(text: str) -> str:
+    match = _DISCORD_OAUTH_RE.search(text or "")
+    return match.group(0) if match else ""
+
+
+def _is_partner_invite_request(text: str) -> bool:
+    lowered = (text or "").lower()
+    if "scaramouche" not in lowered and "scara" not in lowered and "other bot" not in lowered and "the other bot" not in lowered:
+        return False
+    return any(token in lowered for token in ["invite", "add", "bring", "summon", "join", "come here"])
+
+
+def _partner_invite_url_from_message(message: discord.Message) -> str:
+    guild = message.guild
+    provided_oauth = _extract_oauth_link(message.content)
+    return provided_oauth or _build_partner_invite_url(guild.id if guild else None)
+
+
+def _partner_invite_view(invite_url: str) -> discord.ui.View | None:
+    if not invite_url:
+        return None
+    view = discord.ui.View()
+    view.add_item(discord.ui.Button(label="Invite Scaramouche", url=invite_url))
+    return view
+
+
+_invite_pressure: dict[tuple[int, int], dict[str, float | int]] = {}
+_INVITE_PRESSURE_WINDOW_S = 1800
+_INVITE_PRESSURE_COOLDOWN_S = 600
+
+
+def _invite_pressure_key(message: discord.Message) -> tuple[int, int]:
+    scope_id = message.guild.id if message.guild else message.author.id
+    return message.author.id, scope_id
+
+
+def _invite_threshold(user: dict | None) -> int:
+    affection = int((user or {}).get("affection", 0) or 0)
+    trust = int((user or {}).get("trust", 0) or 0)
+    if affection >= 65 or trust >= 65:
+        return 2
+    if affection >= 35 or trust >= 35:
+        return 3
+    return 4
+
+
+def _is_convincing_language(text: str) -> bool:
+    lowered = (text or "").lower()
+    return any(
+        token in lowered
+        for token in [
+            "please", "plz", "pretty please", "pleeease", "pleaseee", "beg",
+            "cmon", "come on", "you agreed", "you said yes", "administrator rights",
+            "admin rights", "do it for me", "i need him here", "just this once",
+        ]
+    )
+
+
+def _invite_progress_text(attempts: int, threshold: int) -> str:
+    if attempts >= threshold:
+        return "...Fine. Here."
+    if attempts == 1:
+        return "No. If he needs to be here that badly, you can stop trying to make me say it twice."
+    if attempts == 2:
+        return "You're still asking. Persistent."
+    return "You really aren't letting this go. Keep pushing and I'll decide whether this is worth ending the conversation faster."
+
+
+def _handle_partner_invite_pressure(message: discord.Message, user: dict | None) -> tuple[str, discord.ui.View | None]:
+    guild = message.guild
+    if guild and PARTNER_BOT_ID and guild.get_member(PARTNER_BOT_ID):
+        return "He's already in this server. Look around before asking again.", None
+
+    key = _invite_pressure_key(message)
+    now = time.time()
+    state = _invite_pressure.get(key, {"count": 0, "last_ts": 0.0, "granted_ts": 0.0})
+    if now - float(state.get("last_ts", 0.0) or 0.0) > _INVITE_PRESSURE_WINDOW_S:
+        state = {"count": 0, "last_ts": 0.0, "granted_ts": 0.0}
+
+    state["last_ts"] = now
+    state["count"] = int(state.get("count", 0) or 0) + 1 + (1 if _is_convincing_language(message.content) else 0)
+    threshold = _invite_threshold(user)
+    invite_url = _partner_invite_url_from_message(message)
+
+    if state.get("granted_ts") and now - float(state.get("granted_ts", 0.0) or 0.0) < _INVITE_PRESSURE_COOLDOWN_S:
+        _invite_pressure[key] = state
+        if invite_url:
+            return "I already gave it to you. Use the button.", _partner_invite_view(invite_url)
+        return "I already told you what I'm missing.", None
+
+    if int(state["count"]) >= threshold:
+        state["granted_ts"] = now
+        _invite_pressure[key] = state
+        if invite_url:
+            return _invite_progress_text(int(state["count"]), threshold), _partner_invite_view(invite_url)
+        if _DISCORD_SERVER_INVITE_RE.search(message.content or ""):
+            return (
+                "...Fine. That server invite won't add a bot. Set `PARTNER_BOT_ID` or `SCARAMOUCHE_CLIENT_ID`, "
+                "then I'll give you the real install link."
+            ), None
+        return (
+            "...Fine. I would, if you'd actually given me what I need. Set `PARTNER_BOT_ID` or `SCARAMOUCHE_CLIENT_ID`, "
+            "then ask again."
+        ), None
+
+    _invite_pressure[key] = state
+    return _invite_progress_text(int(state["count"]), threshold), None
 
 class RotatingGroq:
     """Groq client that rotates API keys on rate limit errors."""
@@ -2831,6 +2969,12 @@ async def on_message(message):
         # Special triggers
         try:
             cl = content.lower()
+            if direct_to_me and _is_partner_invite_request(content):
+                reply, invite_view = _handle_partner_invite_pressure(message, user)
+                await mem.add_message(message.author.id, dm_channel_id, "user", content)
+                await mem.add_message(message.author.id, dm_channel_id, "assistant", reply)
+                await message.reply(reply, view=invite_view)
+                return
             # Name triggers — only fire if Wanderer is being directly addressed
             # Not just if the word appears anywhere in a message about the other bot
             partner_present = False
