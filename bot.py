@@ -209,7 +209,7 @@ def _invite_progress_text(attempts: int, threshold: int) -> str:
     return "You really aren't letting this go. Keep pushing and I'll decide whether this is worth ending the conversation faster."
 
 
-def _handle_partner_invite_pressure(message: discord.Message, user: dict | None) -> tuple[str, discord.ui.View | None]:
+def _handle_partner_invite_pressure(message: discord.Message, user: dict | None) -> tuple[str | None, discord.ui.View | None]:
     guild = message.guild
     if guild and PARTNER_BOT_ID and guild.get_member(PARTNER_BOT_ID):
         return "He's already in this server. Look around before asking again.", None
@@ -226,16 +226,17 @@ def _handle_partner_invite_pressure(message: discord.Message, user: dict | None)
     invite_url = _partner_invite_url_from_message(message)
 
     if state.get("granted_ts") and now - float(state.get("granted_ts", 0.0) or 0.0) < _INVITE_PRESSURE_COOLDOWN_S:
+        state["count"] = 0
         _invite_pressure[key] = state
-        if invite_url:
-            return "I already gave it to you. Use the button.", _partner_invite_view(invite_url)
-        return "I already told you what I'm missing.", None
+        return None, None
 
-    if int(state["count"]) >= threshold:
+    attempts = int(state["count"])
+    if attempts >= threshold:
         state["granted_ts"] = now
+        state["count"] = 0
         _invite_pressure[key] = state
         if invite_url:
-            return _invite_progress_text(int(state["count"]), threshold), _partner_invite_view(invite_url)
+            return _invite_progress_text(attempts, threshold), _partner_invite_view(invite_url)
         if _DISCORD_SERVER_INVITE_RE.search(message.content or ""):
             return (
                 "...Fine. That server invite won't add a bot. Set `PARTNER_BOT_ID` or `SCARAMOUCHE_CLIENT_ID`, "
@@ -247,7 +248,7 @@ def _handle_partner_invite_pressure(message: discord.Message, user: dict | None)
         ), None
 
     _invite_pressure[key] = state
-    return _invite_progress_text(int(state["count"]), threshold), None
+    return _invite_progress_text(attempts, threshold), None
 
 class RotatingGroq:
     """Groq client that rotates API keys on rate limit errors."""
@@ -2971,10 +2972,11 @@ async def on_message(message):
             cl = content.lower()
             if direct_to_me and _is_partner_invite_request(content):
                 reply, invite_view = _handle_partner_invite_pressure(message, user)
-                await mem.add_message(message.author.id, dm_channel_id, "user", content)
-                await mem.add_message(message.author.id, dm_channel_id, "assistant", reply)
-                await message.reply(reply, view=invite_view)
-                return
+                if reply:
+                    await mem.add_message(message.author.id, dm_channel_id, "user", content)
+                    await mem.add_message(message.author.id, dm_channel_id, "assistant", reply)
+                    await message.reply(reply, view=invite_view)
+                    return
             # Name triggers — only fire if Wanderer is being directly addressed
             # Not just if the word appears anywhere in a message about the other bot
             partner_present = False
