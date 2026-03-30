@@ -9,6 +9,7 @@ import aiosqlite
 import time
 import json
 import os
+import re
 
 # Use Railway volume if available, otherwise current directory
 _data_dir = "/data" if os.path.isdir("/data") else "."
@@ -216,6 +217,16 @@ class Memory:
                     duo_autoplay   INTEGER DEFAULT 1,
                     rp_depth       TEXT    DEFAULT 'medium'
                 );
+                CREATE TABLE IF NOT EXISTS consequence_marks (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id     INTEGER,
+                    kind        TEXT,
+                    summary     TEXT,
+                    severity    INTEGER DEFAULT 1,
+                    decay_days  REAL DEFAULT 5,
+                    created_ts  REAL DEFAULT 0,
+                    last_seen   REAL DEFAULT 0
+                );
             """)
             migrations = [
                 ("allow_dms",          "INTEGER DEFAULT 1"),
@@ -350,6 +361,30 @@ class Memory:
                 CREATE TABLE IF NOT EXISTS shared_cooldowns (
                     scope      TEXT PRIMARY KEY,
                     last_used  REAL DEFAULT 0
+                );
+                CREATE TABLE IF NOT EXISTS shared_world_entities (
+                    entity_key    TEXT PRIMARY KEY,
+                    entity_type   TEXT,
+                    name          TEXT,
+                    summary       TEXT DEFAULT NULL,
+                    status        TEXT DEFAULT NULL,
+                    channel_id    INTEGER DEFAULT 0,
+                    owner_user_id INTEGER DEFAULT 0,
+                    updated_by    TEXT DEFAULT NULL,
+                    ts            REAL DEFAULT 0,
+                    updated_ts    REAL DEFAULT 0
+                );
+                CREATE TABLE IF NOT EXISTS shared_world_cases (
+                    case_key      TEXT PRIMARY KEY,
+                    channel_id    INTEGER DEFAULT 0,
+                    case_type     TEXT,
+                    title         TEXT,
+                    status        TEXT DEFAULT 'open',
+                    summary       TEXT DEFAULT NULL,
+                    enemy         TEXT DEFAULT NULL,
+                    updated_by    TEXT DEFAULT NULL,
+                    opened_ts     REAL DEFAULT 0,
+                    updated_ts    REAL DEFAULT 0
                 );
             """)
             for stmt in (
@@ -1183,7 +1218,26 @@ class Memory:
                 (channel_id, story_type[:40], topic[:300], "open", "", enemy[:120], now, now),
             )
             await db.commit()
-            return cur.lastrowid
+            row_id = cur.lastrowid
+        await self.add_world_case(
+            channel_id,
+            story_type,
+            topic,
+            status="open",
+            summary=f"{story_type[:40]} opened: {topic[:180]}",
+            enemy=enemy,
+            updated_by=self.bot_name,
+        )
+        if enemy:
+            await self.upsert_world_entity(
+                "enemy",
+                enemy,
+                summary=f"Tied to an active {story_type[:40]} in channel {channel_id}.",
+                status="active",
+                channel_id=channel_id,
+                updated_by=self.bot_name,
+            )
+        return row_id
 
     async def resolve_duo_story(self, channel_id: int, story_type: str, outcome: str):
         async with aiosqlite.connect(self.shared_db_path) as db:
@@ -1193,6 +1247,17 @@ class Memory:
                 (outcome[:300], time.time(), channel_id, story_type[:40]),
             )
             await db.commit()
+        lowered = (outcome or "").lower()
+        status = "resolved"
+        if any(token in lowered for token in ["failed", "lost", "unresolved", "escaped", "collapsed", "guilty"]):
+            status = "scarred"
+        await self.update_latest_world_case(
+            channel_id,
+            story_type,
+            status=status,
+            summary=(outcome or "")[:240],
+            updated_by=self.bot_name,
+        )
 
     async def get_recent_duo_stories(self, channel_id: int, limit: int = 5) -> list[dict]:
         async with aiosqlite.connect(self.shared_db_path) as db:
@@ -1213,6 +1278,282 @@ class Memory:
             }
             for row in rows
         ]
+
+    def _world_entity_key(self, entity_type: str, name: str) -> str:
+        cleaned = re.sub(r"[^a-z0-9]+", "-", (name or "").strip().lower()).strip("-")
+        return f"{(entity_type or 'entity').strip().lower()}:{cleaned[:80] or 'unknown'}"
+
+    async def upsert_world_entity(
+        self,
+        entity_type: str,
+        name: str,
+        *,
+        summary: str = "",
+        status: str = "",
+        channel_id: int = 0,
+        owner_user_id: int = 0,
+        updated_by: str = "",
+    ) -> str:
+        entity_type = (entity_type or "entity").strip().lower()[:40]
+        name = (name or "").strip()[:120]
+        if not name:
+            return ""
+        entity_key = self._world_entity_key(entity_type, name)
+        now = time.time()
+        async with aiosqlite.connect(self.shared_db_path) as db:
+            await db.execute(
+                "INSERT INTO shared_world_entities (entity_key,entity_type,name,summary,status,channel_id,owner_user_id,updated_by,ts,updated_ts) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(entity_key) DO UPDATE SET "
+                "summary=CASE WHEN excluded.summary IS NOT NULL AND excluded.summary!='' THEN excluded.summary ELSE shared_world_entities.summary END, "
+                "status=CASE WHEN excluded.status IS NOT NULL AND excluded.status!='' THEN excluded.status ELSE shared_world_entities.status END, "
+                "channel_id=CASE WHEN excluded.channel_id!=0 THEN excluded.channel_id ELSE shared_world_entities.channel_id END, "
+                "owner_user_id=CASE WHEN excluded.owner_user_id!=0 THEN excluded.owner_user_id ELSE shared_world_entities.owner_user_id END, "
+                "updated_by=CASE WHEN excluded.updated_by IS NOT NULL AND excluded.updated_by!='' THEN excluded.updated_by ELSE shared_world_entities.updated_by END, "
+                "updated_ts=excluded.updated_ts",
+                (
+                    entity_key,
+                    entity_type,
+                    name,
+                    (summary or "")[:240],
+                    (status or "")[:120],
+                    channel_id or 0,
+                    owner_user_id or 0,
+                    (updated_by or "")[:40],
+                    now,
+                    now,
+                ),
+            )
+            await db.commit()
+        return entity_key
+
+    async def list_world_entities(
+        self,
+        entity_type: str | None = None,
+        *,
+        limit: int = 8,
+        channel_id: int | None = None,
+    ) -> list[dict]:
+        query = "SELECT entity_key,entity_type,name,summary,status,channel_id,owner_user_id,updated_by,ts,updated_ts FROM shared_world_entities"
+        clauses = []
+        params: list[object] = []
+        if entity_type:
+            clauses.append("entity_type=?")
+            params.append(entity_type[:40])
+        if channel_id is not None:
+            clauses.append("(channel_id=? OR channel_id=0)")
+            params.append(channel_id)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY updated_ts DESC LIMIT ?"
+        params.append(limit)
+        async with aiosqlite.connect(self.shared_db_path) as db:
+            async with db.execute(query, params) as cur:
+                rows = await cur.fetchall()
+        return [
+            {
+                "entity_key": row[0] or "",
+                "entity_type": row[1] or "",
+                "name": row[2] or "",
+                "summary": row[3] or "",
+                "status": row[4] or "",
+                "channel_id": row[5] or 0,
+                "owner_user_id": row[6] or 0,
+                "updated_by": row[7] or "",
+                "ts": row[8] or 0,
+                "updated_ts": row[9] or 0,
+            }
+            for row in rows
+        ]
+
+    async def add_world_case(
+        self,
+        channel_id: int,
+        case_type: str,
+        title: str,
+        *,
+        status: str = "open",
+        summary: str = "",
+        enemy: str = "",
+        updated_by: str = "",
+    ) -> str:
+        now = time.time()
+        case_key = f"{channel_id}:{(case_type or 'case')[:30]}:{int(now * 1000)}"
+        async with aiosqlite.connect(self.shared_db_path) as db:
+            await db.execute(
+                "INSERT INTO shared_world_cases (case_key,channel_id,case_type,title,status,summary,enemy,updated_by,opened_ts,updated_ts) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (
+                    case_key,
+                    channel_id,
+                    (case_type or "case")[:40],
+                    (title or "")[:180],
+                    (status or "open")[:30],
+                    (summary or "")[:260],
+                    (enemy or "")[:140],
+                    (updated_by or "")[:40],
+                    now,
+                    now,
+                ),
+            )
+            await db.commit()
+        return case_key
+
+    async def update_latest_world_case(
+        self,
+        channel_id: int,
+        case_type: str,
+        *,
+        status: str = "",
+        summary: str = "",
+        enemy: str = "",
+        updated_by: str = "",
+    ) -> bool:
+        now = time.time()
+        async with aiosqlite.connect(self.shared_db_path) as db:
+            cur = await db.execute(
+                "SELECT case_key,status,summary,enemy,updated_by FROM shared_world_cases "
+                "WHERE channel_id=? AND case_type=? ORDER BY opened_ts DESC LIMIT 1",
+                (channel_id, (case_type or "case")[:40]),
+            )
+            row = await cur.fetchone()
+            if not row:
+                return False
+            await db.execute(
+                "UPDATE shared_world_cases SET status=?, summary=?, enemy=?, updated_by=?, updated_ts=? WHERE case_key=?",
+                (
+                    (status or row[1] or "open")[:30],
+                    (summary or row[2] or "")[:260],
+                    (enemy or row[3] or "")[:140],
+                    (updated_by or row[4] or "")[:40],
+                    now,
+                    row[0],
+                ),
+            )
+            await db.commit()
+        return True
+
+    async def list_world_cases(
+        self,
+        *,
+        channel_id: int | None = None,
+        status: str | None = None,
+        limit: int = 8,
+    ) -> list[dict]:
+        query = "SELECT case_key,channel_id,case_type,title,status,summary,enemy,updated_by,opened_ts,updated_ts FROM shared_world_cases"
+        clauses = []
+        params: list[object] = []
+        if channel_id is not None:
+            clauses.append("channel_id=?")
+            params.append(channel_id)
+        if status:
+            clauses.append("status=?")
+            params.append(status[:30])
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY updated_ts DESC LIMIT ?"
+        params.append(limit)
+        async with aiosqlite.connect(self.shared_db_path) as db:
+            async with db.execute(query, params) as cur:
+                rows = await cur.fetchall()
+        return [
+            {
+                "case_key": row[0] or "",
+                "channel_id": row[1] or 0,
+                "case_type": row[2] or "",
+                "title": row[3] or "",
+                "status": row[4] or "",
+                "summary": row[5] or "",
+                "enemy": row[6] or "",
+                "updated_by": row[7] or "",
+                "opened_ts": row[8] or 0,
+                "updated_ts": row[9] or 0,
+            }
+            for row in rows
+        ]
+
+    async def add_consequence_mark(
+        self,
+        user_id: int,
+        kind: str,
+        summary: str,
+        *,
+        severity: int = 2,
+        decay_days: float = 5.0,
+    ):
+        kind = (kind or "scar").strip().lower()[:40]
+        summary = (summary or "").strip()[:240]
+        if not summary:
+            return
+        severity = max(1, min(10, int(severity)))
+        decay_days = max(1.0, float(decay_days))
+        now = time.time()
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(
+                "SELECT id,severity FROM consequence_marks WHERE user_id=? AND kind=? AND summary=? ORDER BY last_seen DESC LIMIT 1",
+                (user_id, kind, summary),
+            ) as cur:
+                row = await cur.fetchone()
+            if row:
+                await db.execute(
+                    "UPDATE consequence_marks SET severity=MIN(10, severity+?), last_seen=? WHERE id=?",
+                    (severity, now, row[0]),
+                )
+            else:
+                await db.execute(
+                    "INSERT INTO consequence_marks (user_id,kind,summary,severity,decay_days,created_ts,last_seen) VALUES (?,?,?,?,?,?,?)",
+                    (user_id, kind, summary, severity, decay_days, now, now),
+                )
+            await db.commit()
+
+    async def soften_consequence_marks(self, user_id: int, amount: int = 1):
+        amount = max(1, int(amount))
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "UPDATE consequence_marks SET severity=MAX(0, severity-?), last_seen=? WHERE user_id=?",
+                (amount, time.time(), user_id),
+            )
+            await db.execute("DELETE FROM consequence_marks WHERE user_id=? AND severity<=0", (user_id,))
+            await db.commit()
+
+    async def get_active_consequence_marks(self, user_id: int, limit: int = 5) -> list[dict]:
+        now = time.time()
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(
+                "SELECT id,kind,summary,severity,decay_days,created_ts,last_seen FROM consequence_marks "
+                "WHERE user_id=? ORDER BY last_seen DESC, severity DESC",
+                (user_id,),
+            ) as cur:
+                rows = await cur.fetchall()
+            active: list[dict] = []
+            expired_ids: list[int] = []
+            for row in rows:
+                age_days = max(0.0, (now - (row[6] or row[5] or now)) / 86400)
+                remaining = max(0, int((row[3] or 0) - (age_days / max(1.0, float(row[4] or 5.0)))))
+                if remaining <= 0:
+                    expired_ids.append(row[0])
+                    continue
+                active.append(
+                    {
+                        "id": row[0],
+                        "kind": row[1] or "",
+                        "summary": row[2] or "",
+                        "severity": row[3] or 0,
+                        "decay_days": row[4] or 5.0,
+                        "created_ts": row[5] or 0,
+                        "last_seen": row[6] or 0,
+                        "remaining": remaining,
+                    }
+                )
+                if len(active) >= limit:
+                    break
+            if expired_ids:
+                await db.execute(
+                    f"DELETE FROM consequence_marks WHERE id IN ({','.join('?' for _ in expired_ids)})",
+                    expired_ids,
+                )
+                await db.commit()
+        return active
 
     # ── Memory summary ────────────────────────────────────────────────────────
     async def record_bot_attention(
@@ -1505,6 +1846,7 @@ class Memory:
             await db.execute("DELETE FROM inside_jokes WHERE user_id=?", (user_id,))
             await db.execute("DELETE FROM user_topics WHERE user_id=?", (user_id,))
             await db.execute("DELETE FROM memory_bank WHERE user_id=?", (user_id,))
+            await db.execute("DELETE FROM consequence_marks WHERE user_id=?", (user_id,))
             await db.execute("DELETE FROM relationship_milestones WHERE scope LIKE ?", (f"{self.bot_name}:user:{user_id}%",))
             await db.execute("DELETE FROM scene_state WHERE channel_id=?", (user_id,))
             await db.execute("""UPDATE users SET mood=0,affection=0,trust=0,rival_id=NULL,grudge_nick=NULL,

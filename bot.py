@@ -6,6 +6,7 @@ Powered by Groq (free) + Fish Audio TTS.
 """
 
 import discord
+from discord import app_commands
 from discord.ext import commands, tasks
 import os, re, random, asyncio, io, time, json, traceback
 from urllib.parse import quote_plus
@@ -529,6 +530,7 @@ BOT_NAME = "wanderer"
 PARTNER_NAME = "scaramouche"
 PARTNER_PAIR_KEY = "scaramouche::wanderer"
 BOT_RARE_PHRASES = RARE_PHRASES[BOT_NAME]
+_TREE_SYNCED = False
 
 _hostages:       dict[int, str]  = {}
 _pending_unsent: set[int]        = set()
@@ -659,6 +661,282 @@ def _utility_reply(subject: str, facts: list[str], character_line: str, sources:
     if sources:
         body.append(sources)
     return "\n".join(body)
+
+
+_SELF_EDIT_MODERN = (
+    "lowkey", "highkey", "bestie", "bro", "bruh", "fr ", " fr", "irl", "ngl", "slay",
+    "no cap", "vibes", "mid", "sus", "yolo",
+)
+_SELF_EDIT_GENERIC_PATTERNS = (
+    r"^(that('s| is) interesting)\b",
+    r"^(i understand)\b",
+    r"^(i'm here for you)\b",
+    r"^(of course)\b",
+    r"^(sure[, ]|certainly\b|absolutely\b)",
+    r"^(it depends)\b",
+    r"^(thanks for sharing)\b",
+)
+
+
+def _format_consequence_summary(marks: list[dict]) -> str:
+    bits = []
+    for item in marks[:4]:
+        label = (item.get("kind") or "scar")[:18]
+        summary = (item.get("summary") or "")[:90]
+        bits.append(f"{label}[{item.get('remaining', 0)}]: {summary}")
+    return " || ".join(bits)
+
+
+def _format_world_prompt(entities: list[dict], cases: list[dict]) -> str:
+    lines = []
+    if entities:
+        lines.append(
+            "WORLD_ENTITIES:"
+            + " || ".join(
+                f"{item.get('entity_type', 'entity')}:{item.get('name', '')[:50]}|{item.get('status', 'noted') or 'noted'}|{item.get('summary', '')[:90]}"
+                for item in entities[:4]
+            )
+        )
+    if cases:
+        lines.append(
+            "WORLD_CASES:"
+            + " || ".join(
+                f"{item.get('case_type', 'case')}:{item.get('title', '')[:60]}|{item.get('status', 'open')}|enemy={item.get('enemy', '')[:40]}|{item.get('summary', '')[:90]}"
+                for item in cases[:3]
+            )
+        )
+    return "\n".join(lines)
+
+
+def _world_lines(entities: list[dict]) -> list[str]:
+    if not entities:
+        return ["Shared world: nothing persistent yet."]
+    lines = ["Shared world:"]
+    for item in entities[:6]:
+        summary = (item.get("summary") or "").strip()
+        status = item.get("status") or "noted"
+        line = f"- {item.get('entity_type', 'entity')}: {item.get('name', 'unknown')} [{status}]"
+        if summary:
+            line += f" - {summary[:120]}"
+        lines.append(line)
+    return lines
+
+
+def _case_lines(cases: list[dict]) -> list[str]:
+    if not cases:
+        return ["Shared cases: none open enough to matter."]
+    lines = ["Shared cases:"]
+    for item in cases[:6]:
+        bit = f"- {item.get('case_type', 'case')}: {item.get('title', 'untitled')} [{item.get('status', 'open')}]"
+        if item.get("enemy"):
+            bit += f" enemy={item['enemy'][:50]}"
+        if item.get("summary"):
+            bit += f" - {item['summary'][:120]}"
+        lines.append(bit)
+    return lines
+
+
+def _relationship_lines(user: dict | None, scene: dict | None, topics: list[dict], marks: list[dict]) -> list[str]:
+    stage, stage_desc = _progression_parts(user)
+    arc = _current_arc(user)
+    aftermath = describe_conflict_aftermath(
+        BOT_NAME,
+        user.get("conflict_summary", "") if user else "",
+        user.get("last_conflict_ts", 0) if user else 0,
+        user.get("repair_progress", 0) if user else 0,
+        conflict_open=bool((user or {}).get("conflict_open")),
+    ) or "no open aftermath"
+    lines = [
+        f"Relationship: affection {(user or {}).get('affection', 0)}/100 | trust {(user or {}).get('trust', 0)}/100 | mood {(user or {}).get('mood', 0):+d}",
+        f"Arc: {arc} | progression: {stage}",
+        f"Progression detail: {stage_desc}",
+        f"Conflict aftermath: {aftermath}",
+        f"Preferences: voice={_pref_label((user or {}).get('voice_enabled', True))} | utility={_pref_label((user or {}).get('utility_mode', True))} | duoauto={_pref_label((user or {}).get('duo_autoplay', True))} | rpdepth={(user or {}).get('rp_depth', 'medium')}",
+    ]
+    if topics:
+        lines.append("Top topics: " + ", ".join(item["topic"] for item in topics[:3]))
+    if marks:
+        lines.append("Consequences: " + " | ".join(f"{item['kind']}[{item.get('remaining', 0)}]" for item in marks[:4]))
+    scene_desc = describe_scene_state(scene)
+    if scene_desc:
+        lines.append(f"Current scene: {scene_desc}")
+    return lines
+
+
+def _duostate_lines(speaker_mode: str, duo: dict | None, relation: dict, stories: list[dict], cases: list[dict]) -> list[str]:
+    lines = [
+        f"Speaker mode: {speaker_mode}",
+        f"Bot relationship: {relation.get('stage', 'enemy')} | respect {relation.get('respect', 0)}/100 | tension {relation.get('tension', 0)}/100",
+    ]
+    if duo:
+        lines.append(
+            f"Active duo: mode={duo.get('mode')} | awaiting={duo.get('awaiting_bot') or 'nobody'} | turns_left={duo.get('autoplay_remaining', 0)} | topic={duo.get('topic')}"
+        )
+    else:
+        lines.append("Active duo: none")
+    if stories:
+        lines.append(
+            "Recent duo stories: "
+            + " || ".join(
+                f"{_duo_story_label(item.get('story_type', ''))}: {item.get('topic', '')[:60]} [{item.get('status', 'open')}]"
+                for item in stories[:3]
+            )
+        )
+    if cases:
+        lines.append(
+            "World cases: "
+            + " || ".join(
+                f"{item.get('case_type', 'case')}:{item.get('title', '')[:50]} [{item.get('status', 'open')}]"
+                for item in cases[:3]
+            )
+        )
+    return lines
+
+
+def _self_edit_issues(text: str, recent_replies: list[str], *, user: dict | None = None) -> list[str]:
+    lowered = (text or "").lower().strip()
+    if not lowered:
+        return []
+    issues: list[str] = []
+    if looks_repetitive(text, recent_replies):
+        issues.append("repetitive")
+    if any(token in lowered for token in _SELF_EDIT_MODERN):
+        issues.append("too modern")
+    if any(re.search(pattern, lowered) for pattern in _SELF_EDIT_GENERIC_PATTERNS):
+        issues.append("too generic")
+    if len(set(re.findall(r"[a-z']+", lowered))) < max(4, min(10, len(re.findall(r"[a-z']+", lowered)) // 2)):
+        issues.append("too generic")
+
+    affection = (user or {}).get("affection", 0)
+    trust = (user or {}).get("trust", 0)
+    conflict_open = bool((user or {}).get("conflict_open"))
+    if (affection < 50 or trust < 45 or conflict_open) and any(
+        token in lowered for token in ("darling", "sweetheart", "baby", "my love", "dear heart", "angel")
+    ):
+        issues.append("too soft")
+    if affection < 60 and trust < 55 and any(
+        token in lowered for token in ("behold", "kneel", "pathetic insect", "little worm", "how quaint")
+    ):
+        issues.append("out of character")
+    return list(dict.fromkeys(issues))
+
+
+async def _rewrite_reply_once(
+    draft: str,
+    issues: list[str],
+    *,
+    user_message: str = "",
+    user: dict | None = None,
+    max_tokens: int = 220,
+) -> str:
+    prompt = (
+        "You are revising one draft before it is sent.\n"
+        "Character: Wanderer.\n"
+        "Required voice: detached, observant, restrained, quietly personal when earned, and in-character for Genshin.\n"
+        f"Issues to fix: {', '.join(issues)}.\n"
+        f"User context: {user_message[:220] or 'direct bot output'}\n"
+        f"Relationship state: affection={(user or {}).get('affection', 0)} trust={(user or {}).get('trust', 0)} conflict_open={bool((user or {}).get('conflict_open'))}\n"
+        f"Draft: {draft}\n"
+        "Rewrite it once. Keep the meaning, keep it concise, avoid modern slang, avoid flat generic phrasing, and do not become softer than the relationship state has earned. Only return the rewritten reply."
+    )
+    rewritten = await qai(prompt, min(max_tokens, 260), self_edit=False)
+    return strip_narration((rewritten or "").strip())
+
+
+async def _maybe_self_edit_reply(
+    reply: str,
+    *,
+    recent_replies: list[str],
+    user_message: str = "",
+    user: dict | None = None,
+    max_tokens: int = 220,
+) -> str:
+    cleaned = strip_narration((reply or "").strip())
+    issues = _self_edit_issues(cleaned, recent_replies, user=user)
+    if not issues:
+        return cleaned
+    debug_event("self_edit", f"{BOT_NAME} issues={','.join(issues)}")
+    rewritten = await _rewrite_reply_once(
+        cleaned,
+        issues,
+        user_message=user_message,
+        user=user,
+        max_tokens=max_tokens,
+    )
+    if not rewritten:
+        return cleaned
+    rewritten = diversify_reply(BOT_NAME, rewritten, recent_replies)
+    rewritten = await _apply_phrase_policy(
+        rewritten,
+        recent_replies,
+        mood=(user or {}).get("mood", 0),
+        conflict_open=bool((user or {}).get("conflict_open")),
+    )
+    return rewritten or cleaned
+
+
+async def _world_prompt_context(channel_id: int) -> str:
+    try:
+        entities = await mem.list_world_entities(limit=5, channel_id=channel_id)
+        cases = await mem.list_world_cases(channel_id=channel_id, limit=4)
+        return _format_world_prompt(entities, cases)
+    except Exception as e:
+        log_error("world_prompt_context", e)
+        return ""
+
+
+async def _register_world_from_message(
+    channel_id: int,
+    user_id: int,
+    user_message: str,
+    scene_update: dict[str, str] | None,
+):
+    scene_update = scene_update or {}
+    lowered = (user_message or "").lower()
+    try:
+        location = (scene_update.get("location") or "").strip()
+        if location:
+            await mem.upsert_world_entity(
+                "place",
+                location[:120],
+                summary=f"Recurring scene location in channel {channel_id}.",
+                status="active",
+                channel_id=channel_id,
+                updated_by=BOT_NAME,
+            )
+        prop = (scene_update.get("important_prop") or "").strip()
+        if prop:
+            entity_type = "gift" if any(token in lowered for token in ("gift", "gave", "given", "brought for", "for you")) else "prop"
+            await mem.upsert_world_entity(
+                entity_type,
+                prop[:120],
+                summary=f"Recurring scene object tied to {scene_update.get('situation', user_message)[:120]}",
+                status="important",
+                channel_id=channel_id,
+                owner_user_id=user_id,
+                updated_by=BOT_NAME,
+            )
+        token_entities = {
+            "dottore": ("enemy", "Dottore", "Recurring hostile figure."),
+            "fatui": ("faction", "Fatui", "Recurring hostile faction."),
+            "nahida": ("ally", "Nahida", "Recurring ally or point of loyalty."),
+            "traveler": ("ally", "Traveler", "Recurring ally or traveling companion."),
+            "traveller": ("ally", "Traveler", "Recurring ally or traveling companion."),
+            "ei": ("figure", "Ei", "Recurring figure with emotional and political weight."),
+            "raiden": ("figure", "Raiden Ei", "Recurring figure with emotional and political weight."),
+        }
+        for token, (entity_type, name, summary) in token_entities.items():
+            if token in lowered:
+                await mem.upsert_world_entity(
+                    entity_type,
+                    name,
+                    summary=summary,
+                    status="remembered",
+                    channel_id=channel_id,
+                    updated_by=BOT_NAME,
+                )
+    except Exception as e:
+        log_error("register_world_from_message", e)
 
 
 async def _achievement_context(user_id: int) -> str:
@@ -1244,7 +1522,7 @@ def _groq_quick_blocking(prompt: str, max_tokens: int = 200) -> str:
         print(f"[Groq Quick] {e}")
         return "..."
 
-async def qai(prompt: str, max_tokens: int = 200) -> str:
+async def qai(prompt: str, max_tokens: int = 200, *, self_edit: bool = True) -> str:
     try:
         recent_replies = await _recent_reply_samples()
         repeat_guard = build_prompt_guard(BOT_NAME, recent_replies)
@@ -1258,6 +1536,13 @@ async def qai(prompt: str, max_tokens: int = 200) -> str:
             reply = await loop.run_in_executor(None, _groq_quick_blocking, active_prompt, max_tokens)
             reply = diversify_reply(BOT_NAME, strip_narration(reply), recent_replies)
             reply = await _apply_phrase_policy(reply, recent_replies)
+            if self_edit and reply:
+                reply = await _maybe_self_edit_reply(
+                    reply,
+                    recent_replies=recent_replies,
+                    user_message=prompt,
+                    max_tokens=min(max_tokens, 220),
+                )
             if reply and not looks_repetitive(reply, recent_replies):
                 break
         if not reply:
@@ -1365,6 +1650,8 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
         callback_memory = user.get("callback_memory") if user else None
         repair_count = user.get("repair_count", 0) if user else 0
         recent_replies = await _recent_reply_samples(channel_id=channel_id, user_id=user_id)
+        consequence_marks = await mem.get_active_consequence_marks(user_id, 4)
+        world_context = await _world_prompt_context(channel_id)
 
         depth = (user or {}).get("rp_depth", "medium")
         r = random.random()
@@ -1448,6 +1735,8 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
             parts.append(conflict_aftermath)
         if callback_memory and (callback_relevant(callback_memory, user_message) or random.random() < 0.18):
             parts.append(f"CALLBACK:{callback_memory[:180]}")
+        if consequence_marks:
+            parts.append(f"CONSEQUENCES:{_format_consequence_summary(consequence_marks)}")
         parts.extend(extract_continuity_hooks(history, user_message))
         lore_hook = describe_lore_hook(BOT_NAME, user_message)
         if lore_hook: parts.append(lore_hook)
@@ -1497,6 +1786,8 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
         partner_context = await _partner_prompt_context(user_message)
         duo_context = await _duo_prompt_context(channel_id, user_message)
         context_block = "[" + "|".join(parts) + "]\n"
+        if world_context:
+            context_block += world_context + "\n"
         if partner_context:
             context_block += partner_context + "\n"
         if duo_context:
@@ -1531,6 +1822,13 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
 
         if not reply:
             reply = fallback_reply(BOT_NAME, recent_replies)
+        reply = await _maybe_self_edit_reply(
+            reply,
+            recent_replies=recent_replies,
+            user_message=user_message,
+            user=user,
+            max_tokens=240,
+        )
         if search_sources:
             reply = f"{reply}\n\n{search_sources}"
 
@@ -1614,13 +1912,29 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
             await mem.update_mood(user_id, -1)
 
         if random.random() < .05: await mem.update_drift(user_id, +1)
+        repair_signal = detect_repair_signal(user_message)
+        conflict_signal = detect_conflict_signal(user_message)
+        if repair_signal:
+            await mem.soften_consequence_marks(user_id, 1)
+        if conflict_signal:
+            await mem.add_consequence_mark(user_id, "fight", user_message[:180], severity=3, decay_days=7)
+            debug_event("memory", f"{BOT_NAME} consequence user={user_id} kind=fight")
         await _learn_user_state(user_id, user_message)
         for kind, memory_text, weight in extract_memory_events(user_message):
             await mem.add_memory_event(user_id, kind, memory_text, max(weight, _memory_weight_for(kind)))
             debug_event("memory", f"{BOT_NAME} memory_bank user={user_id} kind={kind}")
+            if kind == "betrayal":
+                await mem.add_consequence_mark(user_id, kind, memory_text, severity=max(4, weight), decay_days=14)
+            elif kind in {"fight", "slight"}:
+                await mem.add_consequence_mark(user_id, kind, memory_text, severity=max(2, weight), decay_days=8)
+            elif kind == "promise":
+                await mem.add_consequence_mark(user_id, kind, memory_text, severity=2, decay_days=10)
+            elif kind == "repair":
+                await mem.soften_consequence_marks(user_id, 1)
         scene_update = infer_scene_update(user_message, display_name)
         if scene_update:
             await mem.update_scene_state(channel_id, **scene_update)
+            await _register_world_from_message(channel_id, user_id, user_message, scene_update)
             debug_event("scene", f"{BOT_NAME} channel={channel_id} fields={','.join(scene_update.keys())}")
     except Exception as e:
         log_error("get_response/post", e)
@@ -1652,6 +1966,13 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
         user_id=user_id,
         mood=(refreshed_user or user or {}).get("mood", 0),
         conflict_open=(refreshed_user or user or {}).get("conflict_open", False),
+    )
+    reply = await _maybe_self_edit_reply(
+        reply,
+        recent_replies=recent_replies,
+        user_message=user_message,
+        user=(refreshed_user or user),
+        max_tokens=240,
     )
     if not reply:
         reply = fallback_reply(BOT_NAME, recent_replies)
@@ -1878,10 +2199,18 @@ async def typing_delay(text):
     try: await asyncio.sleep(max(.3, min(.4 + len(text.split()) * .06, 3.5) + random.uniform(-.3, .5)))
     except: pass
 
+async def _setup_user(author):
+    try:
+        display_name = getattr(author, "display_name", None) or getattr(author, "name", "you")
+        await mem.upsert_user(author.id, str(author), display_name)
+        return await mem.get_user(author.id)
+    except Exception as e:
+        log_error("_setup_user", e); return None
+
+
 async def _setup(ctx):
     try:
-        await mem.upsert_user(ctx.author.id, str(ctx.author), ctx.author.display_name)
-        return await mem.get_user(ctx.author.id)
+        return await _setup_user(ctx.author)
     except Exception as e:
         log_error("_setup", e); return None
 
@@ -1892,6 +2221,18 @@ async def safe_reply(ctx, text):
 async def safe_send(ctx, text):
     try: await ctx.send(text)
     except Exception as e: log_error("safe_send", e)
+
+
+async def _interaction_reply(interaction: discord.Interaction, text: str, *, thinking: bool = False):
+    try:
+        if thinking and not interaction.response.is_done():
+            await interaction.response.defer(thinking=True)
+        if interaction.response.is_done():
+            await interaction.followup.send(text)
+        else:
+            await interaction.response.send_message(text)
+    except Exception as e:
+        log_error("interaction_reply", e)
 
 
 async def _reply_and_store(ctx, text: str):
@@ -1905,6 +2246,19 @@ async def _reply_and_store(ctx, text: str):
         await mem.bump_duo_session(ctx.channel.id, BOT_NAME, partner_bot=PARTNER_NAME)
     except Exception as e:
         log_error("reply_and_store", e)
+
+
+async def _reply_and_store_interaction(interaction: discord.Interaction, text: str):
+    await _interaction_reply(interaction, text, thinking=False)
+    try:
+        duo = await mem.get_duo_session(interaction.channel_id)
+        await mem.add_message(interaction.user.id, interaction.channel_id, "assistant", text)
+        await _maybe_finalize_hidden_achievements(duo, text)
+        if duo and duo.get("awaiting_bot") == BOT_NAME and duo.get("autoplay_remaining", 0) <= 1 and duo.get("mode") in {"trial", "mission", "interrogate", "truthdare", "compare"}:
+            await mem.resolve_duo_story(interaction.channel_id, duo.get("mode", ""), text[:180])
+        await mem.bump_duo_session(interaction.channel_id, BOT_NAME, partner_bot=PARTNER_NAME)
+    except Exception as e:
+        log_error("reply_and_store_interaction", e)
 
 
 def _format_memory_snapshot(user: dict | None, topics: list[dict], memories: list[dict], scene: dict | None) -> str:
@@ -1922,6 +2276,47 @@ def _format_memory_snapshot(user: dict | None, topics: list[dict], memories: lis
     if scene_desc:
         lines.append(f"Scene: {scene_desc}")
     return "\n".join(lines) if lines else "There's nothing especially persistent yet."
+
+
+async def _run_duo_prompt_for_actor(
+    author,
+    channel,
+    mode: str,
+    prompt: str,
+    *,
+    session_topic: str | None = None,
+    story: bool = False,
+    enemy: str = "",
+    extra_context: str = "",
+) -> tuple[dict | None, str]:
+    user = await _setup_user(author)
+    autoplay_turns = DUO_CHAIN_TURNS.get(mode, 1)
+    if not (user or {}).get("duo_autoplay", True):
+        autoplay_turns = 1
+    await mem.set_duo_session(
+        channel.id,
+        mode,
+        session_topic or prompt,
+        BOT_NAME,
+        initiator_user_id=author.id,
+        awaiting_bot=PARTNER_NAME,
+        autoplay_turns=autoplay_turns,
+        autoplay_delay=6,
+    )
+    if story:
+        await mem.start_duo_story(channel.id, mode, session_topic or prompt, enemy=enemy)
+    reply = await get_response(
+        author.id,
+        channel.id,
+        prompt,
+        user,
+        getattr(author, "display_name", getattr(author, "name", "you")),
+        author.mention,
+        extra_context=extra_context,
+        channel_obj=channel,
+        is_dm=isinstance(channel, discord.DMChannel),
+    )
+    return user, reply
 
 class ResetView(discord.ui.View):
     def __init__(self, uid):
@@ -1943,7 +2338,7 @@ class ResetView(discord.ui.View):
 
 @bot.event
 async def on_ready():
-    global PARTNER_BOT_ID
+    global PARTNER_BOT_ID, _TREE_SYNCED
     await mem.init()
     # Safety: PARTNER_BOT_ID must not be our own ID
     if PARTNER_BOT_ID and PARTNER_BOT_ID == bot.user.id:
@@ -1960,6 +2355,13 @@ async def on_ready():
     bot.loop.create_task(_voluntary_dm_loop())
     bot.loop.create_task(_duo_autoplay_loop())
     bot.loop.create_task(_rival_event_loop())
+    if not _TREE_SYNCED:
+        try:
+            synced = await bot.tree.sync()
+            _TREE_SYNCED = True
+            print(f"[SLASH] Synced {len(synced)} app command(s)")
+        except Exception as sync_error:
+            log_error("tree_sync", sync_error)
 
 @tasks.loop(minutes=47)
 async def status_rotation():
@@ -3711,25 +4113,8 @@ async def relationship_cmd(ctx):
         user = await _setup(ctx)
         scene = await mem.get_scene_state(ctx.channel.id)
         topics = await mem.get_top_topics(ctx.author.id, 3)
-        stage, stage_desc = _progression_parts(user)
-        arc = _current_arc(user)
-        aftermath = describe_conflict_aftermath(
-            user.get("conflict_summary", "") if user else "",
-            user.get("last_conflict_ts", 0) if user else 0,
-            user.get("repair_progress", 0) if user else 0,
-        ) or "no open aftermath"
-        lines = [
-            f"Relationship: affection {(user or {}).get('affection', 0)}/100 | trust {(user or {}).get('trust', 0)}/100 | mood {(user or {}).get('mood', 0):+d}",
-            f"Arc: {arc} | progression: {stage}",
-            f"Progression detail: {stage_desc}",
-            f"Conflict aftermath: {aftermath}",
-            f"Preferences: voice={_pref_label((user or {}).get('voice_enabled', True))} | utility={_pref_label((user or {}).get('utility_mode', True))} | duoauto={_pref_label((user or {}).get('duo_autoplay', True))} | rpdepth={(user or {}).get('rp_depth', 'medium')}",
-        ]
-        if topics:
-            lines.append("Top topics: " + ", ".join(item["topic"] for item in topics[:3]))
-        scene_desc = describe_scene_state(scene)
-        if scene_desc:
-            lines.append(f"Current scene: {scene_desc}")
+        marks = await mem.get_active_consequence_marks(ctx.author.id, 4)
+        lines = _relationship_lines(user, scene, topics, marks)
         await safe_reply(ctx, "\n".join(lines))
     except Exception as e: log_error("relationship_cmd", e)
 
@@ -3758,24 +4143,8 @@ async def duostate_cmd(ctx):
         duo = await mem.get_duo_session(ctx.channel.id)
         relation = await mem.get_bot_relationship(PARTNER_PAIR_KEY)
         stories = await mem.get_recent_duo_stories(ctx.channel.id, 4)
-        lines = [
-            f"Speaker mode: {speaker_mode}",
-            f"Bot relationship: {relation.get('stage', 'enemy')} | respect {relation.get('respect', 0)}/100 | tension {relation.get('tension', 0)}/100",
-        ]
-        if duo:
-            lines.append(
-                f"Active duo: mode={duo.get('mode')} | awaiting={duo.get('awaiting_bot') or 'nobody'} | turns_left={duo.get('autoplay_remaining', 0)} | topic={duo.get('topic')}"
-            )
-        else:
-            lines.append("Active duo: none")
-        if stories:
-            lines.append(
-                "Recent duo stories: "
-                + " || ".join(
-                    f"{_duo_story_label(item.get('story_type', ''))}: {item.get('topic', '')[:60]} [{item.get('status', 'open')}]"
-                    for item in stories[:3]
-                )
-            )
+        cases = await mem.list_world_cases(channel_id=ctx.channel.id, limit=3)
+        lines = _duostate_lines(speaker_mode, duo, relation, stories, cases)
         await safe_reply(ctx, "\n".join(lines))
     except Exception as e: log_error("duostate_cmd", e)
 
@@ -3966,6 +4335,49 @@ async def scene_cmd(ctx):
             lines.append(f"Duo mode: {duo.get('mode')} | topic={duo.get('topic')}")
         await safe_reply(ctx, "\n".join(lines))
     except Exception as e: log_error("scene_cmd", e)
+
+@bot.command(name="world")
+async def world_cmd(ctx):
+    try:
+        entities = await mem.list_world_entities(limit=8, channel_id=ctx.channel.id)
+        await safe_reply(ctx, "\n".join(_world_lines(entities)))
+    except Exception as e: log_error("world_cmd", e)
+
+@bot.command(name="cases")
+async def cases_cmd(ctx):
+    try:
+        cases = await mem.list_world_cases(channel_id=ctx.channel.id, limit=8)
+        await safe_reply(ctx, "\n".join(_case_lines(cases)))
+    except Exception as e: log_error("cases_cmd", e)
+
+@bot.command(name="worldadd")
+async def worldadd_cmd(ctx, entity_type: str = None, *, payload: str = None):
+    try:
+        if not entity_type or not payload:
+            await safe_reply(ctx, "Use `!worldadd enemy Dottore | ruined laboratory trail`.")
+            return
+        if "|" in payload:
+            name, summary = [part.strip() for part in payload.split("|", 1)]
+        else:
+            name, summary = payload.strip(), ""
+        if not name:
+            await safe_reply(ctx, "Give the world entry a name.")
+            return
+        normalized = entity_type.strip().lower()
+        if normalized not in {"enemy", "ally", "gift", "place", "prop", "faction", "figure", "case"}:
+            await safe_reply(ctx, "Use one of: enemy, ally, gift, place, prop, faction, figure, case.")
+            return
+        await mem.upsert_world_entity(
+            normalized,
+            name,
+            summary=summary or f"Added manually by {ctx.author.display_name}.",
+            status="remembered",
+            channel_id=ctx.channel.id,
+            owner_user_id=ctx.author.id,
+            updated_by=BOT_NAME,
+        )
+        await safe_reply(ctx, f"...Alright. I filed `{name}` under `{normalized}`.")
+    except Exception as e: log_error("worldadd_cmd", e)
 
 @bot.command(name="insidejokes", aliases=["jokes"])
 async def insidejokes_cmd(ctx):
@@ -4240,6 +4652,291 @@ async def help_cmd(ctx):
 @bot.command(name="wanhelp", aliases=["wandererhelp", "commands"])
 async def wanhelp_cmd(ctx):
     await help_cmd(ctx)
+
+
+dashboard_group = app_commands.Group(name="dashboard", description="Check relationship and scene continuity.")
+world_group = app_commands.Group(name="world", description="Inspect or update the shared world state.")
+prefs_group = app_commands.Group(name="prefs", description="Tune voice, utility, duo, and speaker preferences.")
+duo_group = app_commands.Group(name="duo", description="Start or inspect coordinated two-bot scenes.")
+
+
+@dashboard_group.command(name="relationship", description="Show trust, arc, scene, and consequence scars.")
+async def slash_relationship(interaction: discord.Interaction):
+    try:
+        user = await _setup_user(interaction.user)
+        scene = await mem.get_scene_state(interaction.channel_id)
+        topics = await mem.get_top_topics(interaction.user.id, 3)
+        marks = await mem.get_active_consequence_marks(interaction.user.id, 4)
+        await _interaction_reply(interaction, "\n".join(_relationship_lines(user, scene, topics, marks)))
+    except Exception as e:
+        log_error("slash_relationship", e)
+        await _interaction_reply(interaction, "Something went wrong reading the relationship state.")
+
+
+@dashboard_group.command(name="arc", description="Show the current progression arc and unlocks.")
+async def slash_arc(interaction: discord.Interaction):
+    try:
+        user = await _setup_user(interaction.user)
+        arc = _current_arc(user)
+        stage, stage_desc = _progression_parts(user)
+        unlocks = describe_arc_unlocks(BOT_NAME, arc) or "No special unlocks yet."
+        recent = await mem.get_recent_milestones(f"{BOT_NAME}:user:{interaction.user.id}", 2)
+        lines = [
+            f"Arc: {arc}",
+            f"Progression: {stage} | {stage_desc}",
+            f"Unlocks: {unlocks}",
+        ]
+        if recent:
+            lines.append("Recent milestones: " + " | ".join(note[:120] for note in recent))
+        await _interaction_reply(interaction, "\n".join(lines))
+    except Exception as e:
+        log_error("slash_arc", e)
+        await _interaction_reply(interaction, "Something went wrong reading the arc.")
+
+
+@dashboard_group.command(name="duostate", description="Show current duo mode, speaker mode, and case state.")
+async def slash_duostate(interaction: discord.Interaction):
+    try:
+        speaker_mode = await mem.get_channel_speaker_mode(interaction.channel_id)
+        duo = await mem.get_duo_session(interaction.channel_id)
+        relation = await mem.get_bot_relationship(PARTNER_PAIR_KEY)
+        stories = await mem.get_recent_duo_stories(interaction.channel_id, 4)
+        cases = await mem.list_world_cases(channel_id=interaction.channel_id, limit=3)
+        await _interaction_reply(interaction, "\n".join(_duostate_lines(speaker_mode, duo, relation, stories, cases)))
+    except Exception as e:
+        log_error("slash_duostate", e)
+        await _interaction_reply(interaction, "Something went wrong reading the duo state.")
+
+
+@dashboard_group.command(name="scene", description="Show current scene memory and duo scene topic.")
+async def slash_scene(interaction: discord.Interaction):
+    try:
+        scene = await mem.get_scene_state(interaction.channel_id)
+        duo = await mem.get_duo_session(interaction.channel_id)
+        if not scene and not duo:
+            await _interaction_reply(interaction, "This channel doesn't have much continuity yet.")
+            return
+        lines = []
+        if scene:
+            lines.append(f"Scene: {describe_scene_state(scene)}")
+        if duo:
+            lines.append(f"Duo mode: {duo.get('mode')} | topic={duo.get('topic')}")
+        await _interaction_reply(interaction, "\n".join(lines))
+    except Exception as e:
+        log_error("slash_scene", e)
+        await _interaction_reply(interaction, "Something went wrong reading the scene.")
+
+
+@world_group.command(name="state", description="Show shared NPC, gift, place, and object memory.")
+async def slash_world_state(interaction: discord.Interaction):
+    try:
+        entities = await mem.list_world_entities(limit=8, channel_id=interaction.channel_id)
+        await _interaction_reply(interaction, "\n".join(_world_lines(entities)))
+    except Exception as e:
+        log_error("slash_world_state", e)
+        await _interaction_reply(interaction, "Something went wrong reading the world state.")
+
+
+@world_group.command(name="cases", description="Show open or recent shared cases in this channel.")
+async def slash_world_cases(interaction: discord.Interaction):
+    try:
+        cases = await mem.list_world_cases(channel_id=interaction.channel_id, limit=8)
+        await _interaction_reply(interaction, "\n".join(_case_lines(cases)))
+    except Exception as e:
+        log_error("slash_world_cases", e)
+        await _interaction_reply(interaction, "Something went wrong reading the case log.")
+
+
+@world_group.command(name="add", description="Add a shared world entry for both bots to remember.")
+@app_commands.describe(entity_type="enemy, ally, gift, place, prop, faction, figure, or case", name="Name of the world entry", summary="Short note about why it matters")
+async def slash_world_add(
+    interaction: discord.Interaction,
+    entity_type: str,
+    name: str,
+    summary: str = "",
+):
+    try:
+        normalized = entity_type.strip().lower()
+        if normalized not in {"enemy", "ally", "gift", "place", "prop", "faction", "figure", "case"}:
+            await _interaction_reply(interaction, "Use one of: enemy, ally, gift, place, prop, faction, figure, case.")
+            return
+        await mem.upsert_world_entity(
+            normalized,
+            name,
+            summary=summary or f"Added manually by {interaction.user.display_name}.",
+            status="remembered",
+            channel_id=interaction.channel_id,
+            owner_user_id=interaction.user.id,
+            updated_by=BOT_NAME,
+        )
+        await _interaction_reply(interaction, f"Filed `{name}` under `{normalized}`.")
+    except Exception as e:
+        log_error("slash_world_add", e)
+        await _interaction_reply(interaction, "Something went wrong updating the world state.")
+
+
+@prefs_group.command(name="voice", description="Turn voice-note replies on or off.")
+@app_commands.choices(mode=[
+    app_commands.Choice(name="On", value="on"),
+    app_commands.Choice(name="Off", value="off"),
+    app_commands.Choice(name="Status", value="status"),
+])
+async def slash_pref_voice(interaction: discord.Interaction, mode: app_commands.Choice[str]):
+    try:
+        user = await _setup_user(interaction.user)
+        value = mode.value
+        if value == "status":
+            await _interaction_reply(interaction, f"Voice notes are `{_pref_label(user.get('voice_enabled', True) if user else True)}`.")
+            return
+        enabled = value == "on"
+        await mem.set_user_preference(interaction.user.id, "voice_enabled", int(enabled))
+        await _interaction_reply(interaction, f"Voice notes are `{_pref_label(enabled)}` now.")
+    except Exception as e:
+        log_error("slash_pref_voice", e)
+        await _interaction_reply(interaction, "Something went wrong updating voice preference.")
+
+
+@prefs_group.command(name="utility", description="Toggle cleaner utility formatting for facts and weather.")
+@app_commands.choices(mode=[
+    app_commands.Choice(name="On", value="on"),
+    app_commands.Choice(name="Off", value="off"),
+])
+async def slash_pref_utility(interaction: discord.Interaction, mode: app_commands.Choice[str]):
+    try:
+        enabled = mode.value == "on"
+        await _setup_user(interaction.user)
+        await mem.set_user_preference(interaction.user.id, "utility_mode", int(enabled))
+        await _interaction_reply(interaction, f"Utility mode is `{_pref_label(enabled)}` now.")
+    except Exception as e:
+        log_error("slash_pref_utility", e)
+        await _interaction_reply(interaction, "Something went wrong updating utility mode.")
+
+
+@prefs_group.command(name="duoauto", description="Toggle extended duo autoplay chains.")
+@app_commands.choices(mode=[
+    app_commands.Choice(name="On", value="on"),
+    app_commands.Choice(name="Off", value="off"),
+])
+async def slash_pref_duoauto(interaction: discord.Interaction, mode: app_commands.Choice[str]):
+    try:
+        enabled = mode.value == "on"
+        await _setup_user(interaction.user)
+        await mem.set_user_preference(interaction.user.id, "duo_autoplay", int(enabled))
+        await _interaction_reply(interaction, f"Duo autoplay is `{_pref_label(enabled)}` now.")
+    except Exception as e:
+        log_error("slash_pref_duoauto", e)
+        await _interaction_reply(interaction, "Something went wrong updating duo autoplay.")
+
+
+@prefs_group.command(name="rpdepth", description="Set how brief or elaborate replies should be.")
+@app_commands.choices(level=[
+    app_commands.Choice(name="Low", value="low"),
+    app_commands.Choice(name="Medium", value="medium"),
+    app_commands.Choice(name="High", value="high"),
+])
+async def slash_pref_rpdepth(interaction: discord.Interaction, level: app_commands.Choice[str]):
+    try:
+        await _setup_user(interaction.user)
+        await mem.set_user_preference(interaction.user.id, "rp_depth", level.value)
+        await _interaction_reply(interaction, f"RP depth is now `{level.value}`.")
+    except Exception as e:
+        log_error("slash_pref_rpdepth", e)
+        await _interaction_reply(interaction, "Something went wrong updating RP depth.")
+
+
+@prefs_group.command(name="speaker", description="Choose who should ambiently respond in this channel.")
+@app_commands.choices(mode=[
+    app_commands.Choice(name="Auto", value="auto"),
+    app_commands.Choice(name="Scaramouche", value="scaramouche"),
+    app_commands.Choice(name="Wanderer", value="wanderer"),
+    app_commands.Choice(name="Both", value="both"),
+])
+async def slash_pref_speaker(interaction: discord.Interaction, mode: app_commands.Choice[str]):
+    try:
+        await mem.set_channel_speaker_mode(interaction.channel_id, mode.value)
+        await _interaction_reply(interaction, f"This channel is now set to `{mode.value}` mode.")
+    except Exception as e:
+        log_error("slash_pref_speaker", e)
+        await _interaction_reply(interaction, "Something went wrong updating the speaker mode.")
+
+
+@duo_group.command(name="start", description="Launch a coordinated two-bot scene from one slash menu.")
+@app_commands.describe(mode="Which duo format to start", prompt="The topic, scene, charge, or question to throw at both bots")
+@app_commands.choices(mode=[
+    app_commands.Choice(name="Both", value="both"),
+    app_commands.Choice(name="Duet", value="duet"),
+    app_commands.Choice(name="Argue", value="argue"),
+    app_commands.Choice(name="Compare", value="compare"),
+    app_commands.Choice(name="Interrogate", value="interrogate"),
+    app_commands.Choice(name="Trial", value="trial"),
+    app_commands.Choice(name="Mission", value="mission"),
+    app_commands.Choice(name="Truth or Dare", value="truthdare"),
+])
+async def slash_duo_start(interaction: discord.Interaction, mode: app_commands.Choice[str], prompt: str):
+    try:
+        if not interaction.channel:
+            await _interaction_reply(interaction, "This needs a channel to stage the duo in.")
+            return
+        mode_value = mode.value
+        config = {
+            "both": ("TWO_BOT_MODE: The user explicitly wants both bots to answer. Keep it to one or two sentences and never speak for the other bot.", False, ""),
+            "duet": ("DUET_MODE: contribute one short in-character turn, leave space for the other bot, and avoid narration tags.", False, ""),
+            "argue": ("ARGUE_MODE: take a sharp stance, challenge the other bot directly, and keep it to one or two sentences.", False, ""),
+            "compare": ("COMPARE_MODE: answer the prompt, then draw a quick contrast between your view and the other bot's likely view.", True, ""),
+            "interrogate": ("INTERROGATE_MODE: ask one pointed question or observation, leaving room for the other bot to press further.", True, prompt),
+            "trial": ("TRIAL_MODE: deliver a prosecution, defense, or judgment opening with controlled bite.", True, prompt),
+            "mission": ("MISSION_MODE: assign one clear role, risk, or warning, leaving room for the other bot to complement it.", True, prompt),
+            "truthdare": ("TRUTHDARE_MODE: issue one pointed truth or dare challenge, leaving room for the other bot to escalate.", True, ""),
+        }
+        extra_context, story, enemy = config[mode_value]
+        await interaction.response.defer(thinking=True)
+        user, reply = await _run_duo_prompt_for_actor(
+            interaction.user,
+            interaction.channel,
+            mode_value,
+            prompt if mode_value == "both" else (
+                f"Contribute one turn to this shared two-bot scene: {prompt}" if mode_value == "duet"
+                else f"The user started a deliberate two-bot argument about: {prompt}" if mode_value == "argue"
+                else f"Give your verdict on this and make your difference from {PARTNER_NAME.title()} clear: {prompt}" if mode_value == "compare"
+                else f"Start a two-bot interrogation about: {prompt}" if mode_value == "interrogate"
+                else f"Open a two-bot trial about this charge: {prompt}" if mode_value == "trial"
+                else f"Plan a two-bot mission around this objective: {prompt}" if mode_value == "mission"
+                else f"Start a two-bot truth-or-dare round with this setup: {prompt}"
+            ),
+            session_topic=prompt,
+            story=story,
+            enemy=enemy,
+            extra_context=extra_context,
+        )
+        _ = user
+        await _reply_and_store_interaction(interaction, reply)
+    except Exception as e:
+        log_error("slash_duo_start", e)
+        if interaction.response.is_done():
+            await interaction.followup.send("Something went wrong starting the duo scene.")
+        else:
+            await interaction.response.send_message("Something went wrong starting the duo scene.")
+
+
+@duo_group.command(name="state", description="Show current duo mode and world-case carryover.")
+async def slash_duo_state(interaction: discord.Interaction):
+    try:
+        speaker_mode = await mem.get_channel_speaker_mode(interaction.channel_id)
+        duo = await mem.get_duo_session(interaction.channel_id)
+        relation = await mem.get_bot_relationship(PARTNER_PAIR_KEY)
+        stories = await mem.get_recent_duo_stories(interaction.channel_id, 4)
+        cases = await mem.list_world_cases(channel_id=interaction.channel_id, limit=3)
+        await _interaction_reply(interaction, "\n".join(_duostate_lines(speaker_mode, duo, relation, stories, cases)))
+    except Exception as e:
+        log_error("slash_duo_state", e)
+        await _interaction_reply(interaction, "Something went wrong reading the duo state.")
+
+
+for _group in (dashboard_group, world_group, prefs_group, duo_group):
+    try:
+        bot.tree.add_command(_group)
+    except Exception:
+        pass
 
 @bot.event
 async def on_command_error(ctx, error):
