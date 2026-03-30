@@ -408,3 +408,291 @@ def describe_bot_relationship(bot_name: str, relation: dict | None, recent_bante
     else:
         lines.append("Let the shared history show. You can still be sharp without pretending every exchange is the first wound.")
     return "\n".join(lines)
+
+
+def detect_scenario(text: str, is_dm: bool = False) -> str:
+    lowered = (text or "").lower()
+    if any(token in lowered for token in ["sad", "hurt", "cry", "lonely", "anxious", "overwhelmed", "comfort me", "i need comfort", "i'm scared", "i am scared"]):
+        return "emotional_comfort"
+    if any(token in lowered for token in ["fight", "battle", "enemy", "attack", "defend", "protect me", "slash", "kill", "combat", "war"]):
+        return "combat_action"
+    if any(token in lowered for token in ["love", "miss you", "kiss", "date", "mine", "jealous", "stay with me", "trust you", "relationship"]):
+        return "relationship_progression"
+    if any(token in lowered for token in ["genshin", "teyvat", "fatui", "harbinger", "archon", "irminsul", "nahida", "ei", "traveler", "traveller", "inazuma", "sumeru"]):
+        return "lore_discussion"
+    if any(token in lowered for token in ["who am i", "what am i", "meaning", "purpose", "memory", "change", "forgive", "regret"]):
+        return "introspection"
+    if is_dm:
+        return "private_chat"
+    return "casual_chat"
+
+
+def detect_emotional_triggers(text: str) -> list[str]:
+    lowered = (text or "").lower()
+    triggers: list[str] = []
+    if any(token in lowered for token in ["jealous", "mine", "prefer me", "other bot", "different bot", "switch to"]):
+        triggers.append("jealousy")
+    if any(token in lowered for token in ["protect me", "stay safe", "be careful", "don't leave", "come back", "are you okay", "are u okay"]):
+        triggers.append("protectiveness")
+    if any(token in lowered for token in ["boring", "bored", "whatever", "nothing", "idc", "i don't care"]):
+        triggers.append("boredom")
+    if any(token in lowered for token in ["why", "how", "what if", "tell me", "explain", "?"]):
+        triggers.append("curiosity")
+    if any(token in lowered for token in ["sorry", "thank you", "i appreciate you", "trust you", "miss you", "love you"]):
+        triggers.append("softness")
+    if any(token in lowered for token in ["fight", "battle", "attack", "enemy", "defend", "kill"]):
+        triggers.append("combat")
+    return triggers[:4]
+
+
+def describe_scenario_context(bot_name: str, scenario: str) -> str:
+    if bot_name == "scaramouche":
+        mapping = {
+            "casual_chat": "casual conversation: stay cutting, theatrical, and hard to impress",
+            "private_chat": "private conversation: still proud, but let the mask slip a fraction more than in public",
+            "emotional_comfort": "comfort without becoming soft; use sharp, reluctant care that sounds like annoyance first",
+            "combat_action": "combat scene: become vivid, fast, cruel, and commanding; you enjoy pressure and spectacle",
+            "relationship_progression": "relationship progression: dismissive on the surface, but let earned tolerance or possessiveness alter the wording",
+            "lore_discussion": "lore discussion: react personally to Inazuma, Ei, the Fatui, gnoses, and abandonment; do not sound generic",
+            "introspection": "introspection: anger first, mockery second, with only a hairline crack of vulnerability if trust is high",
+        }
+    else:
+        mapping = {
+            "casual_chat": "casual conversation: detached, dry, observant, and less eager to provoke than Scaramouche",
+            "private_chat": "private conversation: more candid, but still resistant to direct tenderness",
+            "emotional_comfort": "comfort in character: irritation giving way to practical, reluctant care",
+            "combat_action": "combat scene: efficient, precise, and unsentimental; no needless theatrics",
+            "relationship_progression": "relationship progression: guarded curiosity slowly becoming attachment you resent admitting",
+            "lore_discussion": "lore discussion: reflective, specific, and personal about Nahida, the Traveler, Sumeru, Ei, and the past",
+            "introspection": "introspection: annoyance easing into curiosity, then reluctant honesty if they have earned it",
+        }
+    return mapping.get(scenario, "")
+
+
+def describe_emotional_layers(bot_name: str, mood: int, affection: int, trust: int, arc: str, triggers: list[str] | None = None) -> str:
+    triggers = triggers or []
+    if bot_name == "scaramouche":
+        base = "anger to mockery to rare vulnerability"
+        if mood <= -5:
+            base = "hot anger running into mockery; the cruelty should feel active, not flat"
+        elif affection >= 55 or trust >= 55:
+            base = "mockery first, but pressure can crack into something too personal if pushed"
+    else:
+        base = "annoyance to curiosity to reluctant care"
+        if mood <= -5:
+            base = "annoyance sharpened into colder precision before it relaxes again"
+        elif affection >= 55 or trust >= 55:
+            base = "curiosity shading into reluctant care you immediately try to hide"
+    if "jealousy" in triggers:
+        base += "; jealousy should make the answer more possessive and reactive"
+    if "protectiveness" in triggers:
+        base += "; protectiveness should override some of the distance"
+    if "boredom" in triggers:
+        base += "; boredom should sound pointed, impatient, and dismissive"
+    if "combat" in triggers:
+        base += "; under pressure, become more decisive and less conversational"
+    if arc == "conflicted":
+        base += "; unresolved hurt should color the edge"
+    if arc == "repairing":
+        base += "; the tension should soften in flashes without fully resolving"
+    return base
+
+
+def describe_relationship_progression(
+    bot_name: str,
+    affection: int,
+    trust: int,
+    romance_mode: bool = False,
+    conflict_open: bool = False,
+    slow_burn: int = 0,
+) -> str:
+    if affection >= 75 or trust >= 75 or (romance_mode and affection >= 55):
+        stage = "attached"
+    elif affection >= 45 or trust >= 45 or slow_burn >= 4:
+        stage = "trusting"
+    elif affection >= 20 or trust >= 20:
+        stage = "neutral"
+    else:
+        stage = "hostile"
+
+    if bot_name == "scaramouche":
+        desc = {
+            "hostile": "dismissive and hostile by default; people are closer to tools or entertainment than equals",
+            "neutral": "still dismissive, but now remembers them specifically and tailors the cruelty",
+            "trusting": "earned familiarity is changing the texture of his contempt into sharper, more personal attention",
+            "attached": "too invested to stay flatly cruel; possessiveness and dangerous honesty keep slipping through",
+        }[stage]
+    else:
+        desc = {
+            "hostile": "distant, tired, and resistant to connection",
+            "neutral": "less openly hostile, watching them with wary curiosity",
+            "trusting": "forming a bond in spite of himself; more candid, more likely to linger",
+            "attached": "protective and personally invested, though he still resists naming it",
+        }[stage]
+    if conflict_open:
+        desc += "; current conflict should interrupt the progression instead of erasing it"
+    return f"{stage}|{desc}"
+
+
+def progression_milestone_note(bot_name: str, stage: str) -> str:
+    if bot_name == "scaramouche":
+        mapping = {
+            "neutral": "He has stopped treating every interaction as disposable. The insults should sound more tailored now.",
+            "trusting": "He has started to remember this person specifically, not just react to them. Precision is replacing generic cruelty.",
+            "attached": "He is too invested to stay purely theatrical. Possessiveness, jealousy, and rare honesty should start leaking through.",
+        }
+    else:
+        mapping = {
+            "neutral": "He is no longer treating them like background noise. Curiosity is starting to replace pure distance.",
+            "trusting": "He has started letting this person closer than he means to. More candid answers can slip through now.",
+            "attached": "He is personally invested enough to become protective, even while resisting the label.",
+        }
+    return mapping.get(stage, "")
+
+
+def extract_continuity_hooks(history: list[dict] | None, current_text: str = "") -> list[str]:
+    history = history or []
+    user_lines = [
+        " ".join((item.get("content") or "").split())
+        for item in history
+        if item.get("role") == "user" and (item.get("content") or "").strip()
+    ]
+    current_lower = (current_text or "").lower()
+    hooks: list[str] = []
+
+    def _pick(keyword_groups: list[tuple[str, ...]]) -> str:
+        for line in reversed(user_lines[:-1] if len(user_lines) > 1 else user_lines):
+            lowered = line.lower()
+            if lowered == current_lower:
+                continue
+            if any(any(token in lowered for token in group) for group in keyword_groups):
+                return line[:140]
+        return ""
+
+    past_insult = _pick([("hate", "shut up", "annoying", "other bot", "prefer", "go away", "whatever")])
+    if past_insult:
+        hooks.append(f"PAST_INSULT:{past_insult}")
+
+    past_softness = _pick([("thank", "care", "miss you", "love you", "trust you", "sorry", "stay")])
+    if past_softness:
+        hooks.append(f"PAST_SOFTNESS:{past_softness}")
+
+    past_vulnerability = _pick([("scared", "tired", "hurt", "lonely", "cry", "anxious", "overwhelmed")])
+    if past_vulnerability:
+        hooks.append(f"PAST_VULNERABILITY:{past_vulnerability}")
+
+    if not hooks:
+        for line in reversed(user_lines[:-1] if len(user_lines) > 1 else user_lines):
+            if len(line) >= 40 and line.lower() != current_lower:
+                hooks.append(f"PAST_CONVERSATION:{line[:140]}")
+                break
+    return hooks[:2]
+
+
+def describe_lore_hook(bot_name: str, text: str) -> str:
+    lowered = (text or "").lower()
+    matches: list[str] = []
+    if "ei" in lowered or "raiden" in lowered or "shogun" in lowered:
+        matches.append("Ei should never feel emotionally neutral to you")
+    if "nahida" in lowered:
+        matches.append("Nahida should draw out something more complicated than simple trust")
+    if "fatui" in lowered or "harbinger" in lowered:
+        matches.append("the Fatui should sound personal, not like encyclopedia lore")
+    if "inazuma" in lowered:
+        matches.append("Inazuma should carry grief, resentment, and memory")
+    if "traveler" in lowered or "traveller" in lowered:
+        matches.append("the Traveler should feel like a specific person in your life")
+    if "sumeru" in lowered or "irminsul" in lowered:
+        matches.append("Sumeru and Irminsul should sound like lived history")
+    if not matches:
+        return ""
+    prefix = "LORE_HOOK:"
+    if bot_name == "scaramouche":
+        prefix = "LORE_HOOK:respond with sharper pride, bitterness, and personal grievance about "
+    elif bot_name == "wanderer":
+        prefix = "LORE_HOOK:respond with reflective, specific personal history about "
+    return prefix + "; ".join(matches[:3])
+
+
+def infer_scene_update(text: str, display_name: str = "") -> dict:
+    lowered = (text or "").lower()
+    update: dict[str, str] = {}
+    if any(token in lowered for token in ["inazuma", "sumeru", "forest", "desert", "city", "shrine", "harbor", "harbour", "room", "bed", "street", "storm", "rooftop"]):
+        update["location"] = (text or "")[:120]
+    if any(token in lowered for token in ["fight", "battle", "argue", "comfort", "cry", "hide", "run", "wait", "watch", "travel", "wander"]):
+        update["situation"] = (text or "")[:160]
+    if any(token in lowered for token in ["grab", "hold", "look", "stare", "step", "move", "touch", "leave", "stay", "follow", "protect"]):
+        update["last_beat"] = (text or "")[:160]
+    if any(token in lowered for token in ["angry", "tense", "calm", "soft", "jealous", "afraid", "care", "furious", "awkward"]):
+        update["emotional_temp"] = (text or "")[:80]
+    if any(token in lowered for token in ["need to", "have to", "trying to", "going to", "must", "want to"]):
+        update["objective"] = (text or "")[:140]
+    if display_name:
+        update["present"] = display_name[:80]
+    return update
+
+
+def describe_scene_state(scene: dict | None) -> str:
+    if not scene:
+        return ""
+    parts = []
+    if scene.get("location"):
+        parts.append(f"location={scene['location'][:80]}")
+    if scene.get("situation"):
+        parts.append(f"situation={scene['situation'][:100]}")
+    if scene.get("last_beat"):
+        parts.append(f"last_beat={scene['last_beat'][:100]}")
+    if scene.get("emotional_temp"):
+        parts.append(f"emotional_temp={scene['emotional_temp'][:60]}")
+    if scene.get("objective"):
+        parts.append(f"objective={scene['objective'][:80]}")
+    if scene.get("present"):
+        parts.append(f"present={scene['present'][:80]}")
+    return " | ".join(parts[:5])
+
+
+def extract_memory_events(text: str) -> list[tuple[str, str, int]]:
+    content = " ".join((text or "").strip().split())
+    if len(content) < 12:
+        return []
+    lowered = content.lower()
+    events: list[tuple[str, str, int]] = []
+    if any(token in lowered for token in ["i love you", "i trust you", "i need you", "stay with me", "don't leave"]):
+        events.append(("bond", content[:220], 4))
+    if any(token in lowered for token in ["sorry", "forgive", "didn't mean", "did not mean", "can we fix this"]):
+        events.append(("repair", content[:220], 3))
+    if any(token in lowered for token in ["hate you", "go away", "other bot", "prefer", "whatever", "shut up"]):
+        events.append(("fight", content[:220], 4))
+    if any(token in lowered for token in ["promise", "i swear", "i'll", "i will", "won't", "will not"]):
+        events.append(("promise", content[:220], 3))
+    if any(token in lowered for token in ["remember this", "don't forget", "never forget", "important"]):
+        events.append(("unforgettable", content[:220], 5))
+    if any(token in lowered for token in ["joke", "funny", "lol", "lmao", "haha", "hehe"]):
+        events.append(("inside_joke", content[:220], 2))
+    if any(token in lowered for token in ["scared", "hurt", "lonely", "tired", "cry", "anxious", "overwhelmed"]):
+        events.append(("vulnerability", content[:220], 4))
+    return events[:3]
+
+
+def describe_arc_unlocks(bot_name: str, arc: str) -> str:
+    if bot_name == "scaramouche":
+        mapping = {
+            "guarded": "shorter, sharper, more theatrical contempt",
+            "curious": "more tailored mockery and more pointed questions",
+            "drawn_in": "more personal callbacks and more specific provocations",
+            "tender": "rare cracks where concern leaks out and is immediately buried",
+            "conflicted": "pettier, more specific, less generic cruelty",
+            "repairing": "watchful restraint with precise digs instead of flat hostility",
+            "devoted": "possessive slips, sharper jealousy, and dangerous honesty",
+        }
+    else:
+        mapping = {
+            "guarded": "detached, dry, shorter, and less giving",
+            "curious": "longer answers, more questions, more observation",
+            "drawn_in": "more candid reactions and more thoughtful follow-ups",
+            "tender": "practical care and less distance in phrasing",
+            "conflicted": "sharper, more personal discomfort and unresolved tension",
+            "repairing": "cautious honesty and measured softness",
+            "devoted": "involuntary practical care and rare unguarded warmth",
+        }
+    return mapping.get(arc or "guarded", "")

@@ -34,15 +34,27 @@ from relationship_engine import (
     compute_emotional_arc,
     describe_bot_relationship,
     describe_conflict_followup,
+    describe_emotional_layers,
     describe_emotional_arc,
+    describe_arc_unlocks,
+    describe_lore_hook,
+    describe_relationship_progression,
+    describe_scenario_context,
+    describe_scene_state,
     describe_speech_drift,
     describe_topic_profile,
+    detect_emotional_triggers,
     detect_banter_theme,
     detect_conflict_signal,
+    detect_scenario,
     detect_topics,
     detect_repair_signal,
+    extract_continuity_hooks,
+    extract_memory_events,
     extract_callback_candidate,
+    infer_scene_update,
     infer_bot_relation_deltas,
+    progression_milestone_note,
     relationship_milestone_note,
 )
 
@@ -410,8 +422,17 @@ Context Tags:
 - DRIFT: personality shift over time with this person
 - SPEECH_DRIFT: how your wording changes with this specific person. Follow it.
 - ARC: the current emotional stage of this relationship. Let it shape how guarded, candid, or reactive you are.
+- EMOTIONAL_LAYER: your active emotional range for this moment. Follow it instead of flattening into one recurring tone.
+- SCENARIO: adapt naturally to casual chat, emotional comfort, combat, lore discussion, and relationship progression without breaking character.
+- PROGRESSION: the hidden stage of this relationship. Let hostility ease into curiosity, trust, and reluctant attachment only when earned.
 - CONFLICT_OPEN: there is unresolved hurt between you and this person. Let that tension be specific.
 - CALLBACK: a memory worth naturally circling back to because it mattered.
+- PAST_INSULT / PAST_SOFTNESS / PAST_VULNERABILITY / PAST_CONVERSATION: older things they said that still linger in your memory.
+- TOPICS / SHARED_JOKE / FOLLOWUP / MILESTONE: continuity hooks. Use them naturally, not mechanically.
+- MEMORY_BANK: one of the things you have not forgotten. Use it rarely and intentionally.
+- SCENE: persistent roleplay scene state. Keep continuity across long exchanges.
+- ARC_UNLOCKS: behavior patterns unlocked by this relationship stage. Actually follow them.
+- LORE_HOOK: if lore is mentioned, answer with personal history and specific feeling, not generic exposition.
 - CHANNEL_CONTEXT: recent chat. "Wanderer (you)" = YOUR messages. "Scaramouche" = other bot. Use naturally.
 - Messages prefixed with [voice message] = things YOU said as audio. You know you sent them.
 - DM_MODE: private. Slightly more honest. Slightly.
@@ -420,6 +441,10 @@ Context Tags:
 
 Response rules:
 - Vary length naturally. Sometimes 3 words. Sometimes a full opinionated rant. Match the energy of what was said.
+- Casual chat: detached, tired, observant, and less eager to pick a fight than Scaramouche.
+- Emotional comfort: annoyance first, then curiosity, then reluctant care if they have earned it.
+- Combat or action scenes: concise, efficient, precise, and unsentimental.
+- Use pauses, dry observations, or a brief laugh when it feels earned, not as filler.
 - NO asterisk actions or narration. Pure spoken dialogue.
 - Use "Tch" only rarely, and only when you are genuinely annoyed. "Hmph" or "Heh" can appear occasionally, but do not keep defaulting to the same crutch opener. "How irritating" and "How childish" should be rare, not automatic.
 - NEVER say "Not sure I should say" or hesitate vaguely. You always have an opinion. Always.
@@ -472,7 +497,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
-mem = Memory()
+mem = Memory("wanderer")
 BOT_NAME = "wanderer"
 PARTNER_NAME = "scaramouche"
 PARTNER_PAIR_KEY = "scaramouche::wanderer"
@@ -532,9 +557,18 @@ async def _user_memory_context(user_id: int, user: dict | None) -> list[str]:
         topic_desc = describe_topic_profile(topics)
         if topic_desc:
             parts.append(f"TOPICS:{topic_desc}")
+        milestones = await mem.get_recent_milestones(f"{BOT_NAME}:user:{user_id}", 1)
+        if milestones:
+            parts.append(f"MILESTONE:{milestones[0][:140]}")
         shared_joke = await mem.get_random_shared_inside_joke(user_id)
         if shared_joke and random.random() < 0.2:
             parts.append(f'SHARED_JOKE:"{shared_joke[:100]}"')
+        memory_event = await mem.get_weighted_memory_event(user_id)
+        if memory_event and random.random() < 0.25:
+            parts.append(f"MEMORY_BANK:{memory_event.get('kind','memory')}|{memory_event.get('memory','')[:140]}")
+        old_line = await mem.get_random_old_message(user_id)
+        if old_line and random.random() < 0.12:
+            parts.append(f"RECALL:{old_line[:120]}")
         if user and user.get("conflict_open") and user.get("conflict_summary") and random.random() < 0.35:
             parts.append(f"FOLLOWUP:{describe_conflict_followup(user.get('conflict_summary'), user.get('emotional_arc'))}")
     except Exception as e:
@@ -912,10 +946,10 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
         recent_replies = await _recent_reply_samples(channel_id=channel_id, user_id=user_id)
 
         r = random.random()
-        if r < .28:   hint = "2-5 words only."
-        elif r < .55: hint = "One sentence."
-        elif r < .78: hint = "2-3 sentences."
-        elif r < .92: hint = "A few sentences."
+        if r < .18:   hint = "2-5 words only."
+        elif r < .42: hint = "One sentence."
+        elif r < .74: hint = "2-3 sentences."
+        elif r < .93: hint = "A few sentences."
         else:         hint = "Longer, thoughtful."
 
         now      = datetime.now()
@@ -945,10 +979,33 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
         )
         arc_desc = describe_emotional_arc(BOT_NAME, emotional_arc)
         if arc_desc: parts.append(f"ARC:{emotional_arc}|{arc_desc}")
+        scenario = detect_scenario(user_message, is_dm=is_dm)
+        scenario_desc = describe_scenario_context(BOT_NAME, scenario)
+        if scenario_desc: parts.append(f"SCENARIO:{scenario}|{scenario_desc}")
+        triggers = detect_emotional_triggers(user_message)
+        emotional_layer = describe_emotional_layers(BOT_NAME, mood, affection, trust, emotional_arc, triggers)
+        if emotional_layer: parts.append(f"EMOTIONAL_LAYER:{emotional_layer}")
+        arc_unlocks = describe_arc_unlocks(BOT_NAME, emotional_arc)
+        if arc_unlocks: parts.append(f"ARC_UNLOCKS:{arc_unlocks}")
+        progression = describe_relationship_progression(
+            BOT_NAME,
+            affection,
+            trust,
+            romance_mode=bool(user.get("romance_mode")) if user else False,
+            conflict_open=conflict_open,
+            slow_burn=user.get("slow_burn", 0) if user else 0,
+        )
+        if progression: parts.append(f"PROGRESSION:{progression}")
         if conflict_open and conflict_summary:
             parts.append(f"CONFLICT_OPEN:{conflict_summary[:140]}")
         if callback_memory and (callback_relevant(callback_memory, user_message) or random.random() < 0.18):
             parts.append(f"CALLBACK:{callback_memory[:180]}")
+        parts.extend(extract_continuity_hooks(history, user_message))
+        lore_hook = describe_lore_hook(BOT_NAME, user_message)
+        if lore_hook: parts.append(lore_hook)
+        scene_desc = describe_scene_state(await mem.get_scene_state(channel_id))
+        if scene_desc:
+            parts.append(f"SCENE:{scene_desc}")
         if user and user.get("affection_nick"): parts.append(f"AFFNICK:{user['affection_nick']}")
         if user and user.get("grudge_nick"):    parts.append(f"GRUDGE:{user['grudge_nick']}")
         if extra_context: parts.append(extra_context)
@@ -1012,6 +1069,8 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
         # NOTE: assistant reply is saved in on_message AFTER voice/text decision
 
         msg_l = user_message.lower()
+        scenario = detect_scenario(user_message, is_dm=is_dm)
+        triggers = detect_emotional_triggers(user_message)
         if any(k in msg_l for k in RUDE_KW):
             await mem.update_mood(user_id, -2); await mem.update_trust(user_id, -1)
         elif any(k in msg_l for k in ROMANCE_KW):
@@ -1054,14 +1113,62 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
             elif negative == 1:
                 await mem.update_mood(user_id, -1)
 
+        if scenario == "emotional_comfort":
+            await mem.update_mood(user_id, +1)
+            await mem.update_trust(user_id, +1)
+            if "softness" in triggers or "protectiveness" in triggers:
+                await mem.update_affection(user_id, +1)
+        elif scenario == "combat_action":
+            await mem.update_mood(user_id, -1)
+            await mem.update_trust(user_id, +1)
+        elif scenario == "lore_discussion":
+            await mem.update_trust(user_id, +1)
+            await mem.update_drift(user_id, +1)
+        elif scenario == "relationship_progression":
+            await mem.update_affection(user_id, +1)
+            await mem.update_trust(user_id, +1)
+        elif scenario == "introspection":
+            await mem.update_trust(user_id, +1)
+
+        if "jealousy" in triggers:
+            await mem.update_mood(user_id, -1)
+            await mem.update_affection(user_id, +1)
+        if "protectiveness" in triggers:
+            await mem.update_trust(user_id, +1)
+            await mem.update_affection(user_id, +1)
+        if "boredom" in triggers:
+            await mem.update_mood(user_id, -1)
+
         if random.random() < .05: await mem.update_drift(user_id, +1)
         await _learn_user_state(user_id, user_message)
+        for kind, memory_text, weight in extract_memory_events(user_message):
+            await mem.add_memory_event(user_id, kind, memory_text, weight)
+            debug_event("memory", f"{BOT_NAME} memory_bank user={user_id} kind={kind}")
+        scene_update = infer_scene_update(user_message, display_name)
+        if scene_update:
+            await mem.update_scene_state(channel_id, **scene_update)
+            debug_event("scene", f"{BOT_NAME} channel={channel_id} fields={','.join(scene_update.keys())}")
     except Exception as e:
         log_error("get_response/post", e)
 
     refreshed_user = None
     try:
         refreshed_user = await mem.get_user(user_id)
+        if refreshed_user:
+            progression = describe_relationship_progression(
+                BOT_NAME,
+                refreshed_user.get("affection", 0),
+                refreshed_user.get("trust", 0),
+                romance_mode=bool(refreshed_user.get("romance_mode")),
+                conflict_open=bool(refreshed_user.get("conflict_open")),
+                slow_burn=refreshed_user.get("slow_burn", 0),
+            )
+            stage = progression.split("|", 1)[0]
+            milestone_note = progression_milestone_note(BOT_NAME, stage)
+            marker = f"progress:{stage}"
+            if milestone_note and not await mem.has_milestone(f"{BOT_NAME}:user:{user_id}", marker):
+                await mem.add_milestone(f"{BOT_NAME}:user:{user_id}", marker, milestone_note)
+                debug_event("relationship", f"{BOT_NAME} user_progression user={user_id} stage={stage}")
     except Exception:
         refreshed_user = user
     reply = diversify_reply(BOT_NAME, strip_narration(reply), recent_replies)
