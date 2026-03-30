@@ -10,10 +10,12 @@ from discord.ext import commands, tasks
 import os, re, random, asyncio, io, time, json, traceback
 from urllib.parse import quote_plus
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 from memory import Memory
 from voice_handler import get_audio, get_audio_mooded
 from character_vision import ask_character_bot
+from grounded_search import format_search_context, format_search_sources, search_web
 from anti_repeat import (
     build_prompt_guard,
     detect_opening_phrase,
@@ -34,6 +36,7 @@ from relationship_engine import (
     compute_bot_stage,
     compute_emotional_arc,
     describe_bot_relationship,
+    describe_conflict_aftermath,
     describe_conflict_followup,
     describe_emotional_layers,
     describe_emotional_arc,
@@ -552,6 +555,102 @@ async def _partner_prompt_context(user_message: str) -> str:
     return describe_bot_relationship(BOT_NAME, relation, recent_banter)
 
 
+async def _duo_prompt_context(channel_id: int, user_message: str = "") -> str:
+    session = await mem.get_duo_session(channel_id)
+    if not session:
+        return ""
+    mode = session.get("mode", "both")
+    topic = session.get("topic", "")
+    last_speaker = session.get("last_speaker", "")
+    prompt = [f"DUO_SESSION:{mode}|topic={topic[:180]}"]
+    if last_speaker and last_speaker != BOT_NAME:
+        prompt.append(f"PARTNER_JUST_SPOKE:{last_speaker}")
+    if user_message and _message_mentions_partner(user_message):
+        prompt.append("PARTNER_EXPLICITLY_IN_PLAY")
+    if mode == "duet":
+        prompt.append("DUO_BEHAVIOR: continue the shared scene naturally and leave room for the other bot")
+    elif mode == "argue":
+        prompt.append("DUO_BEHAVIOR: disagree cleanly, deepen the point, and avoid echoing the partner")
+    elif mode == "compare":
+        prompt.append("DUO_BEHAVIOR: answer, then sharpen the contrast between your view and the partner's")
+    elif mode == "interrogate":
+        prompt.append("DUO_BEHAVIOR: press with one sharp question, observation, or deduction")
+    elif mode == "trial":
+        prompt.append("DUO_BEHAVIOR: speak like part of a two-bot prosecution, defense, or judgment")
+    elif mode == "mission":
+        prompt.append("DUO_BEHAVIOR: contribute one tactical role, warning, or leverage point")
+    elif mode == "truthdare":
+        prompt.append("DUO_BEHAVIOR: escalate the game with one pointed truth or dare prompt")
+    else:
+        prompt.append("DUO_BEHAVIOR: give one compact turn that pairs well with a second bot response")
+    return "\n".join(prompt)
+
+
+def _partner_autoplay_name() -> str:
+    return PARTNER_NAME
+
+
+def _voice_style_for(user: dict | None, mood: int = 0) -> str:
+    arc = (user or {}).get("emotional_arc", "guarded")
+    if (user or {}).get("conflict_open"):
+        return "tense"
+    if arc in {"tender", "attached"} or ((user or {}).get("affection", 0) >= 70):
+        return "soft"
+    if mood <= -5 or arc == "conflicted":
+        return "distant"
+    if arc in {"drawn_in", "trusting"}:
+        return "curious"
+    return "guarded"
+
+
+def _utility_reply(subject: str, facts: list[str], character_line: str, sources: str = "") -> str:
+    body = [f"{subject}"]
+    body.extend(f"- {fact}" for fact in facts if fact)
+    if character_line:
+        body.append(f"Comment: {character_line}")
+    if sources:
+        body.append(sources)
+    return "\n".join(body)
+
+
+def _is_in_quiet_hours(user: dict | None) -> bool:
+    if not user:
+        return False
+    try:
+        tz = ZoneInfo(user.get("timezone_name") or "America/Los_Angeles")
+        hour = datetime.now(tz).hour
+    except Exception:
+        hour = datetime.now().hour
+    start = int(user.get("quiet_hours_start", 23)) % 24
+    end = int(user.get("quiet_hours_end", 8)) % 24
+    if start == end:
+        return False
+    if start < end:
+        return start <= hour < end
+    return hour >= start or hour < end
+
+
+def _duo_autoplay_prompt(session: dict) -> str:
+    mode = session.get("mode", "both")
+    topic = session.get("topic", "")
+    partner = _partner_autoplay_name()
+    if mode == "duet":
+        return f"Continue the shared two-bot scene after {partner}'s turn. Topic: {topic}. One short follow-up turn only."
+    if mode == "argue":
+        return f"{partner} already took a side. Fire back in this two-bot argument about: {topic}. One or two sentences."
+    if mode == "compare":
+        return f"{partner} already gave their take. Give your contrasting verdict on: {topic}. One or two sentences."
+    if mode == "interrogate":
+        return f"The two-bot interrogation is active. Add your own sharper question or conclusion about: {topic}. One or two sentences."
+    if mode == "trial":
+        return f"The two-bot trial is active. Give your side's judgment on: {topic}. One or two sentences."
+    if mode == "mission":
+        return f"The two-bot mission planning scene is active. Add your own role or warning about: {topic}. One or two sentences."
+    if mode == "truthdare":
+        return f"The two-bot truth-or-dare game is active. Continue it with one pointed challenge about: {topic}. One or two sentences."
+    return f"The shared duo mode is active. Follow up after the other bot about: {topic}. One or two sentences."
+
+
 async def _user_memory_context(user_id: int, user: dict | None) -> list[str]:
     parts: list[str] = []
     try:
@@ -657,11 +756,11 @@ async def _learn_user_state(user_id: int, user_message: str):
             debug_event("memory", f"{BOT_NAME} topic user={user_id} topic={topic}")
 
         if detect_repair_signal(user_message) and current.get("conflict_open"):
-            await mem.resolve_conflict(user_id)
+            resolved = await mem.record_repair_attempt(user_id, user_message[:180])
             await mem.update_trust(user_id, +2)
             await mem.update_affection(user_id, +1)
             await mem.set_callback_memory(user_id, f"They tried to repair things: {user_message[:180]}")
-            debug_event("memory", f"{BOT_NAME} conflict_resolved user={user_id}")
+            debug_event("memory", f"{BOT_NAME} conflict_repair user={user_id} resolved={resolved}")
         elif detect_conflict_signal(user_message) and (current.get("romance_mode") or current.get("affection", 0) >= 30):
             await mem.open_conflict(user_id, user_message[:180])
             debug_event("memory", f"{BOT_NAME} conflict_opened user={user_id} text={user_message[:80]}")
@@ -933,6 +1032,7 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
                        author_mention, use_search=False, extra_context="",
                        is_owner=False, channel_obj=None, is_dm=False):
     recent_replies: list[str] = []
+    search_sources = ""
     try:
         history   = await mem.get_history(user_id, channel_id, limit=200)
         mood      = user.get("mood", 0) if user else 0
@@ -1000,6 +1100,15 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
         if progression: parts.append(f"PROGRESSION:{progression}")
         if conflict_open and conflict_summary:
             parts.append(f"CONFLICT_OPEN:{conflict_summary[:140]}")
+        conflict_aftermath = describe_conflict_aftermath(
+            BOT_NAME,
+            conflict_summary,
+            user.get("last_conflict_ts", 0) if user else 0,
+            user.get("repair_progress", 0) if user else 0,
+            conflict_open=conflict_open,
+        )
+        if conflict_aftermath:
+            parts.append(conflict_aftermath)
         if callback_memory and (callback_relevant(callback_memory, user_message) or random.random() < 0.18):
             parts.append(f"CALLBACK:{callback_memory[:180]}")
         parts.extend(extract_continuity_hooks(history, user_message))
@@ -1010,13 +1119,20 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
             parts.append(f"SCENE:{scene_desc}")
         if user and user.get("affection_nick"): parts.append(f"AFFNICK:{user['affection_nick']}")
         if user and user.get("grudge_nick"):    parts.append(f"GRUDGE:{user['grudge_nick']}")
+        msg_lower = user_message.lower()
+        if any(token in msg_lower for token in ["nahida", "wind", "wander", "travel", "sky", "solitude"]):
+            parts.append("WANDERER_EDGE: add wind, travel, solitude, and quiet-care texture when it fits")
+        if any(token in msg_lower for token in ["scaramouche", "kunikuzushi", "balladeer", "old name"]):
+            parts.append("WANDERER_EDGE: old-name discomfort should vary by intent; react more sharply to direct misuse than casual mention")
         if extra_context: parts.append(extra_context)
         parts.extend(await _user_memory_context(user_id, user))
         if use_search or needs_search(user_message):
-            search_result = await _web_search_groq(user_message)
+            search_result, search_sources = await _grounded_search_bundle(user_message)
             if search_result:
                 parts.append("FACT_MODE: answer accurately first, then add personality")
-                parts.append(f"SEARCH_RESULT:{search_result[:500]}")
+                parts.append("UTILITY_MODE: lead with crisp facts, then one in-character observation")
+                parts.append("CITATIONS: when using search results, cite claims inline like [1] or [2]")
+                parts.append(f"SEARCH_RESULT:{search_result[:1200]}")
                 debug_event("search", f"{BOT_NAME} injected web context for user={user_id}")
 
         if user and user.get("message_count", 0) >= 20:
@@ -1028,9 +1144,12 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
 
         channel_ctx = await fetch_channel_context(channel_obj) if channel_obj else ""
         partner_context = await _partner_prompt_context(user_message)
+        duo_context = await _duo_prompt_context(channel_id, user_message)
         context_block = "[" + "|".join(parts) + "]\n"
         if partner_context:
             context_block += partner_context + "\n"
+        if duo_context:
+            context_block += duo_context + "\n"
         if channel_ctx: context_block += channel_ctx + "\n\n"
         context_block += f"{display_name}: {user_message}"
 
@@ -1061,6 +1180,8 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
 
         if not reply:
             reply = fallback_reply(BOT_NAME, recent_replies)
+        if search_sources:
+            reply = f"{reply}\n\n{search_sources}"
 
     except Exception as e:
         log_error("get_response", e)
@@ -1188,26 +1309,22 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
 
 
 async def _web_search_groq(query: str) -> str:
-    """Simple web search via DuckDuckGo for factual questions."""
+    """Grounded web search with snippets and source URLs."""
     try:
-        import aiohttp
-        async with aiohttp.ClientSession() as s:
-            async with s.get(
-                "https://api.duckduckgo.com/",
-                params={"q": query, "format": "json", "no_html": "1", "skip_disambig": "1"},
-                timeout=aiohttp.ClientTimeout(total=5)
-            ) as r:
-                data = await r.json(content_type=None)
-                abstract = data.get("AbstractText", "")
-                if abstract:
-                    return abstract[:400]
-                # Try related topics
-                topics = data.get("RelatedTopics", [])
-                if topics and isinstance(topics[0], dict):
-                    return topics[0].get("Text", "")[:400]
-    except Exception:
-        pass
+        results = await search_web(query, max_results=5)
+        return format_search_context(results)
+    except Exception as e:
+        log_error("web_search", e)
     return ""
+
+
+async def _grounded_search_bundle(query: str) -> tuple[str, str]:
+    try:
+        results = await search_web(query, max_results=5)
+        return format_search_context(results), format_search_sources(results)
+    except Exception as e:
+        log_error("grounded_search_bundle", e)
+        return "", ""
 
 
 def _memory_weight_for(kind: str) -> int:
@@ -1316,16 +1433,16 @@ async def _fire_slow_burn(user_id, channel_id, display_name):
 
 
 # ── Voice helpers ─────────────────────────────────────────────────────────────
-async def get_audio_with_mood(text: str, mood: int) -> bytes | None:
+async def get_audio_with_mood(text: str, mood: int, user: dict | None = None) -> bytes | None:
     try:
-        return await get_audio_mooded(strip_narration(text), FISH_AUDIO_API_KEY, mood)
+        return await get_audio_mooded(strip_narration(text), FISH_AUDIO_API_KEY, mood, _voice_style_for(user, mood))
     except Exception as e:
         log_error("get_audio_with_mood", e)
         return None
 
-async def send_voice(channel, text, ref=None, mood=0, guild=None):
+async def send_voice(channel, text, ref=None, mood=0, guild=None, user: dict | None = None):
     try:
-        audio = await get_audio_with_mood(tts_safe(text, guild), mood)
+        audio = await get_audio_with_mood(tts_safe(text, guild), mood, user=user)
         if not audio: return False
         f = discord.File(io.BytesIO(audio), filename="wanderer.mp3")
         kwargs = {"file": f}
@@ -1391,6 +1508,7 @@ async def _reply_and_store(ctx, text: str):
     await safe_reply(ctx, text)
     try:
         await mem.add_message(ctx.author.id, ctx.channel.id, "assistant", text)
+        await mem.bump_duo_session(ctx.channel.id, BOT_NAME)
     except Exception as e:
         log_error("reply_and_store", e)
 
@@ -1446,6 +1564,7 @@ async def on_ready():
         except: pass
     bot.loop.create_task(_proactive_loop())
     bot.loop.create_task(_voluntary_dm_loop())
+    bot.loop.create_task(_duo_autoplay_loop())
 
 @tasks.loop(minutes=47)
 async def status_rotation():
@@ -1480,7 +1599,8 @@ async def absence_checker():
         for ud in await mem.get_absent_romance_users(days=3):
             try:
                 uid, days = ud["user_id"], ud["days_gone"]
-                if not await mem.can_dm_user(uid, 86400): continue
+                user_pref = await mem.get_user(uid)
+                if _is_in_quiet_hours(user_pref) or not await mem.respects_dm_timing(uid) or not await mem.can_dm_user(uid, 86400): continue
                 du = await bot.fetch_user(uid)
                 msg = await qai(f"{ud['display_name']} has been gone {days} days. React — the Wanderer notices, won't fully admit it. 1-2 sentences.", 120)
                 await du.send(msg); await mem.set_dm_sent(uid)
@@ -1978,13 +2098,13 @@ async def on_message(message):
             if reply and len(reply.strip()) > 2 and FISH_AUDIO_API_KEY:
                 voice_prob = 1.0 if asked_for_voice else (0.35 if is_reply_to_self_audio else 0.12)
                 if random.random() < voice_prob:
-                    sent = await send_voice(message.channel, reply, ref=message, mood=mood_val, guild=message.guild)
+                    sent = await send_voice(message.channel, reply, ref=message, mood=mood_val, guild=message.guild, user=user)
                     if sent:
                         await mem.add_message(message.author.id, dm_channel_id, "assistant", f"[voice message] {reply}")
                         await maybe_react(message, romance); return
 
             if user and user.get("affection", 0) >= 85 and random.random() < .04 and FISH_AUDIO_API_KEY:
-                await send_voice(message.channel, random.choice(["...", "Hmph.", "Fine."]), mood=mood_val, guild=message.guild)
+                await send_voice(message.channel, random.choice(["...", "Hmph.", "Fine."]), mood=mood_val, guild=message.guild, user=user)
 
             final = strip_narration(resolve_mentions(reply, message.guild if message.guild else None))
             await message.reply(final)
@@ -2076,7 +2196,8 @@ async def _voluntary_dm_loop():
                     for ud in eligible[:3]:
                         try:
                             uid, name, romance = ud["user_id"], ud["display_name"], ud["romance_mode"]
-                            if not await mem.can_dm_user(uid, 5400 if romance else 7200): continue
+                            user_pref = await mem.get_user(uid)
+                            if _is_in_quiet_hours(user_pref) or not await mem.respects_dm_timing(uid) or not await mem.can_dm_user(uid, 5400 if romance else 7200): continue
                             du = await bot.fetch_user(uid)
                             pool = random.choices([DM_ROMANCE, DM_INTERESTED, DM_GENERIC], weights=[65, 25, 10] if romance else [0, 40, 60])[0]
                             prompt = "Message " + name + " unprompted as the Wanderer. " + ("Attached to them but won't say so." if romance else "Finds them tolerable.") + " 1-2 sentences. No greeting."
@@ -2092,6 +2213,46 @@ async def _voluntary_dm_loop():
                         except Exception as e: log_error("dm_send", e)
         except Exception as e: log_error("voluntary_dm_loop", e)
         await asyncio.sleep(random.randint(2700, 21600))
+
+
+async def _duo_autoplay_loop():
+    await bot.wait_until_ready()
+    await asyncio.sleep(20)
+    while not bot.is_closed():
+        try:
+            for session in await mem.get_due_duo_sessions(BOT_NAME):
+                try:
+                    channel = bot.get_channel(session["channel_id"])
+                    if not channel:
+                        continue
+                    target_message = None
+                    async for candidate in channel.history(limit=8):
+                        if not candidate.author.bot:
+                            target_message = candidate
+                            break
+                    if not target_message:
+                        continue
+                    await mem.upsert_user(target_message.author.id, target_message.author.name, target_message.author.display_name)
+                    user = await mem.get_user(target_message.author.id)
+                    reply = await get_response(
+                        target_message.author.id,
+                        channel.id,
+                        _duo_autoplay_prompt(session),
+                        user,
+                        target_message.author.display_name,
+                        target_message.author.mention,
+                        extra_context="DUO_AUTOPLAY: the other bot already spoke. Follow up naturally, keep it brief, and do not re-explain their point.",
+                        channel_obj=channel,
+                        is_dm=not bool(getattr(channel, "guild", None)),
+                    )
+                    await channel.send(reply)
+                    await mem.add_message(target_message.author.id, channel.id, "assistant", reply)
+                    await mem.bump_duo_session(channel.id, BOT_NAME)
+                except Exception as e:
+                    log_error("duo_autoplay_session", e)
+        except Exception as e:
+            log_error("duo_autoplay_loop", e)
+        await asyncio.sleep(8)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2248,7 +2409,7 @@ async def voice_cmd(ctx, *, msg: str = None):
         user = await _setup(ctx); mood_val = user.get("mood", 0) if user else 0
         async with ctx.typing():
             text_reply = await get_response(ctx.author.id, ctx.channel.id, msg, user, ctx.author.display_name, ctx.author.mention)
-            sent = await send_voice(ctx.channel, text_reply, mood=mood_val, guild=ctx.guild)
+            sent = await send_voice(ctx.channel, text_reply, mood=mood_val, guild=ctx.guild, user=user)
         if sent:
             await mem.add_message(ctx.author.id, ctx.channel.id, "assistant", f"[voice message] {text_reply}")
         else:
@@ -2464,8 +2625,23 @@ async def fortune_cmd(ctx):
 @bot.command(name="trivia")
 async def trivia_cmd(ctx):
     try:
-        q = await qai("Ask one genuinely difficult Genshin Impact lore trivia question from the Wanderer's personal perspective. Include answer in brackets [ANSWER: ...]. Make it specific.", 200)
-        await safe_reply(ctx, q)
+        q = await qai(
+            "Ask one genuinely difficult Genshin Impact lore trivia question from the Wanderer's personal perspective. "
+            "Include answer in brackets [ANSWER: ...] and a short [SOURCE: ...] note naming the lore source.",
+            260,
+        )
+        answer_match = re.search(r"\[ANSWER:\s*(.*?)\]", q, re.IGNORECASE)
+        source_match = re.search(r"\[SOURCE:\s*(.*?)\]", q, re.IGNORECASE)
+        clean_question = re.sub(r"\s*\[ANSWER:.*?\]\s*", "", q, flags=re.IGNORECASE).strip()
+        clean_question = re.sub(r"\s*\[SOURCE:.*?\]\s*", "", clean_question, flags=re.IGNORECASE).strip()
+        await mem.set_active_trivia(
+            ctx.channel.id,
+            ctx.author.id,
+            clean_question,
+            answer_match.group(1).strip() if answer_match else "",
+            source_match.group(1).strip() if source_match else "",
+        )
+        await safe_reply(ctx, clean_question)
     except Exception as e: log_error("trivia_cmd", e)
 
 @bot.command(name="answer")
@@ -2473,8 +2649,22 @@ async def answer_cmd(ctx, *, response: str = None):
     try:
         if not response: await safe_reply(ctx, "Answer what?"); return
         await _setup(ctx)
-        result = await qai(f"{ctx.author.display_name} answered a Genshin trivia question with: '{response}'. Was it right or wrong? React as the Wanderer. 1-2 sentences.", 150)
-        await safe_reply(ctx, result)
+        trivia = await mem.get_active_trivia(ctx.channel.id)
+        if trivia and trivia.get("answer"):
+            result = await qai(
+                f"Question: {trivia['question']}\nCanonical answer: {trivia['answer']}\n"
+                f"Source note: {trivia.get('source_note','unknown')}\n"
+                f"{ctx.author.display_name} answered: '{response}'. Was it right or wrong? React as the Wanderer, but stay fair. 1-2 sentences.",
+                180,
+            )
+            correct = bool(re.search(r"\b(correct|right)\b", result.lower())) and "wrong" not in result.lower()
+            await mem.clear_active_trivia(ctx.channel.id)
+        else:
+            result = await qai(f"{ctx.author.display_name} answered a Genshin trivia question with: '{response}'. Was it right or wrong? React as the Wanderer. 1-2 sentences.", 150)
+            correct = "right" in result.lower() or "correct" in result.lower()
+        await mem.update_trivia(ctx.author.id, correct)
+        stats = await mem.get_trivia_stats(ctx.author.id)
+        await safe_reply(ctx, f"{result}\nScore: {stats['correct']} right, {stats['wrong']} wrong ({stats['accuracy']}% accuracy).")
     except Exception as e: log_error("answer_cmd", e)
 
 @bot.command(name="roast", aliases=["roastbattle"])
@@ -2486,14 +2676,24 @@ async def roast_cmd(ctx, member: discord.Member = None):
             await mem.increment_roast_round(battle["id"])
             if battle["round"] >= 5:
                 await mem.end_roast_battle(battle["id"])
-                prompt = f"The roast battle between {ctx.author.display_name} and {member.display_name} is over. Declare a final winner. As the Wanderer. 2-3 sentences."
+                prompt = f"The roast battle between {ctx.author.display_name} and {member.display_name} is over. Scoreboard so far: {battle.get('scores', {})}. Declare a final winner. As the Wanderer. 2-3 sentences."
             else:
                 prompt = f"Judging roast battle round {battle['round']+1}. {ctx.author.display_name} fired at {member.display_name}. Score this round. 2-3 sentences."
         else:
             await mem.start_roast_battle(ctx.channel.id, ctx.author.id, member.id)
             prompt = f"You're refereeing a roast battle between {ctx.author.display_name} and {member.display_name}. Open it. 5 rounds, you judge. As the Wanderer."
         reply = await qai(prompt, 300)
-        await ctx.send(f"{ctx.author.mention} vs {member.mention}\n{reply}")
+        lowered = reply.lower()
+        winner_id = None
+        if ctx.author.display_name.lower() in lowered and member.display_name.lower() not in lowered:
+            winner_id = ctx.author.id
+        elif member.display_name.lower() in lowered and ctx.author.display_name.lower() not in lowered:
+            winner_id = member.id
+        if battle and winner_id:
+            await mem.award_roast_round(battle["id"], winner_id)
+        updated = await mem.get_active_roast(ctx.channel.id) if battle else None
+        score_line = f"\nScoreboard: {updated['scores']}" if updated and updated.get("scores") else ""
+        await ctx.send(f"{ctx.author.mention} vs {member.mention}\n{reply}{score_line}")
     except Exception as e: log_error("roast_cmd", e)
 
 @bot.command(name="opinion")
@@ -2756,12 +2956,23 @@ async def weather_cmd(ctx, *, location: str = None):
             return
         precip = data.get("precipitation")
         precip_text = f"{int(round(precip))}% precipitation chance" if isinstance(precip, (int, float)) else "precipitation unknown"
-        reply = await qai(
+        comment = await qai(
             f"Weather in {data['place']}: {data['forecast']}. "
             f"Temperature {data['temperature']} degrees {data['temperature_unit']}. "
             f"Wind {data['wind_speed']} {data['wind_direction']}. {precip_text}. "
             f"The Wanderer's brief take. 1-2 sentences.",
             150,
+        )
+        reply = _utility_reply(
+            f"Weather for {data['place']}",
+            [
+                f"Forecast: {data['forecast']}",
+                f"Temperature: {data['temperature']} {data['temperature_unit']}",
+                f"Wind: {data['wind_speed']} {data['wind_direction']}".strip(),
+                f"Precipitation: {precip_text}",
+            ],
+            comment,
+            "Source: api.weather.gov",
         )
         await safe_reply(ctx, reply)
     except Exception as e: log_error("weather_cmd", e)
@@ -2878,6 +3089,7 @@ async def both_cmd(ctx, *, prompt: str = None):
         if not prompt:
             await safe_reply(ctx, "Ask something worth answering.")
             return
+        await mem.set_duo_session(ctx.channel.id, "both", prompt, BOT_NAME, awaiting_bot=PARTNER_NAME, autoplay_turns=1, autoplay_delay=6)
         user = await _setup(ctx)
         reply = await get_response(
             ctx.author.id, ctx.channel.id, prompt, user, ctx.author.display_name, ctx.author.mention,
@@ -2893,6 +3105,7 @@ async def duet_cmd(ctx, *, prompt: str = None):
         if not prompt:
             await safe_reply(ctx, "Set the scene first.")
             return
+        await mem.set_duo_session(ctx.channel.id, "duet", prompt, BOT_NAME, awaiting_bot=PARTNER_NAME, autoplay_turns=1, autoplay_delay=6)
         user = await _setup(ctx)
         reply = await get_response(
             ctx.author.id, ctx.channel.id, f"Contribute one turn to this shared two-bot scene: {prompt}",
@@ -2909,6 +3122,7 @@ async def argue_cmd(ctx, *, topic: str = None):
         if not topic:
             await safe_reply(ctx, "Argue about what.")
             return
+        await mem.set_duo_session(ctx.channel.id, "argue", topic, BOT_NAME, awaiting_bot=PARTNER_NAME, autoplay_turns=1, autoplay_delay=6)
         user = await _setup(ctx)
         reply = await get_response(
             ctx.author.id, ctx.channel.id, f"The user started a deliberate two-bot argument about: {topic}",
@@ -2925,6 +3139,7 @@ async def compare_cmd(ctx, *, topic: str = None):
         if not topic:
             await safe_reply(ctx, "Compare what.")
             return
+        await mem.set_duo_session(ctx.channel.id, "compare", topic, BOT_NAME, awaiting_bot=PARTNER_NAME, autoplay_turns=1, autoplay_delay=6)
         user = await _setup(ctx)
         reply = await get_response(
             ctx.author.id, ctx.channel.id, f"Give your verdict on this and make your difference from Scaramouche clear: {topic}",
@@ -2934,6 +3149,115 @@ async def compare_cmd(ctx, *, topic: str = None):
         )
         await _reply_and_store(ctx, reply)
     except Exception as e: log_error("compare_cmd", e)
+
+@bot.command(name="interrogate")
+async def interrogate_cmd(ctx, *, topic: str = None):
+    try:
+        if not topic:
+            await safe_reply(ctx, "Interrogate what.")
+            return
+        await mem.set_duo_session(ctx.channel.id, "interrogate", topic, BOT_NAME, awaiting_bot=PARTNER_NAME, autoplay_turns=1, autoplay_delay=6)
+        user = await _setup(ctx)
+        reply = await get_response(
+            ctx.author.id, ctx.channel.id, f"Start a two-bot interrogation about: {topic}",
+            user, ctx.author.display_name, ctx.author.mention,
+            extra_context="INTERROGATE_MODE: ask one pointed question or observation, leaving room for the other bot to press further.",
+            channel_obj=ctx.channel,
+        )
+        await _reply_and_store(ctx, reply)
+    except Exception as e: log_error("interrogate_cmd", e)
+
+@bot.command(name="choose")
+async def choose_cmd(ctx, *, options: str = None):
+    try:
+        if not options or "|" not in options:
+            await safe_reply(ctx, "Use `!choose option A | option B`.")
+            return
+        await mem.set_duo_session(ctx.channel.id, "compare", options, BOT_NAME, awaiting_bot=PARTNER_NAME, autoplay_turns=1, autoplay_delay=6)
+        user = await _setup(ctx)
+        reply = await get_response(
+            ctx.author.id, ctx.channel.id, f"Choose between these options and justify it: {options}",
+            user, ctx.author.display_name, ctx.author.mention,
+            extra_context="CHOOSE_MODE: make a clear choice fast, then justify it cleanly.",
+            channel_obj=ctx.channel,
+        )
+        await _reply_and_store(ctx, reply)
+    except Exception as e: log_error("choose_cmd", e)
+
+@bot.command(name="trial")
+async def trial_cmd(ctx, *, charge: str = None):
+    try:
+        if not charge:
+            await safe_reply(ctx, "Put someone on trial for something.")
+            return
+        await mem.set_duo_session(ctx.channel.id, "trial", charge, BOT_NAME, awaiting_bot=PARTNER_NAME, autoplay_turns=1, autoplay_delay=6)
+        user = await _setup(ctx)
+        reply = await get_response(
+            ctx.author.id, ctx.channel.id, f"Open a two-bot trial about this charge: {charge}",
+            user, ctx.author.display_name, ctx.author.mention,
+            extra_context="TRIAL_MODE: deliver a prosecution, defense, or judgment opening with controlled bite.",
+            channel_obj=ctx.channel,
+        )
+        await _reply_and_store(ctx, reply)
+    except Exception as e: log_error("trial_cmd", e)
+
+@bot.command(name="mission")
+async def mission_cmd(ctx, *, objective: str = None):
+    try:
+        if not objective:
+            await safe_reply(ctx, "Mission objective.")
+            return
+        await mem.set_duo_session(ctx.channel.id, "mission", objective, BOT_NAME, awaiting_bot=PARTNER_NAME, autoplay_turns=1, autoplay_delay=6)
+        user = await _setup(ctx)
+        reply = await get_response(
+            ctx.author.id, ctx.channel.id, f"Plan a two-bot mission around this objective: {objective}",
+            user, ctx.author.display_name, ctx.author.mention,
+            extra_context="MISSION_MODE: assign one clear role, risk, or warning, leaving room for the other bot to complement it.",
+            channel_obj=ctx.channel,
+        )
+        await _reply_and_store(ctx, reply)
+    except Exception as e: log_error("mission_cmd", e)
+
+@bot.command(name="truthdare", aliases=["tod"])
+async def truthdare_cmd(ctx, *, prompt: str = None):
+    try:
+        topic = prompt or "truth or dare"
+        await mem.set_duo_session(ctx.channel.id, "truthdare", topic, BOT_NAME, awaiting_bot=PARTNER_NAME, autoplay_turns=1, autoplay_delay=6)
+        user = await _setup(ctx)
+        reply = await get_response(
+            ctx.author.id, ctx.channel.id, f"Start a two-bot truth-or-dare round with this setup: {topic}",
+            user, ctx.author.display_name, ctx.author.mention,
+            extra_context="TRUTHDARE_MODE: issue one pointed truth or dare challenge, leaving room for the other bot to escalate.",
+            channel_obj=ctx.channel,
+        )
+        await _reply_and_store(ctx, reply)
+    except Exception as e: log_error("truthdare_cmd", e)
+
+@bot.command(name="scene")
+async def scene_cmd(ctx):
+    try:
+        scene = await mem.get_scene_state(ctx.channel.id)
+        duo = await mem.get_duo_session(ctx.channel.id)
+        if not scene and not duo:
+            await safe_reply(ctx, "This channel doesn't have much continuity yet.")
+            return
+        lines = []
+        if scene:
+            lines.append(f"Scene: {describe_scene_state(scene)}")
+        if duo:
+            lines.append(f"Duo mode: {duo.get('mode')} | topic={duo.get('topic')}")
+        await safe_reply(ctx, "\n".join(lines))
+    except Exception as e: log_error("scene_cmd", e)
+
+@bot.command(name="insidejokes", aliases=["jokes"])
+async def insidejokes_cmd(ctx):
+    try:
+        jokes = await mem.list_inside_jokes(ctx.author.id, 5)
+        if not jokes:
+            await safe_reply(ctx, "No persistent jokes worth recalling yet.")
+            return
+        await safe_reply(ctx, "Inside jokes:\n" + "\n".join(f"- {j[:140]}" for j in jokes))
+    except Exception as e: log_error("insidejokes_cmd", e)
 
 @bot.command(name="reset", aliases=["wipe"])
 async def reset_cmd(ctx):
@@ -2966,6 +3290,52 @@ async def dms_cmd(ctx, mode: str = None):
         await mem.set_mode(ctx.author.id, "allow_dms", new)
         await safe_reply(ctx, "...I'll message you sometimes." if new else "Understood. I won't.")
     except Exception as e: log_error("dms_cmd", e)
+
+@bot.command(name="timezone")
+async def timezone_cmd(ctx, *, timezone_name: str = None):
+    try:
+        user = await _setup(ctx)
+        if not timezone_name:
+            await safe_reply(ctx, f"Timezone: {user.get('timezone_name', 'America/Los_Angeles')}")
+            return
+        ZoneInfo(timezone_name.strip())
+        await mem.set_timezone(ctx.author.id, timezone_name.strip())
+        await safe_reply(ctx, f"Timezone set to `{timezone_name.strip()}`.")
+    except Exception:
+        await safe_reply(ctx, "Use a valid IANA timezone like `America/Los_Angeles`.")
+
+@bot.command(name="quiethours")
+async def quiethours_cmd(ctx, start_hour: int = None, end_hour: int = None):
+    try:
+        user = await _setup(ctx)
+        if start_hour is None or end_hour is None:
+            await safe_reply(ctx, f"Quiet hours: {user.get('quiet_hours_start', 23)}:00 to {user.get('quiet_hours_end', 8)}:00")
+            return
+        await mem.set_quiet_hours(ctx.author.id, start_hour, end_hour)
+        await safe_reply(ctx, f"Quiet hours set to {start_hour % 24}:00-{end_hour % 24}:00.")
+    except Exception as e: log_error("quiethours_cmd", e)
+
+@bot.command(name="dmfreq")
+async def dmfreq_cmd(ctx, hours: int = None):
+    try:
+        user = await _setup(ctx)
+        if hours is None:
+            await safe_reply(ctx, f"DM frequency floor: every {user.get('dm_frequency_hours', 8)} hour(s).")
+            return
+        await mem.set_dm_frequency(ctx.author.id, hours)
+        await safe_reply(ctx, f"I'll wait at least {max(1, min(72, hours))} hour(s) between DMs.")
+    except Exception as e: log_error("dmfreq_cmd", e)
+
+@bot.command(name="dmgrace")
+async def dmgrace_cmd(ctx, minutes: int = None):
+    try:
+        user = await _setup(ctx)
+        if minutes is None:
+            await safe_reply(ctx, f"Recent-activity DM grace: {user.get('recent_activity_grace_minutes', 45)} minute(s).")
+            return
+        await mem.set_recent_activity_grace(ctx.author.id, minutes)
+        await safe_reply(ctx, f"I'll leave at least {max(5, min(720, minutes))} minute(s) after your recent activity before DMing.")
+    except Exception as e: log_error("dmgrace_cmd", e)
 
 @bot.command(name="mood")
 async def mood_cmd(ctx):

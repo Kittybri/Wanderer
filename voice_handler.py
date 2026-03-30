@@ -1,6 +1,6 @@
 """
-voice_handler.py — Wanderer Bot
-Voice ID: 4bae40a07d1e46d1846c044c7b540ae5
+voice_handler.py — Scaramouche Bot (The Balladeer)
+Voice ID: fb95ab47841a4db189cb35fb619d4ea1
 """
 
 import io
@@ -8,15 +8,15 @@ import asyncio
 import httpx
 import ormsgpack
 
-WANDERER_VOICE_ID = "4bae40a07d1e46d1846c044c7b540ae5"
-FISH_API_URL      = "https://api.fish.audio/v1/tts"
+VOICE_ID      = "fb95ab47841a4db189cb35fb619d4ea1"  # Scaramouche voice
+FISH_API_URL  = "https://api.fish.audio/v1/tts"
 
 
 def _fish_tts_blocking(text: str, api_key: str, chunk_length: int = 220) -> bytes | None:
     try:
         payload = ormsgpack.packb({
             "text":         text[:1500],
-            "reference_id": WANDERER_VOICE_ID,
+            "reference_id": VOICE_ID,
             "format":       "mp3",
             "mp3_bitrate":  192,
             "latency":      "balanced",
@@ -64,7 +64,22 @@ async def get_audio(text: str, fish_audio_key: str) -> bytes | None:
     return await generate_tts_gtts(text)
 
 
-async def get_audio_mooded(text: str, fish_audio_key: str, mood: int = 0) -> bytes | None:
+def _style_tts_text(text: str, style: str = "guarded") -> str:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return ""
+    if style == "soft":
+        return cleaned.replace("...", ".  ").replace("—", ". ")
+    if style == "tense":
+        return cleaned.replace(",", ". ").replace(";", ". ")
+    if style in {"cutting", "distant"}:
+        return cleaned.replace(" and ", ". ").replace(" but ", ". ")
+    if style in {"measured", "curious"}:
+        return cleaned.replace("...", ", ")
+    return cleaned
+
+
+async def get_audio_mooded(text: str, fish_audio_key: str, mood: int = 0, style: str = "guarded") -> bytes | None:
     if not fish_audio_key:
         return await generate_tts_gtts(text)
     # Mood affects pacing
@@ -72,9 +87,18 @@ async def get_audio_mooded(text: str, fish_audio_key: str, mood: int = 0) -> byt
     elif mood <= -1: chunk = 190
     elif mood <= 5:  chunk = 220
     else:            chunk = 260
+    if style == "soft":
+        chunk += 35
+    elif style == "tense":
+        chunk = max(120, chunk - 30)
+    elif style in {"cutting", "distant"}:
+        chunk = max(130, chunk - 20)
+    elif style in {"measured", "curious"}:
+        chunk += 10
+    styled_text = _style_tts_text(text, style)
 
     def _blocking():
-        return _fish_tts_blocking(text, fish_audio_key, chunk)
+        return _fish_tts_blocking(styled_text, fish_audio_key, chunk)
 
     try:
         audio = await asyncio.get_event_loop().run_in_executor(None, _blocking)

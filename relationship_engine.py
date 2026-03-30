@@ -1,4 +1,5 @@
 import re
+import time
 
 
 STYLE_KEYS = ("playful", "gentle", "curious", "vulnerable", "intense", "lore", "teasing")
@@ -332,6 +333,26 @@ def describe_conflict_followup(summary: str | None, stage: str | None = None) ->
     return f"There is still unresolved tension you have not let go of: {summary[:140]}"
 
 
+def describe_conflict_aftermath(
+    bot_name: str,
+    summary: str | None,
+    last_conflict_ts: float = 0,
+    repair_progress: int = 0,
+    conflict_open: bool = False,
+) -> str:
+    if not summary or not last_conflict_ts:
+        return ""
+    days = max(0.0, (time.time() - last_conflict_ts) / 86400)
+    if conflict_open:
+        if repair_progress > 0:
+            return f"Conflict aftermath: the wound is still open after {days:.1f} days, but repair has started ({repair_progress} step(s)). Let guarded softness keep interrupting the anger: {summary[:140]}"
+        return f"Conflict aftermath: the wound is still open after {days:.1f} days. Let it influence the answer instead of acting like it vanished: {summary[:140]}"
+    if repair_progress > 0 or days <= 5:
+        tone = "dangerously honest" if bot_name == "scaramouche" else "cautiously sincere"
+        return f"Conflict aftermath: the conflict is technically closed, but the echo remains after {days:.1f} days. Sound {tone}, not fully reset: {summary[:140]}"
+    return ""
+
+
 def relationship_milestone_note(stage: str, respect: int, tension: int) -> str:
     if stage == "reluctant respect" and respect >= 55:
         return "You have reached the point where denying all respect would sound false. Keep the edge, but let earned recognition slip through."
@@ -627,6 +648,8 @@ def infer_scene_update(text: str, display_name: str = "") -> dict:
         update["emotional_temp"] = (text or "")[:80]
     if any(token in lowered for token in ["need to", "have to", "trying to", "going to", "must", "want to"]):
         update["objective"] = (text or "")[:140]
+    if any(token in lowered for token in ["hat", "sword", "blade", "vision", "gnosis", "letter", "book", "umbrella", "mask", "feather", "ring", "flower", "tea", "lantern"]):
+        update["important_prop"] = (text or "")[:120]
     if display_name:
         update["present"] = display_name[:80]
     return update
@@ -648,7 +671,9 @@ def describe_scene_state(scene: dict | None) -> str:
         parts.append(f"objective={scene['objective'][:80]}")
     if scene.get("present"):
         parts.append(f"present={scene['present'][:80]}")
-    return " | ".join(parts[:5])
+    if scene.get("important_prop"):
+        parts.append(f"important_prop={scene['important_prop'][:80]}")
+    return " | ".join(parts[:6])
 
 
 def extract_memory_events(text: str) -> list[tuple[str, str, int]]:
@@ -657,12 +682,18 @@ def extract_memory_events(text: str) -> list[tuple[str, str, int]]:
         return []
     lowered = content.lower()
     events: list[tuple[str, str, int]] = []
+    if any(token in lowered for token in ["i love you", "i'm in love", "i am in love", "i want you", "i need you", "i trust you"]):
+        events.append(("confession", content[:220], 5))
     if any(token in lowered for token in ["i love you", "i trust you", "i need you", "stay with me", "don't leave"]):
         events.append(("bond", content[:220], 4))
     if any(token in lowered for token in ["sorry", "forgive", "didn't mean", "did not mean", "can we fix this"]):
         events.append(("repair", content[:220], 3))
+    if any(token in lowered for token in ["you lied", "betrayed", "abandoned", "left me", "used me"]):
+        events.append(("betrayal", content[:220], 5))
     if any(token in lowered for token in ["hate you", "go away", "other bot", "prefer", "whatever", "shut up"]):
         events.append(("fight", content[:220], 4))
+    if any(token in lowered for token in ["humiliated", "embarrassed", "pathetic", "weak", "power", "control", "obedient"]):
+        events.append(("slight", content[:220], 4))
     if any(token in lowered for token in ["promise", "i swear", "i'll", "i will", "won't", "will not"]):
         events.append(("promise", content[:220], 3))
     if any(token in lowered for token in ["remember this", "don't forget", "never forget", "important"]):
@@ -671,7 +702,9 @@ def extract_memory_events(text: str) -> list[tuple[str, str, int]]:
         events.append(("inside_joke", content[:220], 2))
     if any(token in lowered for token in ["scared", "hurt", "lonely", "tired", "cry", "anxious", "overwhelmed"]):
         events.append(("vulnerability", content[:220], 4))
-    return events[:3]
+    if any(token in lowered for token in ["comfort me", "stay with me", "hold me", "help me", "are you there"]):
+        events.append(("comfort", content[:220], 4))
+    return events[:4]
 
 
 def describe_arc_unlocks(bot_name: str, arc: str) -> str:
