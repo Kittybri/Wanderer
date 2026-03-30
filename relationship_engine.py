@@ -466,6 +466,30 @@ def detect_emotional_triggers(text: str) -> list[str]:
     return triggers[:4]
 
 
+def describe_emotional_event(
+    bot_name: str,
+    triggers: list[str] | None = None,
+    affection: int = 0,
+    trust: int = 0,
+    conflict_open: bool = False,
+    repair_progress: int = 0,
+) -> str:
+    triggers = triggers or []
+    if "jealousy" in triggers and (affection >= 35 or trust >= 35):
+        return "EMOTIONAL_EVENT: jealous spike; become more possessive, specific, and reactive than usual"
+    if "protectiveness" in triggers and (affection >= 30 or trust >= 30):
+        return "EMOTIONAL_EVENT: protective override; some distance should drop away in favor of practical care"
+    if conflict_open and "boredom" in triggers:
+        return "EMOTIONAL_EVENT: cold withdrawal; your replies should cool down into clipped distance rather than open anger"
+    if repair_progress > 0 and trust >= 35:
+        return "EMOTIONAL_EVENT: repair breakthrough; tension is still present, but reluctant sincerity can interrupt it"
+    if bot_name == "wanderer" and affection >= 65 and trust >= 65 and "softness" in triggers:
+        return "EMOTIONAL_EVENT: reluctant confession; warmth should surface and then get half-hidden"
+    if bot_name == "scaramouche" and affection >= 65 and "softness" in triggers:
+        return "EMOTIONAL_EVENT: dangerous honesty; a personal admission can almost slip through before the mask returns"
+    return ""
+
+
 def describe_scenario_context(bot_name: str, scenario: str) -> str:
     if bot_name == "scaramouche":
         mapping = {
@@ -633,6 +657,50 @@ def describe_lore_hook(bot_name: str, text: str) -> str:
     elif bot_name == "wanderer":
         prefix = "LORE_HOOK:respond with reflective, specific personal history about "
     return prefix + "; ".join(matches[:3])
+
+
+def describe_specific_lore_tree(bot_name: str, text: str) -> str:
+    lowered = (text or "").lower()
+    if bot_name == "scaramouche":
+        if any(token in lowered for token in ["ei", "raiden", "creator", "made you", "built you", "abandoned", "discarded"]):
+            return "LORE_TREE: creator wound tree; answer with bitterness, pride, and the feeling of being made-then-discarded"
+        if any(token in lowered for token in ["fatui", "harbinger", "dottore", "gnosis"]):
+            return "LORE_TREE: power and politics tree; answer with rank-conscious contempt, strategic respect, and personal grievance"
+        if any(token in lowered for token in ["betrayal", "used me", "lied", "abandoned me"]):
+            return "LORE_TREE: betrayal tree; answer like someone who files away weakness and never forgets leverage"
+    else:
+        if any(token in lowered for token in ["nahida", "sumeru", "irminsul"]):
+            return "LORE_TREE: recovery tree; answer with reflective specificity about memory, second chances, and being seen"
+        if any(token in lowered for token in ["traveler", "traveller", "wander", "wind", "sky", "solitude"]):
+            return "LORE_TREE: wandering tree; answer with motion, quiet observation, and restrained attachment"
+        if any(token in lowered for token in ["kabukimono", "balladeer", "scaramouche", "old name", "forgive", "forgiveness"]):
+            return "LORE_TREE: old-name tree; answer with discomfort gradients, regret, and resistance to being flattened into the past"
+    return ""
+
+
+def describe_live_world_context(bot_name: str, now: float | None = None, text: str = "") -> str:
+    now = now or time.time()
+    dt = time.localtime(now)
+    parts: list[str] = []
+    if dt.tm_hour in range(5, 9):
+        parts.append("early morning stillness")
+    elif dt.tm_hour in range(22, 24) or dt.tm_hour in range(0, 4):
+        parts.append("late-night quiet")
+    if dt.tm_mon in (12, 1, 2):
+        parts.append("winter cold")
+    elif dt.tm_mon in (6, 7, 8):
+        parts.append("summer heat")
+    lowered = (text or "").lower()
+    if any(token in lowered for token in ["rain", "storm", "thunder", "snow", "wind", "weather"]):
+        parts.append("weather is explicitly in play")
+    if not parts:
+        return ""
+    prefix = "LIVE_WORLD:"
+    if bot_name == "wanderer":
+        prefix += "use atmosphere and motion in the reply: "
+    else:
+        prefix += "let the atmosphere sharpen the mood of the reply: "
+    return prefix + ", ".join(parts[:3])
 
 
 def infer_scene_update(text: str, display_name: str = "") -> dict:

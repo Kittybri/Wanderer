@@ -209,6 +209,13 @@ class Memory:
                     last_used  REAL DEFAULT 0,
                     ts         REAL DEFAULT 0
                 );
+                CREATE TABLE IF NOT EXISTS user_preferences (
+                    user_id        INTEGER PRIMARY KEY,
+                    voice_enabled  INTEGER DEFAULT 1,
+                    utility_mode   INTEGER DEFAULT 1,
+                    duo_autoplay   INTEGER DEFAULT 1,
+                    rp_depth       TEXT    DEFAULT 'medium'
+                );
             """)
             migrations = [
                 ("allow_dms",          "INTEGER DEFAULT 1"),
@@ -299,6 +306,7 @@ class Memory:
                     mode          TEXT DEFAULT 'both',
                     topic         TEXT DEFAULT NULL,
                     initiator_bot TEXT DEFAULT NULL,
+                    initiator_user_id INTEGER DEFAULT 0,
                     last_speaker  TEXT DEFAULT NULL,
                     awaiting_bot  TEXT DEFAULT NULL,
                     autoplay_remaining INTEGER DEFAULT 0,
@@ -306,8 +314,25 @@ class Memory:
                     expires_ts    REAL DEFAULT 0,
                     updated_ts    REAL DEFAULT 0
                 );
+                CREATE TABLE IF NOT EXISTS channel_speaker_modes (
+                    channel_id   INTEGER PRIMARY KEY,
+                    speaker_mode TEXT DEFAULT 'auto',
+                    updated_ts   REAL DEFAULT 0
+                );
+                CREATE TABLE IF NOT EXISTS duo_story_log (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    channel_id  INTEGER,
+                    story_type  TEXT,
+                    topic       TEXT,
+                    status      TEXT DEFAULT 'open',
+                    outcome     TEXT DEFAULT NULL,
+                    enemy       TEXT DEFAULT NULL,
+                    ts          REAL DEFAULT 0,
+                    updated_ts  REAL DEFAULT 0
+                );
             """)
             for stmt in (
+                "ALTER TABLE duo_sessions ADD COLUMN initiator_user_id INTEGER DEFAULT 0",
                 "ALTER TABLE duo_sessions ADD COLUMN awaiting_bot TEXT DEFAULT NULL",
                 "ALTER TABLE duo_sessions ADD COLUMN autoplay_remaining INTEGER DEFAULT 0",
                 "ALTER TABLE duo_sessions ADD COLUMN next_autoplay_ts REAL DEFAULT 0",
@@ -371,7 +396,7 @@ class Memory:
             """, (user_id,)) as cur:
                 row = await cur.fetchone()
                 if not row: return None
-                return {
+                user = {
                     "user_id": row[0], "username": row[1], "display_name": row[2],
                     "romance_mode": bool(row[3]), "nsfw_mode": bool(row[4]),
                     "proactive": bool(row[5]), "allow_dms": bool(row[6]),
@@ -399,6 +424,40 @@ class Memory:
                     "callback_ts": row[37] or 0,
                     "repair_count": row[38] or 0,
                 }
+        prefs = await self.get_user_preferences(user_id)
+        user.update(prefs)
+        return user
+
+    async def get_user_preferences(self, user_id: int) -> dict:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "INSERT INTO user_preferences (user_id) VALUES (?) ON CONFLICT(user_id) DO NOTHING",
+                (user_id,),
+            )
+            await db.commit()
+            async with db.execute(
+                "SELECT voice_enabled,utility_mode,duo_autoplay,rp_depth FROM user_preferences WHERE user_id=?",
+                (user_id,),
+            ) as cur:
+                row = await cur.fetchone()
+        return {
+            "voice_enabled": bool(row[0]) if row else True,
+            "utility_mode": bool(row[1]) if row else True,
+            "duo_autoplay": bool(row[2]) if row else True,
+            "rp_depth": (row[3] or "medium") if row else "medium",
+        }
+
+    async def set_user_preference(self, user_id: int, field: str, value):
+        allowed = {"voice_enabled", "utility_mode", "duo_autoplay", "rp_depth"}
+        if field not in allowed:
+            raise ValueError(f"Unknown preference: {field}")
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "INSERT INTO user_preferences (user_id) VALUES (?) ON CONFLICT(user_id) DO NOTHING",
+                (user_id,),
+            )
+            await db.execute(f"UPDATE user_preferences SET {field}=? WHERE user_id=?", (value, user_id))
+            await db.commit()
 
     async def record_topic(self, user_id: int, topic: str):
         async with aiosqlite.connect(DB_PATH) as db:
@@ -971,6 +1030,7 @@ class Memory:
         mode: str,
         topic: str,
         initiator_bot: str,
+        initiator_user_id: int = 0,
         awaiting_bot: str = "",
         autoplay_turns: int = 0,
         autoplay_delay: int = 6,
@@ -979,15 +1039,16 @@ class Memory:
         now = time.time()
         async with aiosqlite.connect(self.shared_db_path) as db:
             await db.execute(
-                "INSERT INTO duo_sessions (channel_id,mode,topic,initiator_bot,last_speaker,awaiting_bot,autoplay_remaining,next_autoplay_ts,expires_ts,updated_ts) VALUES (?,?,?,?,?,?,?,?,?,?) "
+                "INSERT INTO duo_sessions (channel_id,mode,topic,initiator_bot,initiator_user_id,last_speaker,awaiting_bot,autoplay_remaining,next_autoplay_ts,expires_ts,updated_ts) VALUES (?,?,?,?,?,?,?,?,?,?,?) "
                 "ON CONFLICT(channel_id) DO UPDATE SET mode=excluded.mode, topic=excluded.topic, "
-                "initiator_bot=excluded.initiator_bot, awaiting_bot=excluded.awaiting_bot, autoplay_remaining=excluded.autoplay_remaining, "
+                "initiator_bot=excluded.initiator_bot, initiator_user_id=excluded.initiator_user_id, awaiting_bot=excluded.awaiting_bot, autoplay_remaining=excluded.autoplay_remaining, "
                 "next_autoplay_ts=excluded.next_autoplay_ts, expires_ts=excluded.expires_ts, updated_ts=excluded.updated_ts",
                 (
                     channel_id,
                     mode[:40],
                     topic[:300],
                     initiator_bot[:40],
+                    initiator_user_id,
                     "",
                     awaiting_bot[:40],
                     max(0, int(autoplay_turns)),
@@ -1002,12 +1063,12 @@ class Memory:
         now = time.time()
         async with aiosqlite.connect(self.shared_db_path) as db:
             async with db.execute(
-                "SELECT mode,topic,initiator_bot,last_speaker,awaiting_bot,autoplay_remaining,next_autoplay_ts,expires_ts,updated_ts "
+                "SELECT mode,topic,initiator_bot,initiator_user_id,last_speaker,awaiting_bot,autoplay_remaining,next_autoplay_ts,expires_ts,updated_ts "
                 "FROM duo_sessions WHERE channel_id=?",
                 (channel_id,),
             ) as cur:
                 row = await cur.fetchone()
-            if row and (row[7] or 0) < now:
+            if row and (row[8] or 0) < now:
                 await db.execute("DELETE FROM duo_sessions WHERE channel_id=?", (channel_id,))
                 await db.commit()
                 return None
@@ -1017,15 +1078,16 @@ class Memory:
             "mode": row[0] or "both",
             "topic": row[1] or "",
             "initiator_bot": row[2] or "",
-            "last_speaker": row[3] or "",
-            "awaiting_bot": row[4] or "",
-            "autoplay_remaining": row[5] or 0,
-            "next_autoplay_ts": row[6] or 0,
-            "expires_ts": row[7] or 0,
-            "updated_ts": row[8] or 0,
+            "initiator_user_id": row[3] or 0,
+            "last_speaker": row[4] or "",
+            "awaiting_bot": row[5] or "",
+            "autoplay_remaining": row[6] or 0,
+            "next_autoplay_ts": row[7] or 0,
+            "expires_ts": row[8] or 0,
+            "updated_ts": row[9] or 0,
         }
 
-    async def bump_duo_session(self, channel_id: int, speaker_bot: str, ttl_seconds: int = 900):
+    async def bump_duo_session(self, channel_id: int, speaker_bot: str, partner_bot: str = "", ttl_seconds: int = 900, autoplay_delay: int = 6):
         now = time.time()
         current = await self.get_duo_session(channel_id)
         awaiting_bot = current.get("awaiting_bot", "") if current else ""
@@ -1036,6 +1098,9 @@ class Memory:
             if autoplay_remaining == 0:
                 awaiting_bot = ""
                 next_autoplay_ts = 0
+            elif partner_bot:
+                awaiting_bot = partner_bot[:40]
+                next_autoplay_ts = now + max(2, int(autoplay_delay))
         async with aiosqlite.connect(self.shared_db_path) as db:
             await db.execute(
                 "UPDATE duo_sessions SET last_speaker=?, awaiting_bot=?, autoplay_remaining=?, next_autoplay_ts=?, updated_ts=?, expires_ts=? WHERE channel_id=?",
@@ -1047,7 +1112,7 @@ class Memory:
         now = time.time()
         async with aiosqlite.connect(self.shared_db_path) as db:
             async with db.execute(
-                "SELECT channel_id,mode,topic,initiator_bot,last_speaker,awaiting_bot,autoplay_remaining,next_autoplay_ts,expires_ts,updated_ts "
+                "SELECT channel_id,mode,topic,initiator_bot,initiator_user_id,last_speaker,awaiting_bot,autoplay_remaining,next_autoplay_ts,expires_ts,updated_ts "
                 "FROM duo_sessions WHERE awaiting_bot=? AND autoplay_remaining>0 AND next_autoplay_ts<=? AND expires_ts>?",
                 (bot_name, now, now),
             ) as cur:
@@ -1058,12 +1123,13 @@ class Memory:
                 "mode": row[1] or "both",
                 "topic": row[2] or "",
                 "initiator_bot": row[3] or "",
-                "last_speaker": row[4] or "",
-                "awaiting_bot": row[5] or "",
-                "autoplay_remaining": row[6] or 0,
-                "next_autoplay_ts": row[7] or 0,
-                "expires_ts": row[8] or 0,
-                "updated_ts": row[9] or 0,
+                "initiator_user_id": row[4] or 0,
+                "last_speaker": row[5] or "",
+                "awaiting_bot": row[6] or "",
+                "autoplay_remaining": row[7] or 0,
+                "next_autoplay_ts": row[8] or 0,
+                "expires_ts": row[9] or 0,
+                "updated_ts": row[10] or 0,
             }
             for row in rows
         ]
@@ -1072,6 +1138,60 @@ class Memory:
         async with aiosqlite.connect(self.shared_db_path) as db:
             await db.execute("DELETE FROM duo_sessions WHERE channel_id=?", (channel_id,))
             await db.commit()
+
+    async def set_channel_speaker_mode(self, channel_id: int, speaker_mode: str):
+        async with aiosqlite.connect(self.shared_db_path) as db:
+            await db.execute(
+                "INSERT INTO channel_speaker_modes (channel_id,speaker_mode,updated_ts) VALUES (?,?,?) "
+                "ON CONFLICT(channel_id) DO UPDATE SET speaker_mode=excluded.speaker_mode, updated_ts=excluded.updated_ts",
+                (channel_id, speaker_mode[:20], time.time()),
+            )
+            await db.commit()
+
+    async def get_channel_speaker_mode(self, channel_id: int) -> str:
+        async with aiosqlite.connect(self.shared_db_path) as db:
+            async with db.execute("SELECT speaker_mode FROM channel_speaker_modes WHERE channel_id=?", (channel_id,)) as cur:
+                row = await cur.fetchone()
+        return (row[0] if row else "auto") or "auto"
+
+    async def start_duo_story(self, channel_id: int, story_type: str, topic: str, enemy: str = "") -> int:
+        now = time.time()
+        async with aiosqlite.connect(self.shared_db_path) as db:
+            cur = await db.execute(
+                "INSERT INTO duo_story_log (channel_id,story_type,topic,status,outcome,enemy,ts,updated_ts) VALUES (?,?,?,?,?,?,?,?)",
+                (channel_id, story_type[:40], topic[:300], "open", "", enemy[:120], now, now),
+            )
+            await db.commit()
+            return cur.lastrowid
+
+    async def resolve_duo_story(self, channel_id: int, story_type: str, outcome: str):
+        async with aiosqlite.connect(self.shared_db_path) as db:
+            await db.execute(
+                "UPDATE duo_story_log SET status='resolved', outcome=?, updated_ts=? "
+                "WHERE id=(SELECT id FROM duo_story_log WHERE channel_id=? AND story_type=? ORDER BY ts DESC LIMIT 1)",
+                (outcome[:300], time.time(), channel_id, story_type[:40]),
+            )
+            await db.commit()
+
+    async def get_recent_duo_stories(self, channel_id: int, limit: int = 5) -> list[dict]:
+        async with aiosqlite.connect(self.shared_db_path) as db:
+            async with db.execute(
+                "SELECT story_type,topic,status,outcome,enemy,ts,updated_ts FROM duo_story_log WHERE channel_id=? ORDER BY ts DESC LIMIT ?",
+                (channel_id, limit),
+            ) as cur:
+                rows = await cur.fetchall()
+        return [
+            {
+                "story_type": row[0] or "",
+                "topic": row[1] or "",
+                "status": row[2] or "open",
+                "outcome": row[3] or "",
+                "enemy": row[4] or "",
+                "ts": row[5] or 0,
+                "updated_ts": row[6] or 0,
+            }
+            for row in rows
+        ]
 
     # ── Memory summary ────────────────────────────────────────────────────────
     async def needs_summary(self, user_id: int) -> bool:
