@@ -81,7 +81,35 @@ PARTNER_BOT_ID     = int(os.getenv("PARTNER_BOT_ID", "0") or "0")  # Scaramouche
 
 # ── Groq client (free, OpenAI-compatible) ─────────────────────────────────────
 from groq import Groq
-_groq_keys = [k for k in [GROQ_API_KEY, GROQ_API_KEY_2, GROQ_API_KEY_3] if k]
+
+
+def _load_groq_keys() -> list[str]:
+    keys: list[str] = []
+
+    def _remember(value: str):
+        cleaned = (value or "").strip()
+        if cleaned and cleaned not in keys:
+            keys.append(cleaned)
+
+    packed = os.getenv("GROQ_API_KEYS", "")
+    if packed:
+        for piece in re.split(r"[\n,;]+", packed):
+            _remember(piece)
+
+    numbered: list[tuple[int, str]] = []
+    for env_name, env_value in os.environ.items():
+        if env_name == "GROQ_API_KEY":
+            numbered.append((0, env_value))
+            continue
+        match = re.fullmatch(r"GROQ_API_KEY_(\d+)", env_name)
+        if match:
+            numbered.append((int(match.group(1)), env_value))
+    for _, env_value in sorted(numbered, key=lambda item: item[0]):
+        _remember(env_value)
+    return keys
+
+
+_groq_keys = _load_groq_keys()
 
 class RotatingGroq:
     """Groq client that rotates API keys on rate limit errors."""
@@ -1637,6 +1665,7 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
                        is_owner=False, channel_obj=None, is_dm=False):
     recent_replies: list[str] = []
     search_sources = ""
+    rate_limited = False
     try:
         history   = await mem.get_history(user_id, channel_id, limit=200)
         mood      = user.get("mood", 0) if user else 0
@@ -1822,18 +1851,21 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
 
         if not reply:
             reply = fallback_reply(BOT_NAME, recent_replies)
-        reply = await _maybe_self_edit_reply(
-            reply,
-            recent_replies=recent_replies,
-            user_message=user_message,
-            user=user,
-            max_tokens=240,
-        )
+        if not rate_limited:
+            reply = await _maybe_self_edit_reply(
+                reply,
+                recent_replies=recent_replies,
+                user_message=user_message,
+                user=user,
+                max_tokens=240,
+            )
         if search_sources:
             reply = f"{reply}\n\n{search_sources}"
 
     except Exception as e:
         log_error("get_response", e)
+        if "429" in str(e) or "rate limit" in str(e).lower():
+            rate_limited = True
         reply = fallback_reply(BOT_NAME, recent_replies)
 
     try:
@@ -1967,13 +1999,14 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
         mood=(refreshed_user or user or {}).get("mood", 0),
         conflict_open=(refreshed_user or user or {}).get("conflict_open", False),
     )
-    reply = await _maybe_self_edit_reply(
-        reply,
-        recent_replies=recent_replies,
-        user_message=user_message,
-        user=(refreshed_user or user),
-        max_tokens=240,
-    )
+    if not rate_limited:
+        reply = await _maybe_self_edit_reply(
+            reply,
+            recent_replies=recent_replies,
+            user_message=user_message,
+            user=(refreshed_user or user),
+            max_tokens=240,
+        )
     if not reply:
         reply = fallback_reply(BOT_NAME, recent_replies)
     remember_output(BOT_NAME, reply)
