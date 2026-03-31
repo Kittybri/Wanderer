@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 from memory import Memory
 from voice_handler import get_audio, get_audio_mooded
-from character_vision import ask_character_bot
+from character_vision import ask_character_bot, vision_exhausted_remaining, vision_is_exhausted
 from face_memory import (
     enroll_face_profile,
     enroll_face_profile_from_frames,
@@ -103,6 +103,7 @@ PARTNER_INVITE_PERMISSIONS = int(os.getenv("PARTNER_BOT_PERMISSIONS", "8") or "8
 PARTNER_INVITE_SCOPES = os.getenv("PARTNER_BOT_SCOPES", "bot applications.commands").strip() or "bot applications.commands"
 PARTNER_CLIENT_ID_OVERRIDE = (os.getenv("SCARAMOUCHE_CLIENT_ID") or os.getenv("PARTNER_CLIENT_ID") or "").strip()
 GROQ_EXHAUSTED_SILENCE_S = int(os.getenv("GROQ_EXHAUSTED_SILENCE_S", "600") or "600")
+PROVIDER_PAUSE_COOLDOWN_S = int(os.getenv("PROVIDER_PAUSE_COOLDOWN_S", "120") or "120")
 CHANNEL_CONTEXT_LIMIT_DIRECT = int(os.getenv("CHANNEL_CONTEXT_LIMIT_DIRECT", "20") or "20")
 CHANNEL_CONTEXT_LIMIT_AMBIENT = int(os.getenv("CHANNEL_CONTEXT_LIMIT_AMBIENT", "8") or "8")
 CHANNEL_CONTEXT_LIMIT_DM = int(os.getenv("CHANNEL_CONTEXT_LIMIT_DM", "16") or "16")
@@ -112,6 +113,10 @@ HISTORY_LIMIT_AMBIENT = int(os.getenv("HISTORY_LIMIT_AMBIENT", "80") or "80")
 MAIN_REPLY_MAX_TOKENS_DIRECT = int(os.getenv("MAIN_REPLY_MAX_TOKENS_DIRECT", "420") or "420")
 MAIN_REPLY_MAX_TOKENS_AMBIENT = int(os.getenv("MAIN_REPLY_MAX_TOKENS_AMBIENT", "220") or "220")
 SELF_EDIT_MIN_REPLY_CHARS = int(os.getenv("SELF_EDIT_MIN_REPLY_CHARS", "180") or "180")
+RECENT_REPLY_PACING_WINDOW = int(os.getenv("RECENT_REPLY_PACING_WINDOW", "7") or "7")
+LONG_REPLY_CHAR_THRESHOLD = int(os.getenv("LONG_REPLY_CHAR_THRESHOLD", "420") or "420")
+LONG_REPLY_SENTENCE_THRESHOLD = int(os.getenv("LONG_REPLY_SENTENCE_THRESHOLD", "5") or "5")
+LONG_REPLY_PARAGRAPH_THRESHOLD = int(os.getenv("LONG_REPLY_PARAGRAPH_THRESHOLD", "2") or "2")
 GROQ_MODEL_PRIMARY = os.getenv("GROQ_MODEL_PRIMARY", "llama-3.3-70b-versatile").strip() or "llama-3.3-70b-versatile"
 GROQ_MODEL_LIGHT = os.getenv("GROQ_MODEL_LIGHT", "llama-3.1-8b-instant").strip() or GROQ_MODEL_PRIMARY
 
@@ -320,6 +325,8 @@ class RotatingGroq:
 
     def call_with_retry(self, **kwargs):
         """Try current key, rotate on rate limit, try remaining keys."""
+        if self.is_exhausted():
+            raise RuntimeError(f"Groq exhausted; retry in {self.exhausted_remaining()}s")
         last_err = None
         for _ in range(len(self._clients)):
             try:
@@ -342,13 +349,21 @@ GROQ_MODEL = GROQ_MODEL_PRIMARY
 
 def _parse_rate_limit_retry_s(error_text: str) -> int:
     match = re.search(r"try again in (?:(\d+)h)?(?:(\d+)m)?([\d.]+)s", error_text or "", re.IGNORECASE)
-    if not match:
-        return GROQ_EXHAUSTED_SILENCE_S
-    hours = int(match.group(1) or 0)
-    minutes = int(match.group(2) or 0)
-    seconds = float(match.group(3) or 0.0)
-    retry_after = int(hours * 3600 + minutes * 60 + seconds)
-    return max(GROQ_EXHAUSTED_SILENCE_S, retry_after)
+    if match:
+        hours = int(match.group(1) or 0)
+        minutes = int(match.group(2) or 0)
+        seconds = float(match.group(3) or 0.0)
+        retry_after = int(hours * 3600 + minutes * 60 + seconds)
+        return max(GROQ_EXHAUSTED_SILENCE_S, retry_after)
+    match = re.search(r"retry[- ]after[:= ]+(\d+)", error_text or "", re.IGNORECASE)
+    if match:
+        return max(GROQ_EXHAUSTED_SILENCE_S, int(match.group(1)))
+    return GROQ_EXHAUSTED_SILENCE_S
+
+
+def _is_rate_limited_error(error: Exception | str | None) -> bool:
+    text = str(error or "").lower()
+    return "429" in text or "rate limit" in text or "rate_limit" in text or "exhausted" in text
 
 
 def _should_suppress_ambient_reply(is_dm: bool, direct_to_me: bool) -> bool:
@@ -444,6 +459,43 @@ def debug_event(tag: str, detail: str):
     print(f"[DEBUG:{tag}] {detail}")
 
 
+async def _provider_pause_reply(
+    provider: str,
+    *,
+    user_id: int = 0,
+    channel_id: int = 0,
+    is_dm: bool = False,
+    direct_to_me: bool = True,
+) -> str:
+    if not (is_dm or direct_to_me):
+        return ""
+    scope = user_id or channel_id or 0
+    cooldown = max(45, PROVIDER_PAUSE_COOLDOWN_S // 2) if is_dm else PROVIDER_PAUSE_COOLDOWN_S
+    if scope:
+        allowed, remaining = await mem.consume_phrase_with_status(
+            f"{BOT_NAME}:{provider}:pause:{scope}",
+            "provider_pause",
+            cooldown,
+        )
+        if not allowed:
+            debug_event("provider", f"{BOT_NAME} suppressed repeated {provider} pause reply remaining={remaining}s")
+            return ""
+    remaining = groq_client.exhausted_remaining() if provider == "groq" else vision_exhausted_remaining()
+    pool = [
+        "Not now. Ask again when the static clears.",
+        "I heard you. Give me a minute.",
+        f"The line is clogged. Wait {max(1, remaining // 60)} minute{'s' if max(1, remaining // 60) != 1 else ''}.",
+        "Enough. Let the noise settle first.",
+        "I'm not ignoring you. The channel is jammed.",
+    ] if not is_dm else [
+        "Not now. Stay here a minute.",
+        "I heard you. Give me a little time.",
+        "The line is jammed. Ask me again shortly.",
+        "Wait. I'm not going to drag a reply through static for scraps.",
+    ]
+    return await _pick_fresh_pool_line(pool, channel_id=channel_id or scope, user_id=user_id or scope)
+
+
 async def _vision_image_reply(
     *,
     prompt: str,
@@ -452,6 +504,9 @@ async def _vision_image_reply(
     mime_type: str,
     max_chars: int = 900,
 ) -> str:
+    if vision_is_exhausted():
+        debug_event("provider", f"{BOT_NAME} skipping xAI vision call for {vision_exhausted_remaining()}s")
+        return ""
     loop = asyncio.get_event_loop()
 
     def _run():
@@ -464,7 +519,13 @@ async def _vision_image_reply(
             temperature=0.35,
         )
 
-    reply = await loop.run_in_executor(None, _run)
+    try:
+        reply = await loop.run_in_executor(None, _run)
+    except Exception as e:
+        if _is_rate_limited_error(e):
+            debug_event("provider", f"{BOT_NAME} xAI vision rate-limited")
+            return ""
+        raise
     return strip_narration((reply or "").strip())[:max_chars]
 
 
@@ -888,6 +949,112 @@ async def _recent_reply_samples(channel_id: int | None = None, user_id: int | No
         return get_runtime_recent(BOT_NAME, limit=20)
 
 
+def _sentence_count(text: str) -> int:
+    cleaned = strip_narration((text or "").strip())
+    if not cleaned:
+        return 0
+    return len([part for part in re.split(r"(?<=[.!?])\s+", cleaned) if part.strip()])
+
+
+def _paragraph_count(text: str) -> int:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return 0
+    return len([part for part in re.split(r"\n\s*\n", cleaned) if part.strip()])
+
+
+def _is_large_text_reply(text: str) -> bool:
+    cleaned = strip_narration((text or "").strip())
+    if not cleaned:
+        return False
+    return (
+        len(cleaned) >= LONG_REPLY_CHAR_THRESHOLD
+        or _sentence_count(cleaned) >= LONG_REPLY_SENTENCE_THRESHOLD
+        or _paragraph_count(text) >= LONG_REPLY_PARAGRAPH_THRESHOLD
+    )
+
+
+async def _recent_text_pressure(channel_id: int) -> dict[str, int]:
+    try:
+        recent = await mem.get_recent_assistant_messages(limit=max(RECENT_REPLY_PACING_WINDOW, 10), channel_id=channel_id)
+        sample = recent[:RECENT_REPLY_PACING_WINDOW]
+        return {
+            "count": len(sample),
+            "large": sum(1 for item in sample if _is_large_text_reply(item)),
+            "walls": sum(1 for item in sample if _paragraph_count(item) >= LONG_REPLY_PARAGRAPH_THRESHOLD),
+        }
+    except Exception as e:
+        log_error("recent_text_pressure", e)
+        return {"count": 0, "large": 0, "walls": 0}
+
+
+def _allow_long_text(scene_tag: str, user: dict | None, duo_mode: str = "") -> bool:
+    if scene_tag in {"emotional_comfort", "relationship_progression", "combat_action", "lore_discussion"}:
+        return True
+    if duo_mode in {"trial", "mission", "interrogate", "duet", "argue", "compare", "truthdare"}:
+        return True
+    if user and (user.get("conflict_open") or user.get("repair_progress", 0) > 0 or user.get("mood", 0) <= -6):
+        return True
+    return False
+
+
+def _tighten_length_hint(hint: str, pressure: dict[str, int], allow_long_text: bool) -> str:
+    large = pressure.get("large", 0)
+    walls = pressure.get("walls", 0)
+    if large <= 1 and walls == 0:
+        return hint
+    if allow_long_text:
+        if walls >= 2 and hint.lower().startswith("longer"):
+            return "A few sentences."
+        return hint
+    if walls >= 2 or large >= 4:
+        return "One sentence."
+    if large >= 2 and hint in {"A few sentences.", "Longer, thoughtful.", "Longer, dramatic."}:
+        return "2-3 sentences."
+    return hint
+
+
+def _tighten_token_budget(max_tokens: int, pressure: dict[str, int], allow_long_text: bool) -> int:
+    large = pressure.get("large", 0)
+    walls = pressure.get("walls", 0)
+    if allow_long_text:
+        return min(max_tokens, 320) if large >= 3 else max_tokens
+    if walls >= 2:
+        return min(max_tokens, 160)
+    if large >= 3:
+        return min(max_tokens, 200)
+    if large >= 2:
+        return min(max_tokens, 240)
+    return max_tokens
+
+
+def _prefer_voice_for_reply(reply: str, pressure: dict[str, int], *, asked_for_voice: bool, allow_long_text: bool) -> bool:
+    if asked_for_voice:
+        return True
+    if not _is_large_text_reply(reply):
+        return False
+    if pressure.get("walls", 0) >= 1:
+        return True
+    if pressure.get("large", 0) >= 2:
+        return True
+    return allow_long_text and _paragraph_count(reply) >= LONG_REPLY_PARAGRAPH_THRESHOLD
+
+
+def _compact_text_for_pacing(reply: str, *, allow_long_text: bool) -> str:
+    cleaned = strip_narration(re.sub(r"\n\s*\n+", " ", (reply or "").strip()))
+    if not cleaned:
+        return cleaned
+    max_sentences = 4 if allow_long_text else 2
+    max_chars = 520 if allow_long_text else 260
+    sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+", cleaned) if part.strip()]
+    if len(sentences) > max_sentences:
+        cleaned = " ".join(sentences[:max_sentences])
+    if len(cleaned) > max_chars:
+        clipped = cleaned[:max_chars].rsplit(" ", 1)[0].rstrip(".,;: ")
+        cleaned = (clipped or cleaned[:max_chars]).rstrip() + "..."
+    return cleaned
+
+
 async def _pick_fresh_pool_line(options: list[str], channel_id: int | None = None, user_id: int | None = None) -> str:
     recent = await _recent_reply_samples(channel_id=channel_id, user_id=user_id)
     line = pick_fresh_option(BOT_NAME, options, recent)
@@ -1212,6 +1379,8 @@ async def _maybe_self_edit_reply(
     max_tokens: int = 220,
 ) -> str:
     cleaned = strip_narration((reply or "").strip())
+    if groq_client.is_exhausted():
+        return cleaned
     issues = _self_edit_issues(cleaned, recent_replies, user=user)
     if not issues:
         return cleaned
@@ -1950,10 +2119,10 @@ def _groq_blocking(messages: list, system: str, max_tokens: int = 500, model: st
             frequency_penalty=0.7,
             presence_penalty=0.6,
         )
-        return resp.choices[0].message.content.strip() or "..."
+        return resp.choices[0].message.content.strip() or ""
     except Exception as e:
         print(f"[Groq] {e}")
-        return "..."
+        return ""
 
 async def groq_call(messages: list, system: str, max_tokens: int = 500, *, route: str = "auto") -> str:
     loop = asyncio.get_event_loop()
@@ -1974,10 +2143,10 @@ def _groq_quick_blocking(prompt: str, max_tokens: int = 200, model: str | None =
             frequency_penalty=0.7,
             presence_penalty=0.6,
         )
-        return resp.choices[0].message.content.strip() or "..."
+        return resp.choices[0].message.content.strip() or ""
     except Exception as e:
         print(f"[Groq Quick] {e}")
-        return "..."
+        return ""
 
 async def qai(prompt: str, max_tokens: int = 200, *, self_edit: bool = True, route: str = "auto") -> str:
     try:
@@ -1989,6 +2158,8 @@ async def qai(prompt: str, max_tokens: int = 200, *, self_edit: bool = True, rou
         model_name = _select_text_model(route=route_name)
         reply = ""
         for attempt in range(2):
+            if groq_client.is_exhausted() and route_name == "light":
+                break
             active_prompt = guarded_prompt
             if attempt:
                 active_prompt += "\n\nRETRY: Use a different opening phrase and different sentence rhythm."
@@ -2004,9 +2175,14 @@ async def qai(prompt: str, max_tokens: int = 200, *, self_edit: bool = True, rou
                 )
             if reply and not looks_repetitive(reply, recent_replies):
                 break
+            if groq_client.is_exhausted():
+                break
         if not reply:
+            if groq_client.is_exhausted() and route_name == "light":
+                return ""
             reply = fallback_reply(BOT_NAME, recent_replies)
-        remember_output(BOT_NAME, reply)
+        if reply:
+            remember_output(BOT_NAME, reply)
         return reply
     except Exception as e:
         log_error("qai/async", e)
@@ -2115,6 +2291,9 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
         world_context = await _world_prompt_context(channel_id)
         duo_session = await mem.get_duo_session(channel_id)
         campaign_npcs = await mem.list_campaign_npcs(channel_id=channel_id, limit=5)
+        scenario = detect_scenario(user_message, is_dm=is_dm)
+        text_pressure = await _recent_text_pressure(channel_id)
+        allow_long_text = _allow_long_text(scenario, user, (duo_session or {}).get("mode", ""))
 
         depth = (user or {}).get("rp_depth", "medium")
         r = random.random()
@@ -2130,6 +2309,7 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
             elif r < .74: hint = "2-3 sentences."
             elif r < .93: hint = "A few sentences."
             else:         hint = "Longer, thoughtful."
+        hint = _tighten_length_hint(hint, text_pressure, allow_long_text)
 
         now      = datetime.now()
         days_ago = round((time.time() - (user.get("last_active", 0) if user else 0)) / 86400, 1) if user and user.get("last_active", 0) else 0
@@ -2158,9 +2338,13 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
         )
         arc_desc = describe_emotional_arc(BOT_NAME, emotional_arc)
         if arc_desc: parts.append(f"ARC:{emotional_arc}|{arc_desc}")
-        scenario = detect_scenario(user_message, is_dm=is_dm)
         scenario_desc = describe_scenario_context(BOT_NAME, scenario)
         if scenario_desc: parts.append(f"SCENARIO:{scenario}|{scenario_desc}")
+        if text_pressure.get("large", 0) >= 2 or text_pressure.get("walls", 0) >= 1:
+            parts.append(
+                f"TEXT_PACING: recent_long={text_pressure.get('large', 0)} recent_walls={text_pressure.get('walls', 0)}; "
+                "keep this tighter unless the moment is unusually raw, vulnerable, or plot-heavy"
+            )
         triggers = detect_emotional_triggers(user_message)
         emotional_layer = describe_emotional_layers(BOT_NAME, mood, affection, trust, emotional_arc, triggers)
         if emotional_layer: parts.append(f"EMOTIONAL_LAYER:{emotional_layer}")
@@ -2296,6 +2480,7 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
             use_search=use_search,
             is_owner=is_owner,
         )
+        reply_max_tokens = _tighten_token_budget(reply_max_tokens, text_pressure, allow_long_text)
         response_model = _select_text_model(
             is_dm=is_dm,
             direct_to_me=direct_to_me,
@@ -2305,27 +2490,35 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
             duo_mode=(duo_session or {}).get("mode", ""),
             has_lore=bool(lore_hook or lore_tree or unlock_scene),
         )
-
-        history.append({"role": "user", "content": context_block})
-        system = build_system(user, display_name, is_owner)
-
         reply = ""
-        retry_context = context_block
-        for attempt in range(2):
-            draft_history = history[:-1] + [{"role": "user", "content": retry_context}]
-            reply = await groq_call(draft_history, system, max_tokens=reply_max_tokens, route="primary" if response_model == GROQ_MODEL_PRIMARY else "light")
-            reply = diversify_reply(BOT_NAME, strip_narration(reply), recent_replies)
-            reply = await _apply_phrase_policy(
-                reply,
-                recent_replies,
+        if groq_client.is_exhausted():
+            rate_limited = True
+            reply = await _provider_pause_reply(
+                "groq",
                 user_id=user_id,
-                mood=mood,
-                conflict_open=conflict_open,
+                channel_id=channel_id,
+                is_dm=is_dm,
+                direct_to_me=direct_to_me,
             )
-            if reply and not looks_repetitive(reply, recent_replies):
-                break
-            retry_context = context_block + "\n\nRETRY: The last draft sounded too much like your recent replies. "
-            retry_context += "Change the opener, the cadence, and the mockery pattern."
+        else:
+            history.append({"role": "user", "content": context_block})
+            system = build_system(user, display_name, is_owner)
+            retry_context = context_block
+            for attempt in range(2):
+                draft_history = history[:-1] + [{"role": "user", "content": retry_context}]
+                reply = await groq_call(draft_history, system, max_tokens=reply_max_tokens, route="primary" if response_model == GROQ_MODEL_PRIMARY else "light")
+                reply = diversify_reply(BOT_NAME, strip_narration(reply), recent_replies)
+                reply = await _apply_phrase_policy(
+                    reply,
+                    recent_replies,
+                    user_id=user_id,
+                    mood=mood,
+                    conflict_open=conflict_open,
+                )
+                if reply and not looks_repetitive(reply, recent_replies):
+                    break
+                retry_context = context_block + "\n\nRETRY: The last draft sounded too much like your recent replies. "
+                retry_context += "Change the opener, the cadence, and the mockery pattern."
 
         if not reply:
             reply = fallback_reply(BOT_NAME, recent_replies)
@@ -2342,9 +2535,17 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
 
     except Exception as e:
         log_error("get_response", e)
-        if "429" in str(e) or "rate limit" in str(e).lower():
+        if _is_rate_limited_error(e):
             rate_limited = True
-        reply = fallback_reply(BOT_NAME, recent_replies)
+            reply = await _provider_pause_reply(
+                "groq",
+                user_id=user_id,
+                channel_id=channel_id,
+                is_dm=is_dm,
+                direct_to_me=direct_to_me,
+            )
+        else:
+            reply = fallback_reply(BOT_NAME, recent_replies)
 
     try:
         await mem.add_message(user_id, channel_id, "user", user_message)
@@ -2485,9 +2686,10 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
             user=(refreshed_user or user),
             max_tokens=240,
         )
-    if not reply:
+    if not reply and not rate_limited:
         reply = fallback_reply(BOT_NAME, recent_replies)
-    remember_output(BOT_NAME, reply)
+    if reply:
+        remember_output(BOT_NAME, reply)
     return reply
 
 
@@ -2727,10 +2929,14 @@ async def _setup(ctx):
         log_error("_setup", e); return None
 
 async def safe_reply(ctx, text):
+    if not (text or "").strip():
+        return
     try: await ctx.reply(text)
     except Exception as e: log_error("safe_reply", e)
 
 async def safe_send(ctx, text):
+    if not (text or "").strip():
+        return
     try: await ctx.send(text)
     except Exception as e: log_error("safe_send", e)
 
@@ -2905,6 +3111,8 @@ async def _command_face_media(ctx):
 
 async def _interaction_reply(interaction: discord.Interaction, text: str, *, thinking: bool = False):
     try:
+        if not (text or "").strip():
+            return
         if thinking and not interaction.response.is_done():
             await interaction.response.defer(thinking=True)
         if interaction.response.is_done():
@@ -3425,7 +3633,9 @@ async def on_message(message):
                             return
                     else:
                         reply = await qai(f"{message.author.display_name} sent a video I couldn't process. React as the Wanderer — mildly curious but unbothered. 1 sentence.", 80)
-                        await message.reply(strip_narration(reply))
+                        reply = strip_narration(reply)
+                        if reply:
+                            await message.reply(reply)
                         return
                 except Exception as e: log_error("on_message/video", e)
 
@@ -3488,7 +3698,9 @@ async def on_message(message):
                     # Fallback to text-only reaction
                     reply = await qai(f"{message.author.display_name} shared an image{' with: ' + content if content else ''}. React as the Wanderer — curious, wry. 1-2 sentences.", 120)
                     if reply:
-                        await message.reply(strip_narration(reply))
+                        reply = strip_narration(reply)
+                        if reply:
+                            await message.reply(reply)
                         return
         except Exception as e: log_error("on_message/media_outer", e)
 
@@ -3732,6 +3944,11 @@ async def on_message(message):
             scene_tag = detect_scenario(content, is_dm=is_dm)
             duo_mode = duo_session.get("mode", "") if duo_session else ""
             jealousy_level = int((triangle or {}).get("jealousy_level", 0) or 0)
+            text_pressure = await _recent_text_pressure(message.channel.id)
+            allow_long_text = _allow_long_text(scene_tag, user, duo_mode)
+            if not (reply or "").strip():
+                debug_event("provider", f"{BOT_NAME} staying quiet after provider exhaustion")
+                return
             is_reply_to_self_audio = False
             if message.reference:
                 try:
@@ -3744,8 +3961,16 @@ async def on_message(message):
                                 "say it out loud", "speak to me", "wanna hear your voice", "want to hear your voice",
                                 "use your voice", "talk to me", "send audio", "voice note", "send a voice"]
             asked_for_voice = any(k in content.lower() for k in VOICE_REQUEST_KW)
+            prefer_voice = _prefer_voice_for_reply(
+                reply,
+                text_pressure,
+                asked_for_voice=asked_for_voice,
+                allow_long_text=allow_long_text,
+            )
             if reply and len(reply.strip()) > 2 and FISH_AUDIO_API_KEY:
                 voice_prob = 1.0 if asked_for_voice else (0.35 if is_reply_to_self_audio else 0.12)
+                if prefer_voice:
+                    voice_prob = max(voice_prob, 0.9)
                 if random.random() < voice_prob:
                     sent = await send_voice(
                         message.channel,
@@ -3762,6 +3987,13 @@ async def on_message(message):
                     if sent:
                         await mem.add_message(message.author.id, dm_channel_id, "assistant", f"[voice message] {reply}")
                         await maybe_react(message, romance); return
+
+            if _is_large_text_reply(reply) and (
+                text_pressure.get("large", 0) >= 2
+                or text_pressure.get("walls", 0) >= 1
+                or not allow_long_text
+            ):
+                reply = _compact_text_for_pacing(reply, allow_long_text=allow_long_text)
 
             if user and user.get("affection", 0) >= 85 and random.random() < .04 and FISH_AUDIO_API_KEY:
                 await send_voice(
@@ -3930,6 +4162,8 @@ async def _duo_autoplay_loop():
                         is_dm=not bool(getattr(channel, "guild", None)),
                         direct_to_me=False,
                     )
+                    if not (reply or "").strip():
+                        continue
                     await channel.send(reply)
                     await mem.add_message(target_message.author.id, channel.id, "assistant", reply)
                     await _maybe_finalize_hidden_achievements(session, reply)

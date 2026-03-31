@@ -1,6 +1,8 @@
 import base64
 import mimetypes
 import os
+import re
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -14,6 +16,8 @@ load_dotenv(dotenv_path=root_env) if os.path.exists(root_env) else load_dotenv()
 XAI_API_KEY = (os.getenv("XAI_API_KEY") or "").strip()
 XAI_BASE_URL = (os.getenv("XAI_BASE_URL") or "https://api.x.ai/v1").rstrip("/")
 VISION_MODEL = (os.getenv("XAI_VISION_MODEL") or "grok-2-vision-1212").strip()
+XAI_EXHAUSTED_SILENCE_S = int(os.getenv("XAI_EXHAUSTED_SILENCE_S", "600") or "600")
+_VISION_EXHAUSTED_UNTIL = 0.0
 
 BOT_SYSTEM_PROMPTS = {
     "scaramouche": (
@@ -27,6 +31,41 @@ BOT_SYSTEM_PROMPTS = {
         "and provide practical takeaways."
     ),
 }
+
+
+def _mark_vision_exhausted(retry_after_s: int) -> None:
+    global _VISION_EXHAUSTED_UNTIL
+    _VISION_EXHAUSTED_UNTIL = max(_VISION_EXHAUSTED_UNTIL, time.time() + max(XAI_EXHAUSTED_SILENCE_S, retry_after_s))
+
+
+def vision_is_exhausted() -> bool:
+    return time.time() < _VISION_EXHAUSTED_UNTIL
+
+
+def vision_exhausted_remaining() -> int:
+    return max(0, int(_VISION_EXHAUSTED_UNTIL - time.time()))
+
+
+def _parse_retry_after_s(response: requests.Response) -> int:
+    header = (response.headers or {}).get("Retry-After", "").strip()
+    if header.isdigit():
+        return max(XAI_EXHAUSTED_SILENCE_S, int(header))
+
+    text = ""
+    try:
+        text = response.text or ""
+    except Exception:
+        text = ""
+    match = re.search(r"try again in (?:(\d+)h)?(?:(\d+)m)?([\d.]+)s", text, re.IGNORECASE)
+    if match:
+        hours = int(match.group(1) or 0)
+        minutes = int(match.group(2) or 0)
+        seconds = float(match.group(3) or 0.0)
+        return max(XAI_EXHAUSTED_SILENCE_S, int(hours * 3600 + minutes * 60 + seconds))
+    match = re.search(r"retry[- ]after[:= ]+(\d+)", text, re.IGNORECASE)
+    if match:
+        return max(XAI_EXHAUSTED_SILENCE_S, int(match.group(1)))
+    return XAI_EXHAUSTED_SILENCE_S
 
 
 def _image_part(
@@ -71,6 +110,8 @@ def ask_character_bot(
     """Run Scaramouche or Wanderer with optional vision input through xAI."""
     if not XAI_API_KEY:
         raise RuntimeError("Missing XAI_API_KEY")
+    if vision_is_exhausted():
+        return ""
 
     key = bot_name.strip().lower()
     if key not in BOT_SYSTEM_PROMPTS:
@@ -102,6 +143,9 @@ def ask_character_bot(
         json=payload,
         timeout=timeout_s,
     )
+    if res.status_code == 429:
+        _mark_vision_exhausted(_parse_retry_after_s(res))
+        return ""
     res.raise_for_status()
     body = res.json()
 
