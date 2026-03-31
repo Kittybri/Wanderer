@@ -1,0 +1,251 @@
+import asyncio
+import json
+import os
+import sys
+import tempfile
+from pathlib import Path
+
+from character_vision import ask_character_bot
+
+
+ROOT_DIR = Path(__file__).resolve().parent
+DOWNLOADS_DIR = ROOT_DIR.parent
+SCARA_TEMPLATE_DIR = DOWNLOADS_DIR / "scaramouche_blender_templates"
+WANDERER_TEMPLATE_DIR = DOWNLOADS_DIR / "wanderer_blender_templates"
+BLENDER_EXE = Path(r"C:\Program Files\Blender Foundation\Blender 4.2\blender.exe")
+SCARA_VIDEO_SCRIPT = SCARA_TEMPLATE_DIR / "notes_to_scaramouche_video.py"
+WANDERER_VIDEO_SCRIPT = WANDERER_TEMPLATE_DIR / "notes_to_wanderer_video.py"
+DUO_VIDEO_SCRIPT = SCARA_TEMPLATE_DIR / "notes_to_duo_debate_video.py"
+VIDEO_RENDER_TIMEOUT_S = int(os.getenv("VIDEO_RENDER_TIMEOUT_S", "1200") or "1200")
+VIDEO_RENDER_WIDTH = int(os.getenv("VIDEO_RENDER_WIDTH", "960") or "960")
+VIDEO_RENDER_HEIGHT = int(os.getenv("VIDEO_RENDER_HEIGHT", "540") or "540")
+VIDEO_RENDER_FPS = int(os.getenv("VIDEO_RENDER_FPS", "8") or "8")
+VIDEO_RENDER_ENGINE = os.getenv("VIDEO_RENDER_ENGINE", "BLENDER_WORKBENCH").strip() or "BLENDER_WORKBENCH"
+
+
+def _video_root() -> Path:
+    configured = (os.getenv("VIDEO_RENDER_ROOT") or "").strip()
+    if configured:
+        path = Path(configured)
+    else:
+        path = Path(tempfile.gettempdir()) / "scara_wanderer_video_jobs"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _script_for_bot(bot_name: str) -> Path:
+    key = (bot_name or "").strip().lower()
+    if key == "scaramouche":
+        return SCARA_VIDEO_SCRIPT
+    if key == "wanderer":
+        return WANDERER_VIDEO_SCRIPT
+    raise ValueError(f"Unsupported bot video renderer: {bot_name}")
+
+
+def video_renderer_available(bot_name: str | None = None, *, duo: bool = False) -> tuple[bool, str]:
+    if not BLENDER_EXE.exists():
+        return False, f"Blender is missing at {BLENDER_EXE}"
+    scripts = [DUO_VIDEO_SCRIPT, SCARA_VIDEO_SCRIPT, WANDERER_VIDEO_SCRIPT] if duo else [_script_for_bot(bot_name or "scaramouche")]
+    for script in scripts:
+        if not script.exists():
+            return False, f"Missing renderer script: {script}"
+    return True, ""
+
+
+def _make_job_dir(prefix: str) -> Path:
+    path = _video_root() / prefix
+    suffix = 1
+    final = path
+    while final.exists():
+        suffix += 1
+        final = _video_root() / f"{prefix}-{suffix}"
+    final.mkdir(parents=True, exist_ok=True)
+    return final
+
+
+async def _run_render_script(script_path: Path, notes_text: str, *, title: str = "", width: int = VIDEO_RENDER_WIDTH, height: int = VIDEO_RENDER_HEIGHT, fps: int = VIDEO_RENDER_FPS, engine: str = VIDEO_RENDER_ENGINE) -> dict:
+    if not script_path.exists():
+        raise FileNotFoundError(f"Render script not found: {script_path}")
+
+    output_dir = _make_job_dir(script_path.stem)
+    notes_path = output_dir / "notes.txt"
+    notes_path.write_text(notes_text, encoding="utf-8")
+
+    cmd = [
+        sys.executable,
+        str(script_path),
+        str(notes_path),
+        "--width",
+        str(width),
+        "--height",
+        str(height),
+        "--fps",
+        str(fps),
+        "--engine",
+        engine,
+        "--output-dir",
+        str(output_dir),
+    ]
+    if title.strip():
+        cmd.extend(["--title", title.strip()])
+
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+        cwd=str(script_path.parent),
+    )
+    try:
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=VIDEO_RENDER_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        proc.kill()
+        raise RuntimeError("Video rendering timed out.")
+
+    combined = (stdout or b"").decode("utf-8", errors="ignore")
+    summary_path = output_dir / "run_summary.json"
+    if proc.returncode != 0:
+        tail = "\n".join(combined.splitlines()[-20:]) or "no output"
+        raise RuntimeError(f"Video rendering failed.\n{tail}")
+    if not summary_path.exists():
+        tail = "\n".join(combined.splitlines()[-20:]) or "no output"
+        raise RuntimeError(f"Render finished without a summary file.\n{tail}")
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    summary["_output_dir"] = str(output_dir)
+    summary["_logs"] = combined[-4000:]
+    return summary
+
+
+async def render_teaching_video(bot_name: str, notes_text: str, *, title: str = "") -> dict:
+    return await _run_render_script(_script_for_bot(bot_name), notes_text, title=title)
+
+
+async def render_duo_debate_video(notes_text: str, *, title: str = "") -> dict:
+    return await _run_render_script(DUO_VIDEO_SCRIPT, notes_text, title=title)
+
+
+async def download_attachment_bytes(attachment) -> bytes:
+    import aiohttp
+
+    async with aiohttp.ClientSession() as session:
+        async with session.get(attachment.url) as resp:
+            if resp.status != 200:
+                raise RuntimeError(f"Attachment download failed with HTTP {resp.status}")
+            return await resp.read()
+
+
+async def extract_teaching_material(attachment, *, topic: str = "", bot_name: str = "wanderer") -> str:
+    material_content = ""
+    if attachment:
+        content_type = (attachment.content_type or "").lower()
+        filename = (attachment.filename or "attachment").lower()
+        file_bytes = await download_attachment_bytes(attachment)
+
+        if "pdf" in content_type or filename.endswith(".pdf"):
+            try:
+                import io as _io
+                import pdfplumber
+
+                with pdfplumber.open(_io.BytesIO(file_bytes)) as pdf:
+                    material_content = "\n".join(page.extract_text() or "" for page in pdf.pages)[:8000]
+            except Exception:
+                try:
+                    import io as _io
+                    import PyPDF2
+
+                    reader = PyPDF2.PdfReader(_io.BytesIO(file_bytes))
+                    material_content = "\n".join(page.extract_text() or "" for page in reader.pages)[:8000]
+                except Exception as exc:
+                    raise RuntimeError(f"Couldn't read the PDF: {exc}") from exc
+
+        elif "image" in content_type or filename.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif")):
+            try:
+                material_content = ask_character_bot(
+                    bot_name,
+                    "Extract all educational content visible in this image. Include every concept, formula, definition, diagram label, and key point.",
+                    image_url=attachment.url,
+                )
+            except Exception as exc:
+                raise RuntimeError(f"Couldn't read the image: {exc}") from exc
+
+        elif "text" in content_type or filename.endswith((".txt", ".md", ".csv")):
+            try:
+                material_content = file_bytes.decode("utf-8", errors="ignore")[:6000]
+            except Exception as exc:
+                raise RuntimeError(f"Couldn't read the text file: {exc}") from exc
+
+        elif filename.endswith((".pptx", ".ppt")):
+            try:
+                import io as _io
+                from pptx import Presentation as _Prs
+
+                prs = _Prs(_io.BytesIO(file_bytes))
+                parts = []
+                for index, slide in enumerate(prs.slides, start=1):
+                    slide_texts = []
+                    for shape in slide.shapes:
+                        if hasattr(shape, "text") and shape.text.strip():
+                            slide_texts.append(shape.text.strip())
+                    if slide_texts:
+                        parts.append(f"[Slide {index}]\n" + "\n".join(slide_texts))
+                material_content = "\n\n".join(parts)[:6000]
+            except Exception as exc:
+                raise RuntimeError(f"Couldn't read the PowerPoint: {exc}") from exc
+
+        elif filename.endswith((".docx", ".doc")):
+            try:
+                import io as _io
+                import docx as _docx
+
+                doc = _docx.Document(_io.BytesIO(file_bytes))
+                parts = [paragraph.text.strip() for paragraph in doc.paragraphs if paragraph.text.strip()]
+                for table in doc.tables:
+                    for row in table.rows:
+                        row_text = " | ".join(cell.text.strip() for cell in row.cells if cell.text.strip())
+                        if row_text:
+                            parts.append(row_text)
+                material_content = "\n".join(parts)[:6000]
+            except Exception as exc:
+                raise RuntimeError(f"Couldn't read the Word document: {exc}") from exc
+
+        else:
+            raise RuntimeError("I can read PDFs, images, PowerPoint files, Word documents, and text files for video lessons.")
+
+    full_material = f"Topic: {topic}\n\n{material_content}".strip() if topic else material_content.strip()
+    return full_material.strip()
+
+
+def build_weather_video_notes(place: str, weather_data: dict, news_results: list[dict], *, duo: bool = False) -> str:
+    title = f"{place} Weather Report"
+    intro = "A duo weather news report." if duo else "A weather news report."
+    lines = [
+        f"# {title}",
+        intro,
+        "",
+        "## Current conditions",
+        f"- Place: {place}",
+        f"- Forecast: {weather_data.get('forecast') or 'Unavailable'}",
+    ]
+    temp = weather_data.get("temperature")
+    unit = weather_data.get("temperature_unit") or "F"
+    if temp is not None:
+        lines.append(f"- Temperature: {temp} {unit}")
+    wind_speed = weather_data.get("wind_speed") or ""
+    wind_direction = weather_data.get("wind_direction") or ""
+    if wind_speed or wind_direction:
+        lines.append(f"- Wind: {wind_direction} {wind_speed}".strip())
+    precip = weather_data.get("precipitation")
+    if precip is not None:
+        lines.append(f"- Chance of precipitation: {precip}%")
+
+    if news_results:
+        lines.extend(["", "## Recent weather headlines"])
+        for index, item in enumerate(news_results[:3], start=1):
+            title_text = (item.get("title") or "Weather headline").strip()
+            snippet = (item.get("snippet") or "").strip()
+            url = (item.get("url") or "").strip()
+            lines.append(f"- Headline {index}: {title_text}")
+            if snippet:
+                lines.append(f"  Detail: {snippet}")
+            if url:
+                lines.append(f"  Source: {url}")
+    return "\n".join(lines).strip()
