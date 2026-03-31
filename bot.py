@@ -25,7 +25,14 @@ from face_memory import (
     match_face,
     match_face_frames,
 )
-from grounded_search import format_search_context, format_search_sources, search_web
+from grounded_search import (
+    extract_urls,
+    fetch_url_preview,
+    format_search_context,
+    format_search_sources,
+    format_url_preview_context,
+    search_web,
+)
 from anti_repeat import (
     build_prompt_guard,
     detect_opening_phrase,
@@ -52,8 +59,11 @@ from relationship_engine import (
     describe_emotional_event,
     describe_emotional_arc,
     describe_arc_unlocks,
+    describe_campaign_npcs,
+    describe_duo_scene_stage,
     describe_live_world_context,
     describe_lore_hook,
+    describe_relationship_unlock_scene,
     describe_triangle_jealousy,
     describe_specific_lore_tree,
     describe_relationship_progression,
@@ -100,6 +110,8 @@ HISTORY_LIMIT_AMBIENT = int(os.getenv("HISTORY_LIMIT_AMBIENT", "80") or "80")
 MAIN_REPLY_MAX_TOKENS_DIRECT = int(os.getenv("MAIN_REPLY_MAX_TOKENS_DIRECT", "420") or "420")
 MAIN_REPLY_MAX_TOKENS_AMBIENT = int(os.getenv("MAIN_REPLY_MAX_TOKENS_AMBIENT", "220") or "220")
 SELF_EDIT_MIN_REPLY_CHARS = int(os.getenv("SELF_EDIT_MIN_REPLY_CHARS", "180") or "180")
+GROQ_MODEL_PRIMARY = os.getenv("GROQ_MODEL_PRIMARY", "llama-3.3-70b-versatile").strip() or "llama-3.3-70b-versatile"
+GROQ_MODEL_LIGHT = os.getenv("GROQ_MODEL_LIGHT", "llama-3.1-8b-instant").strip() or GROQ_MODEL_PRIMARY
 
 # ── Groq client (free, OpenAI-compatible) ─────────────────────────────────────
 from groq import Groq
@@ -323,7 +335,7 @@ class RotatingGroq:
         raise last_err  # All keys exhausted
 
 groq_client = RotatingGroq()
-GROQ_MODEL = "llama-3.3-70b-versatile"
+GROQ_MODEL = GROQ_MODEL_PRIMARY
 
 
 def _parse_rate_limit_retry_s(error_text: str) -> int:
@@ -359,6 +371,31 @@ def _reply_token_budget(*, is_dm: bool, direct_to_me: bool, use_search: bool, is
     if is_dm or direct_to_me:
         return MAIN_REPLY_MAX_TOKENS_DIRECT
     return MAIN_REPLY_MAX_TOKENS_AMBIENT
+
+
+def _select_text_model(
+    *,
+    route: str = "auto",
+    is_dm: bool = False,
+    direct_to_me: bool = True,
+    use_search: bool = False,
+    is_owner: bool = False,
+    scenario: str = "",
+    duo_mode: str = "",
+    has_lore: bool = False,
+) -> str:
+    route = (route or "auto").strip().lower()
+    if route == "primary":
+        return GROQ_MODEL_PRIMARY
+    if route == "light":
+        return GROQ_MODEL_LIGHT
+    if use_search or is_owner or duo_mode:
+        return GROQ_MODEL_PRIMARY
+    if has_lore or scenario in {"emotional_comfort", "lore_discussion", "relationship_progression", "combat_action"}:
+        return GROQ_MODEL_PRIMARY
+    if is_dm or direct_to_me:
+        return GROQ_MODEL_PRIMARY
+    return GROQ_MODEL_LIGHT
 
 import random as _rmod, memory as _mmod
 _mmod.random = _rmod
@@ -880,6 +917,12 @@ async def _duo_prompt_context(channel_id: int, user_message: str = "") -> str:
     topic = session.get("topic", "")
     last_speaker = session.get("last_speaker", "")
     prompt = [f"DUO_SESSION:{mode}|topic={topic[:180]}"]
+    stage_note = describe_duo_scene_stage(mode, topic, int(session.get("autoplay_remaining", 0) or 0))
+    if stage_note:
+        prompt.append(stage_note)
+    open_story = await mem.get_open_duo_story(channel_id, mode)
+    if open_story and open_story.get("outcome"):
+        prompt.append(f"DUO_PROGRESS:{open_story['outcome'][:180]}")
     if last_speaker and last_speaker != BOT_NAME:
         prompt.append(f"PARTNER_JUST_SPOKE:{last_speaker}")
     if user_message and _message_mentions_partner(user_message):
@@ -980,7 +1023,7 @@ def _format_consequence_summary(marks: list[dict]) -> str:
     return " || ".join(bits)
 
 
-def _format_world_prompt(entities: list[dict], cases: list[dict]) -> str:
+def _format_world_prompt(entities: list[dict], cases: list[dict], campaign_npcs: list[dict] | None = None) -> str:
     lines = []
     if entities:
         lines.append(
@@ -996,6 +1039,14 @@ def _format_world_prompt(entities: list[dict], cases: list[dict]) -> str:
             + " || ".join(
                 f"{item.get('case_type', 'case')}:{item.get('title', '')[:60]}|{item.get('status', 'open')}|enemy={item.get('enemy', '')[:40]}|{item.get('summary', '')[:90]}"
                 for item in cases[:3]
+            )
+        )
+    if campaign_npcs:
+        lines.append(
+            "CAMPAIGN_NPCS:"
+            + " || ".join(
+                f"{item.get('entity_type', 'npc')}:{item.get('name', '')[:50]}|{item.get('status', 'active')}|{item.get('summary', '')[:90]}"
+                for item in campaign_npcs[:4]
             )
         )
     return "\n".join(lines)
@@ -1132,7 +1183,7 @@ async def _rewrite_reply_once(
         f"Draft: {draft}\n"
         "Rewrite it once. Keep the meaning, keep it concise, avoid modern slang, avoid flat generic phrasing, and do not become softer than the relationship state has earned. Only return the rewritten reply."
     )
-    rewritten = await qai(prompt, min(max_tokens, 260), self_edit=False)
+    rewritten = await qai(prompt, min(max_tokens, 260), self_edit=False, route="light")
     return strip_narration((rewritten or "").strip())
 
 
@@ -1175,7 +1226,8 @@ async def _world_prompt_context(channel_id: int) -> str:
     try:
         entities = await mem.list_world_entities(limit=5, channel_id=channel_id)
         cases = await mem.list_world_cases(channel_id=channel_id, limit=4)
-        return _format_world_prompt(entities, cases)
+        campaign_npcs = await mem.list_campaign_npcs(channel_id=channel_id, limit=5)
+        return _format_world_prompt(entities, cases, campaign_npcs)
     except Exception as e:
         log_error("world_prompt_context", e)
         return ""
@@ -1231,8 +1283,82 @@ async def _register_world_from_message(
                     channel_id=channel_id,
                     updated_by=BOT_NAME,
                 )
+        npc_match = re.search(
+            r"\b(?P<role>enemy|ally|npc|rival|captain|doctor|agent|friend)\b(?:\s+named)?\s+(?P<name>[A-Z][a-zA-Z' -]{2,40})",
+            user_message or "",
+        )
+        if npc_match:
+            raw_role = (npc_match.group("role") or "npc").lower()
+            role = "enemy" if raw_role in {"enemy", "rival"} else "ally" if raw_role in {"ally", "friend"} else "npc"
+            name = (npc_match.group("name") or "").strip(" .,!?:;")
+            if name:
+                await mem.note_campaign_npc(
+                    name,
+                    role=role,
+                    summary=f"Recurring {role} mentioned in channel {channel_id}: {(user_message or '')[:140]}",
+                    status="active",
+                    channel_id=channel_id,
+                    owner_user_id=user_id,
+                    updated_by=BOT_NAME,
+                )
     except Exception as e:
         log_error("register_world_from_message", e)
+
+
+def _attachment_vision_note(filename: str = "", text: str = "") -> str:
+    lowered = f"{filename} {text}".lower()
+    if any(token in lowered for token in ["screenshot", "screen shot", "ui", "interface", "menu", "error", "app", "discord.com/channels"]):
+        return "Treat it like a screenshot or interface if it looks like one; mention visible text, layout, and what the screen is doing."
+    return ""
+
+
+def _extract_pdf_preview_text(file_bytes: bytes, *, max_chars: int = 2400) -> str:
+    text = ""
+    try:
+        import pdfplumber
+
+        with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+            text = "\n".join((page.extract_text() or "")[:900] for page in pdf.pages[:3])
+    except Exception:
+        try:
+            import PyPDF2
+
+            reader = PyPDF2.PdfReader(io.BytesIO(file_bytes))
+            text = "\n".join((page.extract_text() or "")[:900] for page in reader.pages[:3])
+        except Exception:
+            text = ""
+    return re.sub(r"\s+", " ", text or "").strip()[:max_chars]
+
+
+async def _attachment_context_for_message(message, content: str, *, direct: bool = False) -> str:
+    chunks: list[str] = []
+    try:
+        urls = extract_urls(content, max_urls=2)
+        for url in urls[:1]:
+            preview = await fetch_url_preview(url, max_chars=700)
+            preview_context = format_url_preview_context(preview)
+            if preview_context:
+                chunks.append(preview_context)
+        if direct:
+            pdf_attachment = next(
+                (
+                    a for a in message.attachments
+                    if (a.content_type and "pdf" in a.content_type.lower()) or a.filename.lower().endswith(".pdf")
+                ),
+                None,
+            )
+            if pdf_attachment:
+                import aiohttp as _aiohttp
+
+                async with _aiohttp.ClientSession() as _sess:
+                    async with _sess.get(pdf_attachment.url) as _resp:
+                        file_bytes = await _resp.read()
+                preview_text = _extract_pdf_preview_text(file_bytes)
+                if preview_text:
+                    chunks.append(f"ATTACHMENT_PDF:{pdf_attachment.filename[:80]}|{preview_text[:900]}")
+    except Exception as e:
+        log_error("attachment_context", e)
+    return "\n".join(chunk for chunk in chunks if chunk)
 
 
 async def _achievement_context(user_id: int) -> str:
@@ -1402,21 +1528,22 @@ def _duo_autoplay_prompt(session: dict) -> str:
     topic = session.get("topic", "")
     partner = _partner_autoplay_name()
     remaining = max(0, int(session.get("autoplay_remaining", 0) or 0))
+    stage_note = describe_duo_scene_stage(mode, topic, remaining)
     outro = "This is the last automatic turn, so land it cleanly." if remaining <= 1 else f"Leave room for {remaining} more automatic turn(s) after you."
     if mode == "duet":
-        return f"Continue the shared two-bot scene after {partner}'s turn. Topic: {topic}. One short follow-up turn only. {outro}"
+        return f"Continue the shared two-bot scene after {partner}'s turn. Topic: {topic}. {stage_note} One short follow-up turn only. {outro}"
     if mode == "argue":
-        return f"{partner} already took a side. Fire back in this two-bot argument about: {topic}. One or two sentences. {outro}"
+        return f"{partner} already took a side. Fire back in this two-bot argument about: {topic}. {stage_note} One or two sentences. {outro}"
     if mode == "compare":
-        return f"{partner} already gave their take. Give your contrasting verdict on: {topic}. One or two sentences. {outro}"
+        return f"{partner} already gave their take. Give your contrasting verdict on: {topic}. {stage_note} One or two sentences. {outro}"
     if mode == "interrogate":
-        return f"The two-bot interrogation is active. Add your own sharper question or conclusion about: {topic}. One or two sentences. {outro}"
+        return f"The two-bot interrogation is active. Add your own sharper question or conclusion about: {topic}. {stage_note} One or two sentences. {outro}"
     if mode == "trial":
-        return f"The two-bot trial is active. Give your side's judgment on: {topic}. One or two sentences. {outro}"
+        return f"The two-bot trial is active. Give your side's judgment on: {topic}. {stage_note} One or two sentences. {outro}"
     if mode == "mission":
-        return f"The two-bot mission planning scene is active. Add your own role or warning about: {topic}. One or two sentences. {outro}"
+        return f"The two-bot mission planning scene is active. Add your own role or warning about: {topic}. {stage_note} One or two sentences. {outro}"
     if mode == "truthdare":
-        return f"The two-bot truth-or-dare game is active. Continue it with one pointed challenge about: {topic}. One or two sentences. {outro}"
+        return f"The two-bot truth-or-dare game is active. Continue it with one pointed challenge about: {topic}. {stage_note} One or two sentences. {outro}"
     return f"The shared duo mode is active. Follow up after the other bot about: {topic}. One or two sentences. {outro}"
 
 
@@ -1425,9 +1552,9 @@ DUO_CHAIN_TURNS = {
     "duet": 2,
     "argue": 3,
     "compare": 2,
-    "interrogate": 3,
-    "trial": 3,
-    "mission": 3,
+    "interrogate": 4,
+    "trial": 5,
+    "mission": 5,
     "truthdare": 3,
 }
 
@@ -1779,11 +1906,11 @@ async def _handle_partner_message(message) -> bool:
     return True
 
 # ── Groq AI call (non-blocking) ───────────────────────────────────────────────
-def _groq_blocking(messages: list, system: str, max_tokens: int = 500) -> str:
+def _groq_blocking(messages: list, system: str, max_tokens: int = 500, model: str | None = None) -> str:
     try:
         msgs = [{"role": "system", "content": system}] + messages
         resp = groq_client.call_with_retry(
-            model=GROQ_MODEL,
+            model=model or GROQ_MODEL,
             messages=msgs,
             max_tokens=max_tokens,
             temperature=0.95,
@@ -1795,15 +1922,16 @@ def _groq_blocking(messages: list, system: str, max_tokens: int = 500) -> str:
         print(f"[Groq] {e}")
         return "..."
 
-async def groq_call(messages: list, system: str, max_tokens: int = 500) -> str:
+async def groq_call(messages: list, system: str, max_tokens: int = 500, *, route: str = "auto") -> str:
     loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(None, _groq_blocking, messages, system, max_tokens)
+    model_name = _select_text_model(route=route)
+    result = await loop.run_in_executor(None, _groq_blocking, messages, system, max_tokens, model_name)
     return result
 
-def _groq_quick_blocking(prompt: str, max_tokens: int = 200) -> str:
+def _groq_quick_blocking(prompt: str, max_tokens: int = 200, model: str | None = None) -> str:
     try:
         resp = groq_client.call_with_retry(
-            model=GROQ_MODEL,
+            model=model or GROQ_MODEL,
             messages=[
                 {"role": "system", "content": _BASE},
                 {"role": "user", "content": prompt}
@@ -1818,18 +1946,20 @@ def _groq_quick_blocking(prompt: str, max_tokens: int = 200) -> str:
         print(f"[Groq Quick] {e}")
         return "..."
 
-async def qai(prompt: str, max_tokens: int = 200, *, self_edit: bool = True) -> str:
+async def qai(prompt: str, max_tokens: int = 200, *, self_edit: bool = True, route: str = "auto") -> str:
     try:
         recent_replies = await _recent_reply_samples()
         repeat_guard = build_prompt_guard(BOT_NAME, recent_replies)
         guarded_prompt = ((repeat_guard + "\n\n") if repeat_guard else "") + prompt
         loop = asyncio.get_event_loop()
+        route_name = route if route != "auto" else ("light" if max_tokens <= 160 else "primary")
+        model_name = _select_text_model(route=route_name)
         reply = ""
         for attempt in range(2):
             active_prompt = guarded_prompt
             if attempt:
                 active_prompt += "\n\nRETRY: Use a different opening phrase and different sentence rhythm."
-            reply = await loop.run_in_executor(None, _groq_quick_blocking, active_prompt, max_tokens)
+            reply = await loop.run_in_executor(None, _groq_quick_blocking, active_prompt, max_tokens, model_name)
             reply = diversify_reply(BOT_NAME, strip_narration(reply), recent_replies)
             reply = await _apply_phrase_policy(reply, recent_replies)
             if self_edit and reply and max_tokens >= 140 and len(reply) >= SELF_EDIT_MIN_REPLY_CHARS:
@@ -1950,6 +2080,8 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
         recent_replies = await _recent_reply_samples(channel_id=channel_id, user_id=user_id)
         consequence_marks = await mem.get_active_consequence_marks(user_id, 4)
         world_context = await _world_prompt_context(channel_id)
+        duo_session = await mem.get_duo_session(channel_id)
+        campaign_npcs = await mem.list_campaign_npcs(channel_id=channel_id, limit=5)
 
         depth = (user or {}).get("rp_depth", "medium")
         r = random.random()
@@ -2040,9 +2172,24 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
         if lore_hook: parts.append(lore_hook)
         lore_tree = describe_specific_lore_tree(BOT_NAME, user_message)
         if lore_tree: parts.append(lore_tree)
+        triangle = await mem.get_triangle_state(user_id, BOT_NAME, PARTNER_NAME)
+        unlock_scene = describe_relationship_unlock_scene(
+            BOT_NAME,
+            affection=affection,
+            trust=trust,
+            jealousy_level=int((triangle or {}).get("jealousy_level", 0) or 0),
+            conflict_open=conflict_open,
+            repair_progress=user.get("repair_progress", 0) if user else 0,
+            scenario=scenario,
+            text=user_message,
+        )
+        if unlock_scene:
+            parts.append(unlock_scene)
+        npc_context = describe_campaign_npcs(BOT_NAME, campaign_npcs, user_message)
+        if npc_context:
+            parts.append(npc_context)
         live_world = describe_live_world_context(BOT_NAME, text=user_message)
         if live_world: parts.append(live_world)
-        triangle = await mem.get_triangle_state(user_id, BOT_NAME, PARTNER_NAME)
         triangle_desc = describe_triangle_jealousy(BOT_NAME, triangle, PARTNER_NAME)
         if triangle_desc:
             parts.append(f"JEALOUSY_TRIANGLE:{triangle_desc}")
@@ -2106,6 +2253,15 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
             use_search=use_search,
             is_owner=is_owner,
         )
+        response_model = _select_text_model(
+            is_dm=is_dm,
+            direct_to_me=direct_to_me,
+            use_search=use_search,
+            is_owner=is_owner,
+            scenario=scenario,
+            duo_mode=(duo_session or {}).get("mode", ""),
+            has_lore=bool(lore_hook or lore_tree or unlock_scene),
+        )
 
         history.append({"role": "user", "content": context_block})
         system = build_system(user, display_name, is_owner)
@@ -2114,7 +2270,7 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
         retry_context = context_block
         for attempt in range(2):
             draft_history = history[:-1] + [{"role": "user", "content": retry_context}]
-            reply = await groq_call(draft_history, system, max_tokens=reply_max_tokens)
+            reply = await groq_call(draft_history, system, max_tokens=reply_max_tokens, route="primary" if response_model == GROQ_MODEL_PRIMARY else "light")
             reply = diversify_reply(BOT_NAME, strip_narration(reply), recent_replies)
             reply = await _apply_phrase_policy(
                 reply,
@@ -2536,6 +2692,15 @@ async def safe_send(ctx, text):
     except Exception as e: log_error("safe_send", e)
 
 
+async def _store_duo_story_progress(channel_id: int, duo: dict | None, text: str):
+    if not duo:
+        return
+    mode = duo.get("mode", "")
+    if mode in {"trial", "mission", "interrogate", "truthdare", "compare", "argue", "duet"}:
+        summary = f"{BOT_NAME} {mode} turn: {strip_narration(text)[:180]}"
+        await mem.note_duo_story_progress(channel_id, mode, summary)
+
+
 async def _command_face_media(ctx):
     img = next((a for a in ctx.message.attachments if a.content_type and "image" in a.content_type), None)
     vid = next((a for a in ctx.message.attachments
@@ -2571,6 +2736,7 @@ async def _reply_and_store(ctx, text: str):
         duo = await mem.get_duo_session(ctx.channel.id)
         await mem.add_message(ctx.author.id, ctx.channel.id, "assistant", text)
         await _maybe_finalize_hidden_achievements(duo, text)
+        await _store_duo_story_progress(ctx.channel.id, duo, text)
         if duo and duo.get("awaiting_bot") == BOT_NAME and duo.get("autoplay_remaining", 0) <= 1 and duo.get("mode") in {"trial", "mission", "interrogate", "truthdare", "compare"}:
             await mem.resolve_duo_story(ctx.channel.id, duo.get("mode", ""), text[:180])
         await mem.bump_duo_session(ctx.channel.id, BOT_NAME, partner_bot=PARTNER_NAME)
@@ -2584,6 +2750,7 @@ async def _reply_and_store_interaction(interaction: discord.Interaction, text: s
         duo = await mem.get_duo_session(interaction.channel_id)
         await mem.add_message(interaction.user.id, interaction.channel_id, "assistant", text)
         await _maybe_finalize_hidden_achievements(duo, text)
+        await _store_duo_story_progress(interaction.channel_id, duo, text)
         if duo and duo.get("awaiting_bot") == BOT_NAME and duo.get("autoplay_remaining", 0) <= 1 and duo.get("mode") in {"trial", "mission", "interrogate", "truthdare", "compare"}:
             await mem.resolve_duo_story(interaction.channel_id, duo.get("mode", ""), text[:180])
         await mem.bump_duo_session(interaction.channel_id, BOT_NAME, partner_bot=PARTNER_NAME)
@@ -3050,7 +3217,7 @@ async def on_message(message):
                                 f"{message.author.display_name} sent you a video. These are {len(frames)} frames from it."
                                 + (f" Their message: '{content}'" if content else "")
                                 + f" Describe what's happening and react as the Wanderer. "
-                                f"Be specific. MOOD:{mood}. NO asterisk actions. 2-4 sentences. "
+                                f"Be specific. {_attachment_vision_note(vid.filename, content)} MOOD:{mood}. NO asterisk actions. 2-4 sentences. "
                                 + _face_prompt_note(face_match, requested=face_check_now)
                             )
                         })
@@ -3116,7 +3283,7 @@ async def on_message(message):
                             f"{message.author.display_name} sent you this image"
                             + (f" with the message: '{content}'" if content else "")
                             + f". React as the Wanderer. Describe what you see and react in character. "
-                            f"MOOD:{mood}. NO asterisk actions. 1-3 sentences. "
+                            f"{_attachment_vision_note(img.filename, content)} MOOD:{mood}. NO asterisk actions. 1-3 sentences. "
                             + _face_prompt_note(face_match, requested=face_check_now)
                         ),
                         system=system,
@@ -3290,6 +3457,10 @@ async def on_message(message):
         except Exception as e: log_error("on_message/context", e)
 
         extra = "|".join(parts)
+        attachment_context = await _attachment_context_for_message(message, content, direct=bool(is_dm or direct_to_me))
+        if attachment_context:
+            extra = f"{extra}|ATTACHMENT_INTEL" if extra else "ATTACHMENT_INTEL"
+            extra += "\n" + attachment_context
 
         try:
             if random.random() < .07 and message.channel.id not in _pending_unsent:
@@ -3574,6 +3745,7 @@ async def _duo_autoplay_loop():
                     await channel.send(reply)
                     await mem.add_message(target_message.author.id, channel.id, "assistant", reply)
                     await _maybe_finalize_hidden_achievements(session, reply)
+                    await _store_duo_story_progress(channel.id, session, reply)
                     if session.get("awaiting_bot") == BOT_NAME and session.get("autoplay_remaining", 0) <= 1 and session.get("mode") in {"trial", "mission", "interrogate", "truthdare", "compare"}:
                         await mem.resolve_duo_story(channel.id, session.get("mode", ""), reply[:180])
                     await mem.bump_duo_session(channel.id, BOT_NAME, partner_bot=PARTNER_NAME)

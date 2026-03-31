@@ -1286,6 +1286,50 @@ class Memory:
             for row in rows
         ]
 
+    async def get_open_duo_story(self, channel_id: int, story_type: str | None = None) -> dict | None:
+        query = (
+            "SELECT story_type,topic,status,outcome,enemy,ts,updated_ts "
+            "FROM duo_story_log WHERE channel_id=? AND status='open'"
+        )
+        params: list[object] = [channel_id]
+        if story_type:
+            query += " AND story_type=?"
+            params.append((story_type or "")[:40])
+        query += " ORDER BY updated_ts DESC LIMIT 1"
+        async with aiosqlite.connect(self.shared_db_path) as db:
+            async with db.execute(query, params) as cur:
+                row = await cur.fetchone()
+        if not row:
+            return None
+        return {
+            "story_type": row[0] or "",
+            "topic": row[1] or "",
+            "status": row[2] or "open",
+            "outcome": row[3] or "",
+            "enemy": row[4] or "",
+            "ts": row[5] or 0,
+            "updated_ts": row[6] or 0,
+        }
+
+    async def note_duo_story_progress(self, channel_id: int, story_type: str, summary: str):
+        note = (summary or "").strip()[:260]
+        if not note:
+            return
+        now = time.time()
+        async with aiosqlite.connect(self.shared_db_path) as db:
+            await db.execute(
+                "UPDATE duo_story_log SET outcome=?, updated_ts=? "
+                "WHERE id=(SELECT id FROM duo_story_log WHERE channel_id=? AND story_type=? AND status='open' ORDER BY ts DESC LIMIT 1)",
+                (note, now, channel_id, (story_type or "")[:40]),
+            )
+            await db.commit()
+        await self.update_latest_world_case(
+            channel_id,
+            story_type,
+            summary=note,
+            updated_by=self.bot_name,
+        )
+
     def _world_entity_key(self, entity_type: str, name: str) -> str:
         cleaned = re.sub(r"[^a-z0-9]+", "-", (name or "").strip().lower()).strip("-")
         return f"{(entity_type or 'entity').strip().lower()}:{cleaned[:80] or 'unknown'}"
@@ -1352,6 +1396,62 @@ class Memory:
             params.append(channel_id)
         if clauses:
             query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY updated_ts DESC LIMIT ?"
+        params.append(limit)
+        async with aiosqlite.connect(self.shared_db_path) as db:
+            async with db.execute(query, params) as cur:
+                rows = await cur.fetchall()
+        return [
+            {
+                "entity_key": row[0] or "",
+                "entity_type": row[1] or "",
+                "name": row[2] or "",
+                "summary": row[3] or "",
+                "status": row[4] or "",
+                "channel_id": row[5] or 0,
+                "owner_user_id": row[6] or 0,
+                "updated_by": row[7] or "",
+                "ts": row[8] or 0,
+                "updated_ts": row[9] or 0,
+            }
+            for row in rows
+        ]
+
+    async def note_campaign_npc(
+        self,
+        name: str,
+        *,
+        role: str = "npc",
+        summary: str = "",
+        status: str = "active",
+        channel_id: int = 0,
+        owner_user_id: int = 0,
+        updated_by: str = "",
+    ) -> str:
+        normalized_role = (role or "npc").strip().lower()
+        if normalized_role not in {"ally", "enemy", "npc", "figure", "faction", "rival"}:
+            normalized_role = "npc"
+        return await self.upsert_world_entity(
+            normalized_role,
+            name,
+            summary=summary,
+            status=status,
+            channel_id=channel_id,
+            owner_user_id=owner_user_id,
+            updated_by=updated_by or self.bot_name,
+        )
+
+    async def list_campaign_npcs(self, *, channel_id: int | None = None, limit: int = 8) -> list[dict]:
+        roles = ("ally", "enemy", "npc", "figure", "faction", "rival")
+        placeholders = ",".join("?" for _ in roles)
+        query = (
+            "SELECT entity_key,entity_type,name,summary,status,channel_id,owner_user_id,updated_by,ts,updated_ts "
+            f"FROM shared_world_entities WHERE entity_type IN ({placeholders})"
+        )
+        params: list[object] = list(roles)
+        if channel_id is not None:
+            query += " AND (channel_id=? OR channel_id=0)"
+            params.append(channel_id)
         query += " ORDER BY updated_ts DESC LIMIT ?"
         params.append(limit)
         async with aiosqlite.connect(self.shared_db_path) as db:

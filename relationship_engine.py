@@ -690,19 +690,129 @@ def describe_lore_hook(bot_name: str, text: str) -> str:
 def describe_specific_lore_tree(bot_name: str, text: str) -> str:
     lowered = (text or "").lower()
     if bot_name == "scaramouche":
-        if any(token in lowered for token in ["ei", "raiden", "creator", "made you", "built you", "abandoned", "discarded"]):
+        if any(token in lowered for token in ["creator", "made you", "built you", "forged you", "abandoned", "discarded"]):
             return "LORE_TREE: creator wound tree; answer with bitterness, pride, and the feeling of being made-then-discarded"
-        if any(token in lowered for token in ["fatui", "harbinger", "dottore", "gnosis"]):
-            return "LORE_TREE: power and politics tree; answer with rank-conscious contempt, strategic respect, and personal grievance"
+        if any(token in lowered for token in ["ei", "raiden", "shogun"]):
+            return "LORE_TREE: ei tree; answer with wounded pride, restraint stretched thin, and the sense that abandonment was political as much as personal"
+        if any(token in lowered for token in ["fatui", "harbinger", "harbingers"]):
+            return "LORE_TREE: harbinger politics tree; answer with rank-conscious contempt, old ambition, and strategic respect for real power"
+        if "dottore" in lowered:
+            return "LORE_TREE: dottore tree; answer with disgust, sharp memory, and the sense that cruelty disguised itself as experimentation"
+        if "gnosis" in lowered:
+            return "LORE_TREE: gnosis tree; answer with obsession over power, control, and what it meant to almost have everything in hand"
         if any(token in lowered for token in ["betrayal", "used me", "lied", "abandoned me"]):
             return "LORE_TREE: betrayal tree; answer like someone who files away weakness and never forgets leverage"
+        if any(token in lowered for token in ["forgive", "forgiveness"]):
+            return "LORE_TREE: forgiveness tree; answer with skepticism first, then the ugly difficulty of letting old wounds loosen"
     else:
-        if any(token in lowered for token in ["nahida", "sumeru", "irminsul"]):
-            return "LORE_TREE: recovery tree; answer with reflective specificity about memory, second chances, and being seen"
-        if any(token in lowered for token in ["traveler", "traveller", "wander", "wind", "sky", "solitude"]):
+        if "nahida" in lowered:
+            return "LORE_TREE: nahida tree; answer with reluctant gratitude, reflective specificity, and the unease of being understood"
+        if any(token in lowered for token in ["sumeru", "irminsul"]):
+            return "LORE_TREE: irminsul tree; answer with reflective specificity about memory, second chances, and what it means to keep walking after being rewritten"
+        if any(token in lowered for token in ["traveler", "traveller"]):
+            return "LORE_TREE: traveler tree; answer with wary respect, quiet history, and the irritation of trusting someone anyway"
+        if any(token in lowered for token in ["wander", "wind", "sky", "solitude"]):
             return "LORE_TREE: wandering tree; answer with motion, quiet observation, and restrained attachment"
-        if any(token in lowered for token in ["kabukimono", "balladeer", "scaramouche", "old name", "forgive", "forgiveness"]):
+        if any(token in lowered for token in ["kabukimono", "balladeer", "scaramouche", "old name"]):
             return "LORE_TREE: old-name tree; answer with discomfort gradients, regret, and resistance to being flattened into the past"
+        if "forgive" in lowered or "forgiveness" in lowered:
+            return "LORE_TREE: forgiveness tree; answer with caution, honesty, and the sense that repair is work rather than absolution"
+        if any(token in lowered for token in ["fatui", "dottore", "betrayal"]):
+            return "LORE_TREE: scar tree; answer with cleaner restraint, old anger, and the admission that some injuries never vanish completely"
+    return ""
+
+
+def describe_campaign_npcs(bot_name: str, npcs: list[dict], text: str = "") -> str:
+    if not npcs:
+        return ""
+    lowered = (text or "").lower()
+    ranked: list[str] = []
+    for item in npcs[:6]:
+        name = (item.get("name") or "").strip()
+        role = (item.get("entity_type") or "npc").strip()
+        summary = (item.get("summary") or "").strip()
+        if not name:
+            continue
+        bit = f"{role}:{name}"
+        if summary:
+            bit += f"|{summary[:70]}"
+        if name.lower() in lowered:
+            ranked.insert(0, bit)
+        else:
+            ranked.append(bit)
+    if not ranked:
+        return ""
+    prefix = "CAMPAIGN_NPCS:"
+    if bot_name == "scaramouche":
+        prefix += "treat these recurring figures like part of a living political and personal landscape: "
+    else:
+        prefix += "treat these recurring figures like people whose absence or return still changes the air: "
+    return prefix + " || ".join(ranked[:4])
+
+
+def describe_relationship_unlock_scene(
+    bot_name: str,
+    *,
+    affection: int,
+    trust: int,
+    jealousy_level: int = 0,
+    conflict_open: bool = False,
+    repair_progress: int = 0,
+    scenario: str = "",
+    text: str = "",
+) -> str:
+    lowered = (text or "").lower()
+    if bot_name == "scaramouche":
+        if jealousy_level >= 60 and trust >= 45:
+            return "UNLOCK_SCENE: jealousy unlock; let possessiveness slip through, then cover it with pride and irritation"
+        if conflict_open and repair_progress >= 2 and trust >= 40:
+            return "UNLOCK_SCENE: post-conflict unlock; he is still wounded, but the next honest line can sound dangerously real"
+        if affection >= 70 and trust >= 60 and any(token in lowered for token in ["stay", "with me", "close", "leave", "don't go"]):
+            return "UNLOCK_SCENE: attachment unlock; briefly let him sound protective before he pretends it was nothing"
+        if any(token in lowered for token in ["creator", "ei", "abandoned", "discarded"]) and trust >= 55:
+            return "UNLOCK_SCENE: creator-wound unlock; allow one rarer, sharper confession wrapped in contempt"
+    else:
+        if repair_progress >= 3 and not conflict_open and trust >= 55:
+            return "UNLOCK_SCENE: repair breakthrough; quiet honesty is available if the moment stays gentle"
+        if jealousy_level >= 55 and affection >= 45:
+            return "UNLOCK_SCENE: jealousy unlock; clipped possessiveness can surface before he reins it back in"
+        if affection >= 70 and trust >= 65 and scenario in {"emotional_comfort", "relationship_progression"}:
+            return "UNLOCK_SCENE: reluctant care unlock; let practical care arrive before he admits softness"
+        if any(token in lowered for token in ["nahida", "irminsul", "forgiveness", "old name"]) and trust >= 50:
+            return "UNLOCK_SCENE: memory unlock; he can briefly speak with clearer vulnerability than usual"
+    return ""
+
+
+def describe_duo_scene_stage(mode: str, topic: str, turns_remaining: int) -> str:
+    mode = (mode or "").strip().lower()
+    topic = (topic or "").strip()
+    remaining = max(0, int(turns_remaining or 0))
+    if mode == "trial":
+        if remaining >= 4:
+            return f"DUO_STAGE: opening accusation about {topic}; establish the charge and the stakes"
+        if remaining >= 2:
+            return f"DUO_STAGE: evidence and pressure about {topic}; deepen the case or undermine the defense"
+        return f"DUO_STAGE: verdict about {topic}; land on a judgment and consequence, not just another jab"
+    if mode == "mission":
+        if remaining >= 4:
+            return f"DUO_STAGE: briefing for {topic}; establish objective, risk, and leverage"
+        if remaining >= 2:
+            return f"DUO_STAGE: complication for {topic}; reveal a cost, danger, or tactical shift"
+        return f"DUO_STAGE: outcome for {topic}; state what the mission cost or changed"
+    if mode == "interrogate":
+        if remaining >= 3:
+            return f"DUO_STAGE: pressure phase for {topic}; pin down the target with a sharper question"
+        if remaining >= 2:
+            return f"DUO_STAGE: crack phase for {topic}; introduce a clue, inconsistency, or leverage point"
+        return f"DUO_STAGE: extraction phase for {topic}; pull out the conclusion, confession, or unresolved wound"
+    if mode == "compare":
+        return f"DUO_STAGE: contrast and verdict for {topic}; do not repeat, sharpen the difference"
+    if mode == "argue":
+        return f"DUO_STAGE: escalation for {topic}; deepen the disagreement instead of circling it"
+    if mode == "duet":
+        return f"DUO_STAGE: scene continuation for {topic}; move the shared emotional beat forward"
+    if mode == "truthdare":
+        return f"DUO_STAGE: sharper challenge for {topic}; raise the cost of answering"
     return ""
 
 
