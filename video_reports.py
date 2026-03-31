@@ -4,6 +4,7 @@ import os
 import sys
 import tempfile
 from pathlib import Path
+from urllib.parse import urljoin
 
 from character_vision import ask_character_bot
 
@@ -21,6 +22,18 @@ VIDEO_RENDER_WIDTH = int(os.getenv("VIDEO_RENDER_WIDTH", "960") or "960")
 VIDEO_RENDER_HEIGHT = int(os.getenv("VIDEO_RENDER_HEIGHT", "540") or "540")
 VIDEO_RENDER_FPS = int(os.getenv("VIDEO_RENDER_FPS", "8") or "8")
 VIDEO_RENDER_ENGINE = os.getenv("VIDEO_RENDER_ENGINE", "BLENDER_WORKBENCH").strip() or "BLENDER_WORKBENCH"
+VIDEO_RENDER_MODE = (os.getenv("VIDEO_RENDER_MODE", "auto") or "auto").strip().lower()
+VIDEO_RENDER_BASE_URL = (os.getenv("VIDEO_RENDER_BASE_URL") or "").strip().rstrip("/")
+VIDEO_RENDER_SECRET = (
+    os.getenv("VIDEO_RENDER_SECRET")
+    or os.getenv("VIDEO_RENDER_SHARED_SECRET")
+    or ""
+).strip()
+VIDEO_RENDER_POLL_S = max(1.0, float(os.getenv("VIDEO_RENDER_POLL_S", "4") or "4"))
+VIDEO_RENDER_REMOTE_TIMEOUT_S = int(
+    os.getenv("VIDEO_RENDER_REMOTE_TIMEOUT_S", str(VIDEO_RENDER_TIMEOUT_S + 180))
+    or str(VIDEO_RENDER_TIMEOUT_S + 180)
+)
 
 
 def _video_root() -> Path:
@@ -42,14 +55,31 @@ def _script_for_bot(bot_name: str) -> Path:
     raise ValueError(f"Unsupported bot video renderer: {bot_name}")
 
 
-def video_renderer_available(bot_name: str | None = None, *, duo: bool = False) -> tuple[bool, str]:
-    if not BLENDER_EXE.exists():
-        return False, f"Blender is missing at {BLENDER_EXE}"
-    scripts = [DUO_VIDEO_SCRIPT, SCARA_VIDEO_SCRIPT, WANDERER_VIDEO_SCRIPT] if duo else [_script_for_bot(bot_name or "scaramouche")]
-    for script in scripts:
-        if not script.exists():
-            return False, f"Missing renderer script: {script}"
-    return True, ""
+def _remote_requested() -> bool:
+    if VIDEO_RENDER_MODE == "remote":
+        return True
+    if VIDEO_RENDER_MODE == "local":
+        return False
+    return bool(VIDEO_RENDER_BASE_URL)
+
+
+def _local_requested() -> bool:
+    if VIDEO_RENDER_MODE == "remote":
+        return False
+    return True
+
+
+def _remote_headers() -> dict[str, str]:
+    headers = {"Accept": "application/json"}
+    if VIDEO_RENDER_SECRET:
+        headers["X-Render-Secret"] = VIDEO_RENDER_SECRET
+    return headers
+
+
+def _aiohttp():
+    import aiohttp
+
+    return aiohttp
 
 
 def _make_job_dir(prefix: str) -> Path:
@@ -63,7 +93,38 @@ def _make_job_dir(prefix: str) -> Path:
     return final
 
 
-async def _run_render_script(script_path: Path, notes_text: str, *, title: str = "", width: int = VIDEO_RENDER_WIDTH, height: int = VIDEO_RENDER_HEIGHT, fps: int = VIDEO_RENDER_FPS, engine: str = VIDEO_RENDER_ENGINE) -> dict:
+def video_renderer_available(bot_name: str | None = None, *, duo: bool = False) -> tuple[bool, str]:
+    if _remote_requested():
+        if not VIDEO_RENDER_BASE_URL:
+            return False, "VIDEO_RENDER_BASE_URL is not set for remote rendering."
+        return True, ""
+
+    if not _local_requested():
+        return False, "No video renderer mode is enabled."
+
+    if not BLENDER_EXE.exists():
+        return False, (
+            f"Blender is missing at {BLENDER_EXE}. "
+            "Set VIDEO_RENDER_BASE_URL to a remote render worker if Railway should call another machine."
+        )
+
+    scripts = [DUO_VIDEO_SCRIPT, SCARA_VIDEO_SCRIPT, WANDERER_VIDEO_SCRIPT] if duo else [_script_for_bot(bot_name or "scaramouche")]
+    for script in scripts:
+        if not script.exists():
+            return False, f"Missing renderer script: {script}"
+    return True, ""
+
+
+async def _run_render_script(
+    script_path: Path,
+    notes_text: str,
+    *,
+    title: str = "",
+    width: int = VIDEO_RENDER_WIDTH,
+    height: int = VIDEO_RENDER_HEIGHT,
+    fps: int = VIDEO_RENDER_FPS,
+    engine: str = VIDEO_RENDER_ENGINE,
+) -> dict:
     if not script_path.exists():
         raise FileNotFoundError(f"Render script not found: {script_path}")
 
@@ -115,17 +176,105 @@ async def _run_render_script(script_path: Path, notes_text: str, *, title: str =
     return summary
 
 
+async def _submit_remote_job(payload: dict) -> dict:
+    if not VIDEO_RENDER_BASE_URL:
+        raise RuntimeError("VIDEO_RENDER_BASE_URL is not set.")
+
+    aiohttp = _aiohttp()
+    timeout = aiohttp.ClientTimeout(total=45)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.post(
+            f"{VIDEO_RENDER_BASE_URL}/jobs",
+            json=payload,
+            headers=_remote_headers(),
+        ) as resp:
+            body_text = await resp.text()
+            if resp.status not in {200, 202}:
+                raise RuntimeError(f"Remote render worker rejected the job ({resp.status}): {body_text[:400]}")
+            body = json.loads(body_text or "{}")
+            job_id = (body.get("job_id") or "").strip()
+            if not job_id:
+                raise RuntimeError("Remote render worker did not return a job id.")
+
+        deadline = asyncio.get_running_loop().time() + VIDEO_RENDER_REMOTE_TIMEOUT_S
+        while asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(VIDEO_RENDER_POLL_S)
+            async with session.get(
+                f"{VIDEO_RENDER_BASE_URL}/jobs/{job_id}",
+                headers=_remote_headers(),
+            ) as resp:
+                body_text = await resp.text()
+                if resp.status != 200:
+                    raise RuntimeError(f"Remote render status check failed ({resp.status}): {body_text[:400]}")
+                body = json.loads(body_text or "{}")
+                status = (body.get("status") or "").strip().lower()
+                if status in {"queued", "running"}:
+                    continue
+                if status in {"failed", "error"}:
+                    raise RuntimeError(body.get("error") or "Remote render worker failed the job.")
+                if status in {"done", "completed", "ready"}:
+                    summary = body.get("summary") or {}
+                    download_url = (body.get("download_url") or "").strip()
+                    if download_url:
+                        summary["final_video_url"] = urljoin(f"{VIDEO_RENDER_BASE_URL}/", download_url.lstrip("/"))
+                    summary["final_video_name"] = body.get("final_video_name") or summary.get("final_video_name") or "presentation.mp4"
+                    summary["_remote_job_id"] = job_id
+                    return summary
+                raise RuntimeError(f"Remote render worker returned an unknown status: {status or 'missing'}")
+
+    raise RuntimeError("Remote video rendering timed out while waiting for the worker.")
+
+
 async def render_teaching_video(bot_name: str, notes_text: str, *, title: str = "") -> dict:
+    if _remote_requested():
+        return await _submit_remote_job(
+            {
+                "job_type": "teaching",
+                "bot_name": (bot_name or "").strip().lower(),
+                "notes_text": notes_text,
+                "title": title,
+            }
+        )
     return await _run_render_script(_script_for_bot(bot_name), notes_text, title=title)
 
 
 async def render_duo_debate_video(notes_text: str, *, title: str = "") -> dict:
+    if _remote_requested():
+        return await _submit_remote_job(
+            {
+                "job_type": "duo",
+                "bot_name": "scaramouche",
+                "notes_text": notes_text,
+                "title": title,
+            }
+        )
     return await _run_render_script(DUO_VIDEO_SCRIPT, notes_text, title=title)
 
 
-async def download_attachment_bytes(attachment) -> bytes:
-    import aiohttp
+async def fetch_rendered_video_bytes(summary: dict) -> tuple[bytes, str]:
+    final_video = (summary or {}).get("final_video", "")
+    if final_video and os.path.exists(final_video):
+        path = Path(final_video)
+        return path.read_bytes(), path.name
 
+    final_video_url = (summary or {}).get("final_video_url", "")
+    if final_video_url:
+        aiohttp = _aiohttp()
+        timeout = aiohttp.ClientTimeout(total=VIDEO_RENDER_REMOTE_TIMEOUT_S)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(final_video_url, headers=_remote_headers()) as resp:
+                if resp.status != 200:
+                    text = await resp.text()
+                    raise RuntimeError(f"Remote video download failed ({resp.status}): {text[:300]}")
+                data = await resp.read()
+        filename = (summary or {}).get("final_video_name") or Path(final_video_url.split("?", 1)[0]).name or "presentation.mp4"
+        return data, filename
+
+    raise RuntimeError("The render finished, but there is no local file or remote download URL.")
+
+
+async def download_attachment_bytes(attachment) -> bytes:
+    aiohttp = _aiohttp()
     async with aiohttp.ClientSession() as session:
         async with session.get(attachment.url) as resp:
             if resp.status != 200:

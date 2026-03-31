@@ -36,6 +36,7 @@ from grounded_search import (
 from video_reports import (
     build_weather_video_notes,
     extract_teaching_material,
+    fetch_rendered_video_bytes,
     render_duo_debate_video,
     render_teaching_video,
     video_renderer_available,
@@ -3239,13 +3240,42 @@ def _partner_bot_present(ctx) -> bool:
         return False
 
 
+async def _should_handle_video_command(ctx) -> bool:
+    try:
+        if not _partner_bot_present(ctx):
+            return True
+        if not getattr(ctx, "guild", None):
+            return True
+
+        ref = getattr(ctx.message, "reference", None)
+        if ref:
+            ref_author_id = getattr(getattr(getattr(ref, "resolved", None), "author", None), "id", None)
+            if ref_author_id is None and getattr(ref, "message_id", None):
+                try:
+                    fetched = await ctx.channel.fetch_message(ref.message_id)
+                    ref_author_id = getattr(getattr(fetched, "author", None), "id", None)
+                except Exception:
+                    ref_author_id = None
+            if ref_author_id == bot.user.id:
+                return True
+            if PARTNER_BOT_ID and ref_author_id == PARTNER_BOT_ID:
+                return False
+
+        mentions = {member.id for member in getattr(ctx.message, "mentions", [])}
+        if bot.user and bot.user.id in mentions:
+            return True
+        if PARTNER_BOT_ID and PARTNER_BOT_ID in mentions:
+            return False
+
+        return False
+    except Exception:
+        return False
+
+
 async def _send_video_summary(ctx, summary: dict, caption: str, *, sources_text: str = ""):
     try:
-        final_video = (summary or {}).get("final_video", "")
-        if not final_video or not os.path.exists(final_video):
-            await safe_send(ctx, "The render finished, but the video file never appeared.")
-            return
-        await ctx.send(caption, file=discord.File(final_video, filename=os.path.basename(final_video)))
+        video_bytes, filename = await fetch_rendered_video_bytes(summary or {})
+        await ctx.send(caption, file=discord.File(io.BytesIO(video_bytes), filename=filename))
         if sources_text.strip():
             await ctx.send(sources_text[:1800])
     except Exception as e:
@@ -4970,6 +5000,8 @@ async def _do_tedtalk(ctx, attachment, topic, msg_id=None):
 @bot.command(name="teachvideo", aliases=["videoteach", "lessonvideo", "presentationvideo"])
 async def teachvideo_cmd(ctx, *, topic: str = None):
     try:
+        if not await _should_handle_video_command(ctx):
+            return
         msg_id = ctx.message.id
         if msg_id in _teachvideo_active:
             return
@@ -5426,6 +5458,8 @@ async def weather_cmd(ctx, *, location: str = None):
 @bot.command(name="weathervideo", aliases=["videoweather", "weatherreportvideo"])
 async def weathervideo_cmd(ctx, *, location: str = None):
     try:
+        if not await _should_handle_video_command(ctx):
+            return
         msg_id = ctx.message.id
         if msg_id in _weathervideo_active:
             return
