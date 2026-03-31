@@ -63,6 +63,7 @@ from relationship_engine import (
     describe_duo_scene_stage,
     describe_live_world_context,
     describe_lore_hook,
+    describe_private_confession_scene,
     describe_relationship_unlock_scene,
     describe_triangle_jealousy,
     describe_specific_lore_tree,
@@ -78,6 +79,7 @@ from relationship_engine import (
     detect_topics,
     detect_repair_signal,
     extract_continuity_hooks,
+    infer_duo_ending_tag,
     extract_memory_events,
     extract_callback_candidate,
     infer_scene_update,
@@ -399,6 +401,7 @@ def _select_text_model(
 
 import random as _rmod, memory as _mmod
 _mmod.random = _rmod
+_silence_pending: set[tuple[int, int]] = set()
 
 # ── Narration stripper ────────────────────────────────────────────────────────
 def strip_narration(text: str) -> str:
@@ -1023,7 +1026,12 @@ def _format_consequence_summary(marks: list[dict]) -> str:
     return " || ".join(bits)
 
 
-def _format_world_prompt(entities: list[dict], cases: list[dict], campaign_npcs: list[dict] | None = None) -> str:
+def _format_world_prompt(
+    entities: list[dict],
+    cases: list[dict],
+    campaign_npcs: list[dict] | None = None,
+    artifacts: list[dict] | None = None,
+) -> str:
     lines = []
     if entities:
         lines.append(
@@ -1047,6 +1055,14 @@ def _format_world_prompt(entities: list[dict], cases: list[dict], campaign_npcs:
             + " || ".join(
                 f"{item.get('entity_type', 'npc')}:{item.get('name', '')[:50]}|{item.get('status', 'active')}|{item.get('summary', '')[:90]}"
                 for item in campaign_npcs[:4]
+            )
+        )
+    if artifacts:
+        lines.append(
+            "ATTACHMENT_JOURNAL:"
+            + " || ".join(
+                f"{item.get('name', '')[:50]}|{item.get('status', 'recent')}|{item.get('summary', '')[:90]}"
+                for item in artifacts[:3]
             )
         )
     return "\n".join(lines)
@@ -1227,7 +1243,8 @@ async def _world_prompt_context(channel_id: int) -> str:
         entities = await mem.list_world_entities(limit=5, channel_id=channel_id)
         cases = await mem.list_world_cases(channel_id=channel_id, limit=4)
         campaign_npcs = await mem.list_campaign_npcs(channel_id=channel_id, limit=5)
-        return _format_world_prompt(entities, cases, campaign_npcs)
+        artifacts = await mem.list_world_entities("artifact", limit=3, channel_id=channel_id)
+        return _format_world_prompt(entities, cases, campaign_npcs, artifacts)
     except Exception as e:
         log_error("world_prompt_context", e)
         return ""
@@ -1356,6 +1373,13 @@ async def _attachment_context_for_message(message, content: str, *, direct: bool
                 preview_text = _extract_pdf_preview_text(file_bytes)
                 if preview_text:
                     chunks.append(f"ATTACHMENT_PDF:{pdf_attachment.filename[:80]}|{preview_text[:900]}")
+                    await _remember_attachment_artifact(
+                        message.channel.id,
+                        message.author.id,
+                        pdf_attachment.filename or "shared pdf",
+                        f"PDF artifact: {preview_text[:200]}",
+                        status="remembered",
+                    )
     except Exception as e:
         log_error("attachment_context", e)
     return "\n".join(chunk for chunk in chunks if chunk)
@@ -1486,6 +1510,14 @@ async def _maybe_finalize_hidden_achievements(session: dict | None, text: str = 
         if mode == "trial":
             if await mem.unlock_hidden_achievement(f"user:{user_id}", "survived_duo_trial", "They made it through a full two-bot trial."):
                 debug_event("memory", f"{BOT_NAME} achievement unlocked user={user_id} key=survived_duo_trial")
+        if mode in {"trial", "mission", "interrogate"}:
+            ending = infer_duo_ending_tag(mode, text)
+            if ending == "mercy":
+                await mem.unlock_hidden_achievement(f"user:{user_id}", "duo_mercy", "The duo scene ended in mercy instead of total ruin.")
+            elif ending == "betrayal":
+                await mem.unlock_hidden_achievement(f"user:{user_id}", "duo_betrayal", "The duo scene ended in betrayal.")
+            elif ending == "victory":
+                await mem.unlock_hidden_achievement(f"user:{user_id}", "duo_victory", "The duo scene ended in a clean victory.")
     except Exception as e:
         log_error("finalize_hidden_achievements", e)
 
@@ -1869,6 +1901,7 @@ async def _handle_partner_message(message) -> bool:
             f"Scaramouche just said: '{message.content[:220]}'\n"
             f"Reply as Wanderer. He refuses to admit how much of that shared history still matters. "
             f"If respect has grown, show it as cleaner honesty instead of recycled annoyance. "
+            f"Let the disagreement bite into morality, strategy, loyalty, power, forgiveness, or whether the user is worth trusting when it fits the theme. "
             f"One or two sentences. No narration."
         )
         recent_partner_lines = [item.get('content', '') for item in recent_banter]
@@ -2185,6 +2218,16 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
         )
         if unlock_scene:
             parts.append(unlock_scene)
+        private_confession = describe_private_confession_scene(
+            BOT_NAME,
+            is_dm=is_dm,
+            affection=affection,
+            trust=trust,
+            repair_progress=user.get("repair_progress", 0) if user else 0,
+            conflict_open=conflict_open,
+        )
+        if private_confession:
+            parts.append(private_confession)
         npc_context = describe_campaign_npcs(BOT_NAME, campaign_npcs, user_message)
         if npc_context:
             parts.append(npc_context)
@@ -2692,6 +2735,148 @@ async def safe_send(ctx, text):
     except Exception as e: log_error("safe_send", e)
 
 
+def _silence_reply_pool(user: dict | None) -> list[str]:
+    if user and user.get("repair_progress", 0) > 0:
+        return [
+            "I saw it. I just needed a minute.",
+            "I'm answering now. Don't mistake that for everything being fixed.",
+            "I wasn't ignoring you. I was deciding whether to be honest.",
+        ]
+    return [
+        "I heard you. I just didn't want to answer immediately.",
+        "Silence says enough sometimes.",
+        "You can wait a moment. The sky won't fall.",
+        "I was thinking. Try not to turn that into drama.",
+    ]
+
+
+async def _remember_attachment_artifact(
+    channel_id: int,
+    user_id: int,
+    name: str,
+    summary: str,
+    *,
+    status: str = "recent",
+):
+    try:
+        await mem.upsert_world_entity(
+            "artifact",
+            name[:120],
+            summary=summary[:240],
+            status=status[:40],
+            channel_id=channel_id,
+            owner_user_id=user_id,
+            updated_by=BOT_NAME,
+        )
+        if await mem.unlock_hidden_achievement(
+            f"user:{user_id}",
+            "remembered_artifact",
+            "An image, screenshot, or file became a remembered artifact.",
+        ):
+            debug_event("memory", f"{BOT_NAME} achievement unlocked user={user_id} key=remembered_artifact")
+    except Exception as e:
+        log_error("remember_attachment_artifact", e)
+
+
+async def _delayed_silence_reply(message, user: dict | None, *, is_dm: bool):
+    key = (message.channel.id, message.author.id)
+    try:
+        await asyncio.sleep(random.randint(7, 15) if not is_dm else random.randint(5, 11))
+        line = await _pick_fresh_pool_line(_silence_reply_pool(user), channel_id=message.channel.id, user_id=message.author.id)
+        await message.reply(line)
+        await mem.add_message(message.author.id, message.channel.id if not is_dm else message.author.id, "assistant", line)
+    except Exception as e:
+        log_error("delayed_silence_reply", e)
+    finally:
+        _silence_pending.discard(key)
+
+
+async def _maybe_handle_silence_behavior(message, user: dict | None, content: str, *, is_dm: bool, direct_to_me: bool) -> bool:
+    if not direct_to_me or not user:
+        return False
+    if detect_repair_signal(content):
+        return False
+    if not (user.get("conflict_open") or user.get("mood", 0) <= -6 or user.get("repair_progress", 0) > 0):
+        return False
+    key = (message.channel.id, message.author.id)
+    if key in _silence_pending:
+        return False
+    chance = 0.13 if user.get("conflict_open") else 0.07
+    if is_dm:
+        chance += 0.04
+    if random.random() >= chance:
+        return False
+    _silence_pending.add(key)
+    debug_event("silence", f"{BOT_NAME} delaying reply user={message.author.id} channel={message.channel.id}")
+    asyncio.ensure_future(_delayed_silence_reply(message, user, is_dm=is_dm))
+    return True
+
+
+async def _maybe_schedule_private_confession_scene(message, user: dict | None, content: str, *, is_dm: bool):
+    if not is_dm or not user:
+        return
+    scene_note = describe_private_confession_scene(
+        BOT_NAME,
+        is_dm=is_dm,
+        affection=user.get("affection", 0),
+        trust=user.get("trust", 0),
+        repair_progress=user.get("repair_progress", 0),
+        conflict_open=bool(user.get("conflict_open")),
+    )
+    if not scene_note:
+        return
+    if random.random() >= 0.09:
+        return
+    allowed, _ = await mem.consume_phrase_with_status(f"{BOT_NAME}:private_confession:user:{message.author.id}", "private_confession_scene", 172800)
+    if not allowed:
+        return
+
+    async def _run():
+        try:
+            await asyncio.sleep(random.randint(2, 5))
+            prompt = (
+                f"{scene_note}\n"
+                f"You are in a private DM with {message.author.display_name}. Their latest message was: '{content[:220]}'. "
+                "Send one additional message only. Make it feel like you almost decided not to say it at all. "
+                "One or two sentences. No narration."
+            )
+            line = await qai(prompt, 180, route="primary")
+            line = strip_narration(line)
+            if not line:
+                return
+            await message.channel.send(line)
+            await mem.add_message(message.author.id, message.author.id, "assistant", line)
+            if await mem.unlock_hidden_achievement(f"user:{message.author.id}", "wanderer_private_confession", "He let a DM-only confession scene slip through."):
+                debug_event("memory", f"{BOT_NAME} achievement unlocked user={message.author.id} key=wanderer_private_confession")
+        except Exception as e:
+            log_error("private_confession_scene", e)
+
+    asyncio.ensure_future(_run())
+
+
+def _duo_outcome_payload(duo: dict | None, text: str) -> str:
+    if not duo:
+        return text[:180]
+    tag = infer_duo_ending_tag(duo.get("mode", ""), text)
+    return f"ENDING:{tag}|{strip_narration(text)[:220]}"
+
+
+def _achievement_gallery_lines(entries: list[dict]) -> list[str]:
+    unlocked = entries[:8]
+    lines = ["Achievement gallery:"]
+    if unlocked:
+        for item in unlocked:
+            note = (item.get("note") or "").strip()
+            line = f"- {item.get('achievement_key', 'unknown')}"
+            if note:
+                line += f" — {note[:110]}"
+            lines.append(line)
+    else:
+        lines.append("- Nothing unlocked yet. Keep walking.")
+    lines.append("Rumors: a private confession, a merciful ending, a remembered artifact, a peaceful duet, a survived trial.")
+    return lines
+
+
 async def _store_duo_story_progress(channel_id: int, duo: dict | None, text: str):
     if not duo:
         return
@@ -2738,7 +2923,7 @@ async def _reply_and_store(ctx, text: str):
         await _maybe_finalize_hidden_achievements(duo, text)
         await _store_duo_story_progress(ctx.channel.id, duo, text)
         if duo and duo.get("awaiting_bot") == BOT_NAME and duo.get("autoplay_remaining", 0) <= 1 and duo.get("mode") in {"trial", "mission", "interrogate", "truthdare", "compare"}:
-            await mem.resolve_duo_story(ctx.channel.id, duo.get("mode", ""), text[:180])
+            await mem.resolve_duo_story(ctx.channel.id, duo.get("mode", ""), _duo_outcome_payload(duo, text))
         await mem.bump_duo_session(ctx.channel.id, BOT_NAME, partner_bot=PARTNER_NAME)
     except Exception as e:
         log_error("reply_and_store", e)
@@ -2752,7 +2937,7 @@ async def _reply_and_store_interaction(interaction: discord.Interaction, text: s
         await _maybe_finalize_hidden_achievements(duo, text)
         await _store_duo_story_progress(interaction.channel_id, duo, text)
         if duo and duo.get("awaiting_bot") == BOT_NAME and duo.get("autoplay_remaining", 0) <= 1 and duo.get("mode") in {"trial", "mission", "interrogate", "truthdare", "compare"}:
-            await mem.resolve_duo_story(interaction.channel_id, duo.get("mode", ""), text[:180])
+            await mem.resolve_duo_story(interaction.channel_id, duo.get("mode", ""), _duo_outcome_payload(duo, text))
         await mem.bump_duo_session(interaction.channel_id, BOT_NAME, partner_bot=PARTNER_NAME)
     except Exception as e:
         log_error("reply_and_store_interaction", e)
@@ -3438,6 +3623,8 @@ async def on_message(message):
 
         if random.random() > resp_prob(content, mentioned, is_reply, romance, is_dm):
             await maybe_react(message, romance); return
+        if await _maybe_handle_silence_behavior(message, user, content, is_dm=is_dm, direct_to_me=direct_to_me):
+            return
 
         parts = []
         duo_session = None
@@ -3592,6 +3779,7 @@ async def on_message(message):
             final = strip_narration(resolve_mentions(reply, message.guild if message.guild else None))
             await message.reply(final)
             await mem.add_message(message.author.id, dm_channel_id, "assistant", reply)
+            await _maybe_schedule_private_confession_scene(message, user, content, is_dm=is_dm)
             await maybe_react(message, romance)
         except Exception as e: log_error("on_message/send", e)
 
@@ -3747,7 +3935,7 @@ async def _duo_autoplay_loop():
                     await _maybe_finalize_hidden_achievements(session, reply)
                     await _store_duo_story_progress(channel.id, session, reply)
                     if session.get("awaiting_bot") == BOT_NAME and session.get("autoplay_remaining", 0) <= 1 and session.get("mode") in {"trial", "mission", "interrogate", "truthdare", "compare"}:
-                        await mem.resolve_duo_story(channel.id, session.get("mode", ""), reply[:180])
+                        await mem.resolve_duo_story(channel.id, session.get("mode", ""), _duo_outcome_payload(session, reply))
                     await mem.bump_duo_session(channel.id, BOT_NAME, partner_bot=PARTNER_NAME)
                 except Exception as e:
                     log_error("duo_autoplay_session", e)
@@ -4724,6 +4912,13 @@ async def duostate_cmd(ctx):
         await safe_reply(ctx, "\n".join(lines))
     except Exception as e: log_error("duostate_cmd", e)
 
+@bot.command(name="achievements", aliases=["gallery"])
+async def achievements_cmd(ctx):
+    try:
+        entries = await mem.get_hidden_achievements(f"user:{ctx.author.id}", 12)
+        await safe_reply(ctx, "\n".join(_achievement_gallery_lines(entries)))
+    except Exception as e: log_error("achievements_cmd", e)
+
 @bot.command(name="speaker", aliases=["activespeaker"])
 async def speaker_cmd(ctx, mode: str = None):
     try:
@@ -5363,6 +5558,15 @@ async def slash_scene(interaction: discord.Interaction):
     except Exception as e:
         log_error("slash_scene", e)
         await _interaction_reply(interaction, "Something went wrong reading the scene.")
+
+@dashboard_group.command(name="achievements", description="Show unlocked hidden achievements and a few rumored ones.")
+async def slash_achievements(interaction: discord.Interaction):
+    try:
+        entries = await mem.get_hidden_achievements(f"user:{interaction.user.id}", 12)
+        await _interaction_reply(interaction, "\n".join(_achievement_gallery_lines(entries)))
+    except Exception as e:
+        log_error("slash_achievements", e)
+        await _interaction_reply(interaction, "Something went wrong reading the achievement gallery.")
 
 
 @world_group.command(name="state", description="Show shared NPC, gift, place, and object memory.")

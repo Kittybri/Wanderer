@@ -1247,22 +1247,31 @@ class Memory:
         return row_id
 
     async def resolve_duo_story(self, channel_id: int, story_type: str, outcome: str):
+        raw_outcome = (outcome or "").strip()
+        status = "resolved"
+        summary = raw_outcome[:300]
+        if raw_outcome.startswith("ENDING:"):
+            tag_part, _, remainder = raw_outcome.partition("|")
+            tag = tag_part.split(":", 1)[1].strip().lower()
+            if tag:
+                status = tag[:30]
+            if remainder.strip():
+                summary = remainder.strip()[:300]
         async with aiosqlite.connect(self.shared_db_path) as db:
             await db.execute(
-                "UPDATE duo_story_log SET status='resolved', outcome=?, updated_ts=? "
+                "UPDATE duo_story_log SET status=?, outcome=?, updated_ts=? "
                 "WHERE id=(SELECT id FROM duo_story_log WHERE channel_id=? AND story_type=? ORDER BY ts DESC LIMIT 1)",
-                (outcome[:300], time.time(), channel_id, story_type[:40]),
+                (status[:30], summary[:300], time.time(), channel_id, story_type[:40]),
             )
             await db.commit()
-        lowered = (outcome or "").lower()
-        status = "resolved"
-        if any(token in lowered for token in ["failed", "lost", "unresolved", "escaped", "collapsed", "guilty"]):
+        lowered = summary.lower()
+        if status == "resolved" and any(token in lowered for token in ["failed", "lost", "unresolved", "escaped", "collapsed", "guilty"]):
             status = "scarred"
         await self.update_latest_world_case(
             channel_id,
             story_type,
             status=status,
-            summary=(outcome or "")[:240],
+            summary=summary[:240],
             updated_by=self.bot_name,
         )
 

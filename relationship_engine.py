@@ -369,12 +369,22 @@ def detect_banter_theme(text: str) -> str:
         return "identity"
     if any(token in lowered for token in ["weak", "weakness", "soft", "pathetic", "coward"]):
         return "weakness"
+    if any(token in lowered for token in ["moral", "morality", "right thing", "wrong thing", "mercy", "cruelty", "kindness"]):
+        return "morality"
+    if any(token in lowered for token in ["plan", "strategy", "tactic", "careful", "reckless", "direct approach"]):
+        return "strategy"
+    if any(token in lowered for token in ["loyal", "loyalty", "traitor", "betray", "betrayal", "faithful"]):
+        return "loyalty"
+    if any(token in lowered for token in ["trust", "worth trusting", "trustworthy", "can i trust", "should i trust"]):
+        return "trust"
     if any(token in lowered for token in ["change", "changed", "different", "better now"]):
         return "change"
     if any(token in lowered for token in ["creator", "built", "made", "ei", "nahida", "traveler", "traveller"]):
         return "origins"
     if any(token in lowered for token in ["prefer", "mine", "jealous", "romance", "love"]):
         return "jealousy"
+    if any(token in lowered for token in ["forgive", "forgiveness", "apology", "repair"]):
+        return "forgiveness"
     if any(token in lowered for token in ["power", "gnosis", "harbinger", "electro", "anemo"]):
         return "power"
     if "hat" in lowered:
@@ -384,8 +394,8 @@ def detect_banter_theme(text: str) -> str:
 
 def infer_bot_relation_deltas(text: str, theme: str) -> tuple[int, int]:
     lowered = (text or "").lower()
-    respect = 1 if theme in {"power", "origins", "change"} else 0
-    tension = 2 if theme in {"identity", "weakness", "jealousy"} else 0
+    respect = 1 if theme in {"power", "origins", "change", "strategy", "forgiveness"} else 0
+    tension = 2 if theme in {"identity", "weakness", "jealousy", "morality", "loyalty", "trust"} else 0
     if any(token in lowered for token in ["imposter", "pretender", "pathetic", "failure", "weak", "discarded"]):
         tension += 3
     if any(token in lowered for token in ["understand", "remember", "still here", "not entirely wrong", "capable", "useful"]):
@@ -420,6 +430,9 @@ def describe_bot_relationship(bot_name: str, relation: dict | None, recent_bante
         f"PARTNER_STAGE:{stage}",
         f"PARTNER_METRICS:respect={respect}|tension={tension}",
     ]
+    axis = relation.get("last_theme", "") or (recent_banter[0].get("theme", "") if recent_banter else "")
+    if axis:
+        lines.append(f"PARTNER_RIVALRY_AXIS:{axis}")
     if history:
         lines.append(f"PARTNER_HISTORY:{history[:320]}")
     if recent_shots:
@@ -428,7 +441,56 @@ def describe_bot_relationship(bot_name: str, relation: dict | None, recent_bante
         lines.append("Let the rivalry evolve. Pure denial every time is stale; if respect has grown, let it show as sharper precision instead of the same old sneer.")
     else:
         lines.append("Let the shared history show. You can still be sharp without pretending every exchange is the first wound.")
+    rivalry_guidance = {
+        "morality": "Disagree about what should be done, not just who is pathetic.",
+        "strategy": "Disagree like rivals with different methods, not recycled insults.",
+        "loyalty": "Push at betrayal, allegiance, and who stood where when it mattered.",
+        "power": "Let respect and resentment coexist around strength and control.",
+        "forgiveness": "Let the argument cut into whether repair is possible or foolish.",
+        "trust": "Make the tension about whether anyone, including the user, deserves trust.",
+    }
+    if axis in rivalry_guidance:
+        lines.append(f"RIVALRY_GUIDANCE:{rivalry_guidance[axis]}")
     return "\n".join(lines)
+
+
+def describe_private_confession_scene(
+    bot_name: str,
+    *,
+    is_dm: bool,
+    affection: int,
+    trust: int,
+    repair_progress: int = 0,
+    conflict_open: bool = False,
+) -> str:
+    if not is_dm:
+        return ""
+    if bot_name == "scaramouche":
+        if trust >= 68 and affection >= 60 and not conflict_open:
+            return "PRIVATE_CONFESSION_SCENE: DM-only unlock; allow one dangerous admission to surface, then wrap it back in pride"
+        if repair_progress >= 2 and trust >= 52:
+            return "PRIVATE_CONFESSION_SCENE: DM-only repair unlock; he is still wounded, but honesty can slip through the cracks tonight"
+    else:
+        if trust >= 68 and affection >= 58 and not conflict_open:
+            return "PRIVATE_CONFESSION_SCENE: DM-only unlock; let quiet care turn into one unusually candid admission"
+        if repair_progress >= 2 and trust >= 52:
+            return "PRIVATE_CONFESSION_SCENE: DM-only repair unlock; let cautious sincerity arrive before distance closes again"
+    return ""
+
+
+def infer_duo_ending_tag(mode: str, text: str) -> str:
+    lowered = (text or "").lower()
+    if any(token in lowered for token in ["mercy", "spare", "let them go", "forgive", "walk away"]):
+        return "mercy"
+    if any(token in lowered for token in ["betray", "traitor", "turned on", "double-cross", "lied to us"]):
+        return "betrayal"
+    if any(token in lowered for token in ["stalemate", "draw", "neither side", "deadlock", "no clear winner"]):
+        return "stalemate"
+    if any(token in lowered for token in ["unfinished", "not over", "later", "escaped", "for now", "to be continued", "unresolved"]):
+        return "unfinished"
+    if mode in {"trial", "mission", "interrogate"}:
+        return "victory"
+    return "unfinished"
 
 
 def detect_scenario(text: str, is_dm: bool = False) -> str:
