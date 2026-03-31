@@ -454,6 +454,127 @@ def describe_bot_relationship(bot_name: str, relation: dict | None, recent_bante
     return "\n".join(lines)
 
 
+def _normalize_memory_fragment(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).strip()
+
+
+def describe_contradictory_memory(
+    bot_name: str,
+    event_memory: dict | None,
+    partner_name: str,
+    *,
+    current_text: str = "",
+) -> str:
+    if not event_memory:
+        return ""
+    own_key = "wanderer_memory" if bot_name == "wanderer" else "scaramouche_memory"
+    partner_key = "scaramouche_memory" if bot_name == "wanderer" else "wanderer_memory"
+    own_memory = (event_memory.get(own_key) or "").strip()
+    partner_memory = (event_memory.get(partner_key) or "").strip()
+    topic = (event_memory.get("topic") or "").strip()
+    if not topic:
+        return ""
+    if own_memory and partner_memory and _normalize_memory_fragment(own_memory) == _normalize_memory_fragment(partner_memory):
+        return ""
+    trigger_text = f"{topic} {current_text}".lower().strip()
+    if current_text and not any(
+        token in trigger_text
+        for token in ["remember", "happened", "truth", "actually", "who said", "case", "proof", "evidence", "irminsul", "past", "trial", "mission", "interrogate", "compare", "duet", "argue"]
+    ) and not (own_memory and partner_memory):
+        return ""
+    lines = [f"CONTRADICTORY_MEMORY:topic={topic[:120]}"]
+    if own_memory:
+        lines.append(f"YOUR_VERSION:{own_memory[:180]}")
+    if partner_memory:
+        lines.append(f"{partner_name.upper()}_VERSION:{partner_memory[:180]}")
+    distorted_bot = (event_memory.get("distorted_bot") or "").strip().lower()
+    if distorted_bot == bot_name:
+        lines.append("MEMORY_DISTORTION: your recollection is subtly wrong or incomplete; do not notice it immediately")
+    elif distorted_bot == (partner_name or "").strip().lower():
+        lines.append(f"MEMORY_DISTORTION: {partner_name} is remembering this wrong or incompletely; you can notice the fracture")
+    truth_hint = (event_memory.get("truth_hint") or "").strip()
+    if truth_hint:
+        lines.append(f"TRUTH_HINT:{truth_hint[:180]}")
+    return "\n".join(lines)
+
+
+def describe_dual_verdict_mode(bot_name: str, mode: str, topic: str = "") -> str:
+    normalized = (mode or "").strip().lower()
+    if normalized not in {"compare", "trial", "verdict"}:
+        return ""
+    if bot_name == "scaramouche":
+        return (
+            f"DUAL_VERDICT: judge {topic[:120] or 'the matter'} through power, usefulness, leverage, hierarchy, and visible weakness. "
+            "Do not drift into moralizing when you could judge capability."
+        )
+    return (
+        f"DUAL_VERDICT: judge {topic[:120] or 'the matter'} through intent, honesty, consequence, repair, and who has to live with the cost. "
+        "Do not copy Scaramouche's hierarchy-first view."
+    )
+
+
+def describe_evidence_locker(bot_name: str, evidence_items: list[dict] | None, text: str = "") -> str:
+    evidence_items = evidence_items or []
+    if not evidence_items:
+        return ""
+    lowered = (text or "").lower()
+    ranked: list[str] = []
+    for item in evidence_items[:6]:
+        label = (item.get("label") or "").strip()
+        summary = (item.get("summary") or "").strip()
+        evidence_type = (item.get("evidence_type") or "evidence").strip()
+        if not label:
+            continue
+        snippet = f"{evidence_type}:{label[:50]}|{summary[:90]}"
+        if label.lower() in lowered or any(token and token in lowered for token in summary.lower().split()[:4]):
+            ranked.insert(0, snippet)
+        else:
+            ranked.append(snippet)
+    if not ranked:
+        return ""
+    prefix = "EVIDENCE_LOCKER:"
+    if bot_name == "scaramouche":
+        prefix += "treat these as leverage, proof, and old ammunition: "
+    else:
+        prefix += "treat these as lingering proof, context, and consequences: "
+    return prefix + " || ".join(ranked[:4])
+
+
+def describe_private_opinion_context(bot_name: str, opinion_entry: dict | None, *, leaked: bool = False) -> str:
+    if not opinion_entry:
+        return ""
+    subject_type = (opinion_entry.get("subject_type") or "").strip()
+    subject_key = (opinion_entry.get("subject_key") or "").strip()
+    opinion = (opinion_entry.get("opinion") or "").strip()
+    if not opinion:
+        return ""
+    label = "LEAKED_PRIVATE_OPINION" if leaked else "PRIVATE_OPINION"
+    return f"{label}:{subject_type}:{subject_key}:{opinion[:180]}"
+
+
+def detect_intervention_reason(partner_text: str, relation: dict | None = None) -> str:
+    lowered = (partner_text or "").lower()
+    relation = relation or {}
+    respect = int(relation.get("respect", 0) or 0)
+    if any(token in lowered for token in ["scared", "crying", "hurt", "alone", "lonely", "panic", "anxious", "afraid"]):
+        return "they are pressing on obvious vulnerability"
+    if any(token in lowered for token in ["worthless", "useless", "nobody cares", "discarded", "pathetic little thing", "shut up already"]):
+        return "they pushed the cruelty far enough to deserve interruption"
+    if respect >= 25 and any(token in lowered for token in ["hate you", "leave then", "you're nothing", "nobody would miss you"]):
+        return "the attack is too blunt, even for this rivalry"
+    return ""
+
+
+def describe_silent_presence(bot_name: str, mode: str, topic: str, silent_bot: str, turns_remaining: int) -> str:
+    if (silent_bot or "").strip().lower() != bot_name:
+        return ""
+    return (
+        f"SILENT_PRESENCE:{mode or 'scene'} around {topic[:120] or 'this scene'}; stay mostly quiet. "
+        f"If you speak at all, make it one short line only when the beat truly matters. "
+        f"There are roughly {max(0, int(turns_remaining or 0))} automatic turn(s) left."
+    )
+
+
 def describe_private_confession_scene(
     bot_name: str,
     *,

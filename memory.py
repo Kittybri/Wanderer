@@ -393,12 +393,51 @@ class Memory:
                     profile_json  TEXT DEFAULT NULL,
                     updated_ts    REAL DEFAULT 0
                 );
+                CREATE TABLE IF NOT EXISTS shared_event_memories (
+                    event_key        TEXT PRIMARY KEY,
+                    channel_id       INTEGER DEFAULT 0,
+                    topic            TEXT DEFAULT NULL,
+                    scaramouche_memory TEXT DEFAULT NULL,
+                    wanderer_memory  TEXT DEFAULT NULL,
+                    truth_hint       TEXT DEFAULT NULL,
+                    distorted_bot    TEXT DEFAULT NULL,
+                    last_noticed_by  TEXT DEFAULT NULL,
+                    created_ts       REAL DEFAULT 0,
+                    updated_ts       REAL DEFAULT 0
+                );
+                CREATE TABLE IF NOT EXISTS shared_evidence_locker (
+                    evidence_key    TEXT PRIMARY KEY,
+                    channel_id      INTEGER DEFAULT 0,
+                    evidence_type   TEXT DEFAULT 'evidence',
+                    label           TEXT DEFAULT NULL,
+                    summary         TEXT DEFAULT NULL,
+                    source_excerpt  TEXT DEFAULT NULL,
+                    owner_user_id   INTEGER DEFAULT 0,
+                    linked_case     TEXT DEFAULT NULL,
+                    updated_by      TEXT DEFAULT NULL,
+                    created_ts      REAL DEFAULT 0,
+                    updated_ts      REAL DEFAULT 0
+                );
+                CREATE TABLE IF NOT EXISTS interbot_private_opinions (
+                    scope         TEXT,
+                    bot_name      TEXT,
+                    subject_type  TEXT,
+                    subject_key   TEXT,
+                    opinion       TEXT DEFAULT NULL,
+                    intensity     INTEGER DEFAULT 1,
+                    leaked_ts     REAL DEFAULT 0,
+                    updated_ts    REAL DEFAULT 0,
+                    PRIMARY KEY (scope, bot_name, subject_type, subject_key)
+                );
             """)
             for stmt in (
                 "ALTER TABLE duo_sessions ADD COLUMN initiator_user_id INTEGER DEFAULT 0",
                 "ALTER TABLE duo_sessions ADD COLUMN awaiting_bot TEXT DEFAULT NULL",
                 "ALTER TABLE duo_sessions ADD COLUMN autoplay_remaining INTEGER DEFAULT 0",
                 "ALTER TABLE duo_sessions ADD COLUMN next_autoplay_ts REAL DEFAULT 0",
+                "ALTER TABLE duo_sessions ADD COLUMN silent_bot TEXT DEFAULT NULL",
+                "ALTER TABLE duo_sessions ADD COLUMN silent_until REAL DEFAULT 0",
+                "ALTER TABLE duo_sessions ADD COLUMN intervention_cooldown REAL DEFAULT 0",
             ):
                 try:
                     await db.execute(stmt)
@@ -1102,10 +1141,11 @@ class Memory:
         now = time.time()
         async with aiosqlite.connect(self.shared_db_path) as db:
             await db.execute(
-                "INSERT INTO duo_sessions (channel_id,mode,topic,initiator_bot,initiator_user_id,last_speaker,awaiting_bot,autoplay_remaining,next_autoplay_ts,expires_ts,updated_ts) VALUES (?,?,?,?,?,?,?,?,?,?,?) "
+                "INSERT INTO duo_sessions (channel_id,mode,topic,initiator_bot,initiator_user_id,last_speaker,awaiting_bot,autoplay_remaining,next_autoplay_ts,expires_ts,updated_ts,silent_bot,silent_until,intervention_cooldown) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
                 "ON CONFLICT(channel_id) DO UPDATE SET mode=excluded.mode, topic=excluded.topic, "
                 "initiator_bot=excluded.initiator_bot, initiator_user_id=excluded.initiator_user_id, awaiting_bot=excluded.awaiting_bot, autoplay_remaining=excluded.autoplay_remaining, "
-                "next_autoplay_ts=excluded.next_autoplay_ts, expires_ts=excluded.expires_ts, updated_ts=excluded.updated_ts",
+                "next_autoplay_ts=excluded.next_autoplay_ts, expires_ts=excluded.expires_ts, updated_ts=excluded.updated_ts, "
+                "silent_bot=excluded.silent_bot, silent_until=excluded.silent_until, intervention_cooldown=excluded.intervention_cooldown",
                 (
                     channel_id,
                     mode[:40],
@@ -1118,6 +1158,9 @@ class Memory:
                     now + max(2, int(autoplay_delay)),
                     now + ttl_seconds,
                     now,
+                    "",
+                    0,
+                    0,
                 ),
             )
             await db.commit()
@@ -1126,7 +1169,7 @@ class Memory:
         now = time.time()
         async with aiosqlite.connect(self.shared_db_path) as db:
             async with db.execute(
-                "SELECT mode,topic,initiator_bot,initiator_user_id,last_speaker,awaiting_bot,autoplay_remaining,next_autoplay_ts,expires_ts,updated_ts "
+                "SELECT mode,topic,initiator_bot,initiator_user_id,last_speaker,awaiting_bot,autoplay_remaining,next_autoplay_ts,expires_ts,updated_ts,silent_bot,silent_until,intervention_cooldown "
                 "FROM duo_sessions WHERE channel_id=?",
                 (channel_id,),
             ) as cur:
@@ -1148,6 +1191,9 @@ class Memory:
             "next_autoplay_ts": row[7] or 0,
             "expires_ts": row[8] or 0,
             "updated_ts": row[9] or 0,
+            "silent_bot": row[10] or "",
+            "silent_until": row[11] or 0,
+            "intervention_cooldown": row[12] or 0,
         }
 
     async def bump_duo_session(self, channel_id: int, speaker_bot: str, partner_bot: str = "", ttl_seconds: int = 900, autoplay_delay: int = 6):
@@ -1175,7 +1221,7 @@ class Memory:
         now = time.time()
         async with aiosqlite.connect(self.shared_db_path) as db:
             async with db.execute(
-                "SELECT channel_id,mode,topic,initiator_bot,initiator_user_id,last_speaker,awaiting_bot,autoplay_remaining,next_autoplay_ts,expires_ts,updated_ts "
+                "SELECT channel_id,mode,topic,initiator_bot,initiator_user_id,last_speaker,awaiting_bot,autoplay_remaining,next_autoplay_ts,expires_ts,updated_ts,silent_bot,silent_until,intervention_cooldown "
                 "FROM duo_sessions WHERE awaiting_bot=? AND autoplay_remaining>0 AND next_autoplay_ts<=? AND expires_ts>?",
                 (bot_name, now, now),
             ) as cur:
@@ -1193,9 +1239,36 @@ class Memory:
                 "next_autoplay_ts": row[8] or 0,
                 "expires_ts": row[9] or 0,
                 "updated_ts": row[10] or 0,
+                "silent_bot": row[11] or "",
+                "silent_until": row[12] or 0,
+                "intervention_cooldown": row[13] or 0,
             }
             for row in rows
         ]
+
+    async def set_duo_presence(
+        self,
+        channel_id: int,
+        *,
+        silent_bot: str = "",
+        silent_until: float = 0,
+        intervention_cooldown: float | None = None,
+    ):
+        current = await self.get_duo_session(channel_id)
+        if not current:
+            return
+        async with aiosqlite.connect(self.shared_db_path) as db:
+            await db.execute(
+                "UPDATE duo_sessions SET silent_bot=?, silent_until=?, intervention_cooldown=COALESCE(?, intervention_cooldown), updated_ts=? WHERE channel_id=?",
+                (
+                    (silent_bot or "")[:40],
+                    float(silent_until or 0),
+                    intervention_cooldown,
+                    time.time(),
+                    channel_id,
+                ),
+            )
+            await db.commit()
 
     async def clear_duo_session(self, channel_id: int):
         async with aiosqlite.connect(self.shared_db_path) as db:
@@ -1587,6 +1660,246 @@ class Memory:
             }
             for row in rows
         ]
+
+    def _shared_event_key(self, channel_id: int, topic: str) -> str:
+        cleaned = re.sub(r"[^a-z0-9]+", "-", (topic or "").strip().lower()).strip("-")
+        return f"{channel_id}:{cleaned[:90] or 'event'}"
+
+    async def note_shared_event_memory(
+        self,
+        channel_id: int,
+        topic: str,
+        bot_name: str,
+        memory_text: str,
+        *,
+        truth_hint: str = "",
+        distorted: bool = False,
+    ) -> str:
+        topic = (topic or "").strip()[:180]
+        memory_text = (memory_text or "").strip()[:320]
+        if not topic or not memory_text:
+            return ""
+        event_key = self._shared_event_key(channel_id, topic)
+        column = "wanderer_memory" if (bot_name or "").strip().lower() == "wanderer" else "scaramouche_memory"
+        now = time.time()
+        async with aiosqlite.connect(self.shared_db_path) as db:
+            await db.execute(
+                "INSERT INTO shared_event_memories (event_key,channel_id,topic,truth_hint,distorted_bot,last_noticed_by,created_ts,updated_ts) "
+                "VALUES (?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(event_key) DO UPDATE SET "
+                "topic=excluded.topic, "
+                "truth_hint=CASE WHEN excluded.truth_hint IS NOT NULL AND excluded.truth_hint!='' THEN excluded.truth_hint ELSE shared_event_memories.truth_hint END, "
+                "last_noticed_by=excluded.last_noticed_by, "
+                "updated_ts=excluded.updated_ts",
+                (
+                    event_key,
+                    channel_id,
+                    topic,
+                    (truth_hint or "")[:220],
+                    (bot_name if distorted else "")[:40],
+                    (bot_name or "")[:40],
+                    now,
+                    now,
+                ),
+            )
+            await db.execute(
+                f"UPDATE shared_event_memories SET {column}=?, distorted_bot=CASE WHEN ? THEN ? ELSE distorted_bot END, "
+                "last_noticed_by=?, updated_ts=? WHERE event_key=?",
+                (
+                    memory_text,
+                    1 if distorted else 0,
+                    (bot_name or "")[:40],
+                    (bot_name or "")[:40],
+                    now,
+                    event_key,
+                ),
+            )
+            await db.commit()
+        return event_key
+
+    async def get_shared_event_memory(self, channel_id: int, topic_hint: str = "", limit: int = 1) -> list[dict]:
+        topic_hint = (topic_hint or "").strip().lower()
+        query = (
+            "SELECT event_key,channel_id,topic,scaramouche_memory,wanderer_memory,truth_hint,distorted_bot,last_noticed_by,created_ts,updated_ts "
+            "FROM shared_event_memories WHERE channel_id=?"
+        )
+        params: list[object] = [channel_id]
+        if topic_hint:
+            query += " AND LOWER(topic) LIKE ?"
+            params.append(f"%{topic_hint[:80]}%")
+        query += " ORDER BY updated_ts DESC LIMIT ?"
+        params.append(limit)
+        async with aiosqlite.connect(self.shared_db_path) as db:
+            async with db.execute(query, params) as cur:
+                rows = await cur.fetchall()
+        return [
+            {
+                "event_key": row[0] or "",
+                "channel_id": row[1] or 0,
+                "topic": row[2] or "",
+                "scaramouche_memory": row[3] or "",
+                "wanderer_memory": row[4] or "",
+                "truth_hint": row[5] or "",
+                "distorted_bot": row[6] or "",
+                "last_noticed_by": row[7] or "",
+                "created_ts": row[8] or 0,
+                "updated_ts": row[9] or 0,
+            }
+            for row in rows
+        ]
+
+    async def mark_memory_distortion(self, event_key: str, bot_name: str):
+        async with aiosqlite.connect(self.shared_db_path) as db:
+            await db.execute(
+                "UPDATE shared_event_memories SET distorted_bot=?, updated_ts=? WHERE event_key=?",
+                ((bot_name or "")[:40], time.time(), event_key[:140]),
+            )
+            await db.commit()
+
+    async def add_evidence_item(
+        self,
+        channel_id: int,
+        evidence_type: str,
+        label: str,
+        summary: str,
+        *,
+        source_excerpt: str = "",
+        owner_user_id: int = 0,
+        linked_case: str = "",
+        updated_by: str = "",
+    ) -> str:
+        label = (label or "").strip()[:140]
+        summary = (summary or "").strip()[:260]
+        if not label or not summary:
+            return ""
+        now = time.time()
+        evidence_key = f"{channel_id}:{(evidence_type or 'evidence')[:24]}:{int(now * 1000)}"
+        async with aiosqlite.connect(self.shared_db_path) as db:
+            await db.execute(
+                "INSERT INTO shared_evidence_locker (evidence_key,channel_id,evidence_type,label,summary,source_excerpt,owner_user_id,linked_case,updated_by,created_ts,updated_ts) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    evidence_key,
+                    channel_id,
+                    (evidence_type or "evidence")[:40],
+                    label,
+                    summary,
+                    (source_excerpt or "")[:240],
+                    owner_user_id or 0,
+                    (linked_case or "")[:80],
+                    (updated_by or self.bot_name)[:40],
+                    now,
+                    now,
+                ),
+            )
+            await db.commit()
+        return evidence_key
+
+    async def list_evidence_items(
+        self,
+        channel_id: int,
+        *,
+        evidence_type: str | None = None,
+        limit: int = 6,
+    ) -> list[dict]:
+        query = (
+            "SELECT evidence_key,channel_id,evidence_type,label,summary,source_excerpt,owner_user_id,linked_case,updated_by,created_ts,updated_ts "
+            "FROM shared_evidence_locker WHERE channel_id=?"
+        )
+        params: list[object] = [channel_id]
+        if evidence_type:
+            query += " AND evidence_type=?"
+            params.append(evidence_type[:40])
+        query += " ORDER BY updated_ts DESC LIMIT ?"
+        params.append(limit)
+        async with aiosqlite.connect(self.shared_db_path) as db:
+            async with db.execute(query, params) as cur:
+                rows = await cur.fetchall()
+        return [
+            {
+                "evidence_key": row[0] or "",
+                "channel_id": row[1] or 0,
+                "evidence_type": row[2] or "",
+                "label": row[3] or "",
+                "summary": row[4] or "",
+                "source_excerpt": row[5] or "",
+                "owner_user_id": row[6] or 0,
+                "linked_case": row[7] or "",
+                "updated_by": row[8] or "",
+                "created_ts": row[9] or 0,
+                "updated_ts": row[10] or 0,
+            }
+            for row in rows
+        ]
+
+    async def set_private_opinion(
+        self,
+        scope: str,
+        bot_name: str,
+        subject_type: str,
+        subject_key: str,
+        opinion: str,
+        *,
+        intensity: int = 1,
+    ):
+        opinion = (opinion or "").strip()[:260]
+        if not opinion:
+            return
+        now = time.time()
+        async with aiosqlite.connect(self.shared_db_path) as db:
+            await db.execute(
+                "INSERT INTO interbot_private_opinions (scope,bot_name,subject_type,subject_key,opinion,intensity,updated_ts) "
+                "VALUES (?,?,?,?,?,?,?) "
+                "ON CONFLICT(scope,bot_name,subject_type,subject_key) DO UPDATE SET "
+                "opinion=excluded.opinion, intensity=excluded.intensity, updated_ts=excluded.updated_ts",
+                (
+                    (scope or "")[:80],
+                    (bot_name or "")[:40],
+                    (subject_type or "")[:30],
+                    (subject_key or "")[:80],
+                    opinion,
+                    max(1, min(10, int(intensity))),
+                    now,
+                ),
+            )
+            await db.commit()
+
+    async def list_private_opinions(self, scope: str, limit: int = 6) -> list[dict]:
+        async with aiosqlite.connect(self.shared_db_path) as db:
+            async with db.execute(
+                "SELECT scope,bot_name,subject_type,subject_key,opinion,intensity,leaked_ts,updated_ts "
+                "FROM interbot_private_opinions WHERE scope=? ORDER BY updated_ts DESC LIMIT ?",
+                ((scope or "")[:80], limit),
+            ) as cur:
+                rows = await cur.fetchall()
+        return [
+            {
+                "scope": row[0] or "",
+                "bot_name": row[1] or "",
+                "subject_type": row[2] or "",
+                "subject_key": row[3] or "",
+                "opinion": row[4] or "",
+                "intensity": row[5] or 0,
+                "leaked_ts": row[6] or 0,
+                "updated_ts": row[7] or 0,
+            }
+            for row in rows
+        ]
+
+    async def mark_private_opinion_leaked(self, scope: str, bot_name: str, subject_type: str, subject_key: str):
+        async with aiosqlite.connect(self.shared_db_path) as db:
+            await db.execute(
+                "UPDATE interbot_private_opinions SET leaked_ts=?, updated_ts=? WHERE scope=? AND bot_name=? AND subject_type=? AND subject_key=?",
+                (
+                    time.time(),
+                    time.time(),
+                    (scope or "")[:80],
+                    (bot_name or "")[:40],
+                    (subject_type or "")[:30],
+                    (subject_key or "")[:80],
+                ),
+            )
+            await db.commit()
 
     async def add_consequence_mark(
         self,

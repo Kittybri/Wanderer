@@ -53,18 +53,23 @@ from relationship_engine import (
     compute_bot_stage,
     compute_emotional_arc,
     describe_bot_relationship,
+    describe_contradictory_memory,
     describe_conflict_aftermath,
     describe_conflict_followup,
+    describe_dual_verdict_mode,
     describe_emotional_layers,
     describe_emotional_event,
     describe_emotional_arc,
     describe_arc_unlocks,
     describe_campaign_npcs,
     describe_duo_scene_stage,
+    describe_evidence_locker,
     describe_live_world_context,
     describe_lore_hook,
     describe_private_confession_scene,
+    describe_private_opinion_context,
     describe_relationship_unlock_scene,
+    describe_silent_presence,
     describe_triangle_jealousy,
     describe_specific_lore_tree,
     describe_relationship_progression,
@@ -75,6 +80,7 @@ from relationship_engine import (
     detect_emotional_triggers,
     detect_banter_theme,
     detect_conflict_signal,
+    detect_intervention_reason,
     detect_scenario,
     detect_topics,
     detect_repair_signal,
@@ -1071,12 +1077,154 @@ def _message_mentions_partner(text: str) -> bool:
     return any(token in lowered for token in _PARTNER_REFERENCES)
 
 
-async def _partner_prompt_context(user_message: str) -> str:
+def _event_topic_from_text(text: str, fallback: str = "") -> str:
+    cleaned = re.sub(r"\s+", " ", (text or fallback or "").strip())
+    if not cleaned:
+        return ""
+    patterns = [
+        r"(?:trial|mission|interrogate|compare|duet|argue|verdict)\s+(?:about|over|regarding)?\s*:?\s*(.+)",
+        r"(?:about|over|regarding|remember|evidence for|proof of)\s+(.+)",
+    ]
+    lowered = cleaned.lower()
+    for pattern in patterns:
+        match = re.search(pattern, lowered, re.IGNORECASE)
+        if match:
+            value = re.sub(r"\s+", " ", match.group(1)).strip(" .,!?:;\"'")
+            if len(value) >= 6:
+                return value[:120]
+    return cleaned[:120]
+
+
+def _should_log_quote_evidence(text: str) -> bool:
+    lowered = (text or "").lower()
+    return len((text or "").strip()) >= 40 and any(
+        token in lowered for token in ["remember this", "don't forget", "proof", "evidence", "quote", "keep this", "this matters"]
+    )
+
+
+def _opinion_about_user(user: dict | None, triangle: dict | None = None) -> tuple[str, int]:
+    user = user or {}
+    affection = int(user.get("affection", 0) or 0)
+    trust = int(user.get("trust", 0) or 0)
+    mood = int(user.get("mood", 0) or 0)
+    jealousy = int((triangle or {}).get("jealousy_level", 0) or 0)
+    if affection >= 70 and trust >= 65:
+        return ("They matter more than I like admitting. I notice the honest details and the damage they leave behind.", 8)
+    if jealousy >= 45:
+        return ("They keep drifting toward him and pretending it means nothing. It does.", 7)
+    if trust >= 45:
+        return ("More honest than most. That still doesn't guarantee they won't disappoint me.", 6)
+    if mood <= -5:
+        return ("Difficult today. I still listened more closely than I wanted to.", 5)
+    return ("Still deciding whether they're passing through or staying long enough to matter.", 4)
+
+
+def _opinion_about_partner(relation: dict | None) -> tuple[str, int]:
+    relation = relation or {}
+    stage = relation.get("stage", "enemy")
+    respect = int(relation.get("respect", 0) or 0)
+    tension = int(relation.get("tension", 0) or 0)
+    if stage == "reluctant respect" or respect >= 55:
+        return ("Still exhausting, but sharper than he wants to admit. That counts for something.", 7)
+    if stage == "competitive":
+        return ("He keeps mistaking force for clarity. Sometimes he's still useful anyway.", 6)
+    if tension >= 75:
+        return ("He knows where the old damage lives and keeps reaching for it.", 7)
+    return ("A familiar storm I still haven't quite walked far enough away from.", 5)
+
+
+async def _sync_private_opinions(user_id: int, user: dict | None, triangle: dict | None = None, relation: dict | None = None):
+    try:
+        user_opinion, user_intensity = _opinion_about_user(user, triangle)
+        await mem.set_private_opinion(f"user:{user_id}", BOT_NAME, "user", str(user_id), user_opinion, intensity=user_intensity)
+        partner_opinion, partner_intensity = _opinion_about_partner(relation or await mem.get_bot_relationship(PARTNER_PAIR_KEY))
+        await mem.set_private_opinion(f"user:{user_id}", BOT_NAME, "partner", PARTNER_NAME, partner_opinion, intensity=partner_intensity)
+    except Exception as e:
+        log_error("sync_private_opinions", e)
+
+
+async def _contradictory_memory_context(channel_id: int, user_message: str = "", topic: str = "") -> str:
+    try:
+        topic_hint = _event_topic_from_text(user_message, fallback=topic)
+        memories = await mem.get_shared_event_memory(channel_id, topic_hint, limit=1)
+        if not memories and topic_hint:
+            memories = await mem.get_shared_event_memory(channel_id, "", limit=1)
+        if not memories:
+            return ""
+        event_memory = memories[0]
+        lowered = (user_message or topic or "").lower()
+        if (
+            event_memory.get("event_key")
+            and not event_memory.get("distorted_bot")
+            and any(token in lowered for token in ["irminsul", "memory", "remember", "actually", "what happened"])
+            and random.random() < 0.08
+        ):
+            chosen = BOT_NAME if random.random() < 0.5 else PARTNER_NAME
+            await mem.mark_memory_distortion(event_memory["event_key"], chosen)
+            event_memory["distorted_bot"] = chosen
+        return describe_contradictory_memory(BOT_NAME, event_memory, PARTNER_NAME, current_text=user_message or topic)
+    except Exception as e:
+        log_error("contradictory_memory_context", e)
+        return ""
+
+
+async def _private_opinion_prompt_context(user_id: int, *, leak_partner: bool = False) -> list[str]:
+    parts: list[str] = []
+    try:
+        opinions = await mem.list_private_opinions(f"user:{user_id}", 6)
+        own = next((item for item in opinions if item.get("bot_name") == BOT_NAME and item.get("subject_type") == "user"), None)
+        if own:
+            line = describe_private_opinion_context(BOT_NAME, own)
+            if line:
+                parts.append(line)
+        if leak_partner:
+            leaked = next(
+                (
+                    item for item in opinions
+                    if item.get("bot_name") == PARTNER_NAME
+                    and (time.time() - float(item.get("leaked_ts", 0) or 0)) > 21600
+                ),
+                None,
+            )
+            if leaked and random.random() < 0.14:
+                line = describe_private_opinion_context(BOT_NAME, leaked, leaked=True)
+                if line:
+                    parts.append(line)
+                    await mem.mark_private_opinion_leaked(
+                        f"user:{user_id}",
+                        leaked.get("bot_name", ""),
+                        leaked.get("subject_type", ""),
+                        leaked.get("subject_key", ""),
+                    )
+    except Exception as e:
+        log_error("private_opinion_prompt_context", e)
+    return parts
+
+
+async def _maybe_seed_silent_presence(channel_id: int, mode: str):
+    if mode not in {"duet", "compare", "trial", "mission", "interrogate"}:
+        return
+    if random.random() >= 0.24:
+        return
+    silent_bot = random.choice([BOT_NAME, PARTNER_NAME])
+    await mem.set_duo_presence(
+        channel_id,
+        silent_bot=silent_bot,
+        silent_until=time.time() + random.randint(180, 420),
+    )
+    debug_event("relationship", f"{BOT_NAME} silent_presence channel={channel_id} bot={silent_bot}")
+
+
+async def _partner_prompt_context(user_message: str, channel_id: int = 0) -> str:
     if not _message_mentions_partner(user_message):
         return ""
     relation = await mem.get_bot_relationship(PARTNER_PAIR_KEY)
     recent_banter = await mem.get_recent_bot_banter(PARTNER_PAIR_KEY, 6)
-    return describe_bot_relationship(BOT_NAME, relation, recent_banter)
+    lines = [describe_bot_relationship(BOT_NAME, relation, recent_banter)]
+    contradiction = await _contradictory_memory_context(channel_id, user_message=user_message)
+    if contradiction:
+        lines.append(contradiction)
+    return "\n".join(line for line in lines if line)
 
 
 async def _duo_prompt_context(channel_id: int, user_message: str = "") -> str:
@@ -1090,9 +1238,28 @@ async def _duo_prompt_context(channel_id: int, user_message: str = "") -> str:
     stage_note = describe_duo_scene_stage(mode, topic, int(session.get("autoplay_remaining", 0) or 0))
     if stage_note:
         prompt.append(stage_note)
+    dual_verdict = describe_dual_verdict_mode(BOT_NAME, mode, topic)
+    if dual_verdict:
+        prompt.append(dual_verdict)
+    silent_presence = describe_silent_presence(
+        BOT_NAME,
+        mode,
+        topic,
+        session.get("silent_bot", ""),
+        int(session.get("autoplay_remaining", 0) or 0),
+    )
+    if silent_presence:
+        prompt.append(silent_presence)
     open_story = await mem.get_open_duo_story(channel_id, mode)
     if open_story and open_story.get("outcome"):
         prompt.append(f"DUO_PROGRESS:{open_story['outcome'][:180]}")
+    contradiction = await _contradictory_memory_context(channel_id, user_message=user_message, topic=topic)
+    if contradiction:
+        prompt.append(contradiction)
+    evidence_items = await mem.list_evidence_items(channel_id, limit=4)
+    evidence_context = describe_evidence_locker(BOT_NAME, evidence_items, f"{topic} {user_message}".strip())
+    if evidence_context:
+        prompt.append(evidence_context)
     if last_speaker and last_speaker != BOT_NAME:
         prompt.append(f"PARTNER_JUST_SPOKE:{last_speaker}")
     if user_message and _message_mentions_partner(user_message):
@@ -1198,6 +1365,7 @@ def _format_world_prompt(
     cases: list[dict],
     campaign_npcs: list[dict] | None = None,
     artifacts: list[dict] | None = None,
+    evidence_items: list[dict] | None = None,
 ) -> str:
     lines = []
     if entities:
@@ -1230,6 +1398,14 @@ def _format_world_prompt(
             + " || ".join(
                 f"{item.get('name', '')[:50]}|{item.get('status', 'recent')}|{item.get('summary', '')[:90]}"
                 for item in artifacts[:3]
+            )
+        )
+    if evidence_items:
+        lines.append(
+            "EVIDENCE_LOCKER:"
+            + " || ".join(
+                f"{item.get('evidence_type', 'evidence')}:{item.get('label', '')[:50]}|{item.get('summary', '')[:90]}"
+                for item in evidence_items[:4]
             )
         )
     return "\n".join(lines)
@@ -1299,6 +1475,8 @@ def _duostate_lines(speaker_mode: str, duo: dict | None, relation: dict, stories
         lines.append(
             f"Active duo: mode={duo.get('mode')} | awaiting={duo.get('awaiting_bot') or 'nobody'} | turns_left={duo.get('autoplay_remaining', 0)} | topic={duo.get('topic')}"
         )
+        if duo.get("silent_bot") and float(duo.get("silent_until", 0) or 0) > time.time():
+            lines.append(f"Silent presence: {duo.get('silent_bot')} staying mostly quiet for this scene")
     else:
         lines.append("Active duo: none")
     if stories:
@@ -1413,7 +1591,8 @@ async def _world_prompt_context(channel_id: int) -> str:
         cases = await mem.list_world_cases(channel_id=channel_id, limit=4)
         campaign_npcs = await mem.list_campaign_npcs(channel_id=channel_id, limit=5)
         artifacts = await mem.list_world_entities("artifact", limit=3, channel_id=channel_id)
-        return _format_world_prompt(entities, cases, campaign_npcs, artifacts)
+        evidence_items = await mem.list_evidence_items(channel_id, limit=4)
+        return _format_world_prompt(entities, cases, campaign_npcs, artifacts, evidence_items)
     except Exception as e:
         log_error("world_prompt_context", e)
         return ""
@@ -1730,22 +1909,26 @@ def _duo_autoplay_prompt(session: dict) -> str:
     partner = _partner_autoplay_name()
     remaining = max(0, int(session.get("autoplay_remaining", 0) or 0))
     stage_note = describe_duo_scene_stage(mode, topic, remaining)
+    silent_note = ""
+    if (session.get("silent_bot", "") or "").strip().lower() == BOT_NAME:
+        silent_note = " Stay mostly quiet unless the beat truly matters; if you speak, make it one short line."
+    dual_verdict = describe_dual_verdict_mode(BOT_NAME, mode, topic)
     outro = "This is the last automatic turn, so land it cleanly." if remaining <= 1 else f"Leave room for {remaining} more automatic turn(s) after you."
     if mode == "duet":
-        return f"Continue the shared two-bot scene after {partner}'s turn. Topic: {topic}. {stage_note} One short follow-up turn only. {outro}"
+        return f"Continue the shared two-bot scene after {partner}'s turn. Topic: {topic}. {stage_note} One short follow-up turn only.{silent_note} {outro}"
     if mode == "argue":
-        return f"{partner} already took a side. Fire back in this two-bot argument about: {topic}. {stage_note} One or two sentences. {outro}"
+        return f"{partner} already took a side. Fire back in this two-bot argument about: {topic}. {stage_note} {dual_verdict} One or two sentences.{silent_note} {outro}"
     if mode == "compare":
-        return f"{partner} already gave their take. Give your contrasting verdict on: {topic}. {stage_note} One or two sentences. {outro}"
+        return f"{partner} already gave their take. Give your contrasting verdict on: {topic}. {stage_note} {dual_verdict} One or two sentences.{silent_note} {outro}"
     if mode == "interrogate":
-        return f"The two-bot interrogation is active. Add your own sharper question or conclusion about: {topic}. {stage_note} One or two sentences. {outro}"
+        return f"The two-bot interrogation is active. Add your own sharper question or conclusion about: {topic}. {stage_note} {dual_verdict} One or two sentences.{silent_note} {outro}"
     if mode == "trial":
-        return f"The two-bot trial is active. Give your side's judgment on: {topic}. {stage_note} One or two sentences. {outro}"
+        return f"The two-bot trial is active. Give your side's judgment on: {topic}. {stage_note} {dual_verdict} One or two sentences.{silent_note} {outro}"
     if mode == "mission":
-        return f"The two-bot mission planning scene is active. Add your own role or warning about: {topic}. {stage_note} One or two sentences. {outro}"
+        return f"The two-bot mission planning scene is active. Add your own role or warning about: {topic}. {stage_note} One or two sentences.{silent_note} {outro}"
     if mode == "truthdare":
-        return f"The two-bot truth-or-dare game is active. Continue it with one pointed challenge about: {topic}. {stage_note} One or two sentences. {outro}"
-    return f"The shared duo mode is active. Follow up after the other bot about: {topic}. One or two sentences. {outro}"
+        return f"The two-bot truth-or-dare game is active. Continue it with one pointed challenge about: {topic}. {stage_note} One or two sentences.{silent_note} {outro}"
+    return f"The shared duo mode is active. Follow up after the other bot about: {topic}. One or two sentences.{silent_note} {outro}"
 
 
 DUO_CHAIN_TURNS = {
@@ -1855,6 +2038,7 @@ async def _start_duo_mode(ctx, user: dict | None, mode: str, topic: str, *, stor
     )
     if story:
         await mem.start_duo_story(ctx.channel.id, mode, topic, enemy=enemy)
+    await _maybe_seed_silent_presence(ctx.channel.id, mode)
 
 
 async def _pin_memory(ctx, kind: str, text: str | None, weight: int, *, shared_joke: bool = False):
@@ -2053,20 +2237,76 @@ async def _handle_partner_message(message) -> bool:
         if time.time() - relation.get("last_exchange", 0) < 90:
             return True
 
+        duo = await mem.get_duo_session(message.channel.id)
+        silent_active = bool(
+            duo
+            and (duo.get("silent_bot", "") or "").strip().lower() == BOT_NAME
+            and float(duo.get("silent_until", 0) or 0) > time.time()
+        )
+        intervention_reason = detect_intervention_reason(message.content, relation)
+        if silent_active and not intervention_reason and random.random() < 0.82:
+            debug_event("relationship", f"{BOT_NAME} silent_presence_hold channel={message.channel.id}")
+            return True
+
         jealousy_target = await _find_romance_target(message.channel) if message.guild else None
         chance = 0.12 if relation.get("stage") == "reluctant respect" else 0.17 if relation.get("stage") == "competitive" else 0.22
         if jealousy_target:
             chance += 0.1
+        if silent_active:
+            chance *= 0.35
+
+        if intervention_reason:
+            cooldown_open = float((duo or {}).get("intervention_cooldown", 0) or 0)
+            if cooldown_open <= time.time() and random.random() < 0.62:
+                partner_context = describe_bot_relationship(BOT_NAME, relation, recent_banter)
+                contradiction = await _contradictory_memory_context(
+                    message.channel.id,
+                    user_message=message.content,
+                    topic=(duo or {}).get("topic", ""),
+                )
+                prompt = (
+                    f"{partner_context}\n"
+                    f"{contradiction}\n"
+                    f"INTERVENTION_MODE:{intervention_reason}. {PARTNER_NAME.title()} just said: '{message.content[:220]}'.\n"
+                    "Cut in unprompted as Wanderer. You can stop him, undercut the tone, or redirect the scene, "
+                    "but make it sound like you noticed the line crossed into blunt damage instead of useful precision. "
+                    "One or two sentences. No narration."
+                )
+                reply = await qai(prompt, 180, route="primary")
+                reply = await _apply_phrase_policy(reply, [item.get("content", "") for item in recent_banter], mood=-3, conflict_open=True)
+                if reply:
+                    await message.reply(reply)
+                    await mem.record_bot_banter(PARTNER_PAIR_KEY, BOT_NAME, reply, "intervention")
+                    await mem.note_shared_event_memory(
+                        message.channel.id,
+                        (duo or {}).get("topic", "") or _event_topic_from_text(message.content, fallback="rival intervention"),
+                        BOT_NAME,
+                        f"Intervention over {intervention_reason}: {reply[:180]}",
+                        truth_hint=intervention_reason,
+                    )
+                    await mem.set_duo_presence(
+                        message.channel.id,
+                        silent_bot=(duo or {}).get("silent_bot", ""),
+                        silent_until=float((duo or {}).get("silent_until", 0) or 0),
+                        intervention_cooldown=time.time() + 240,
+                    )
+                    return True
+
         if random.random() >= chance:
             return True
 
         partner_context = describe_bot_relationship(BOT_NAME, relation, recent_banter)
+        contradiction = await _contradictory_memory_context(
+            message.channel.id,
+            user_message=message.content,
+            topic=(duo or {}).get("topic", ""),
+        )
         extra = ""
         if jealousy_target:
             extra = f"\nA romance-mode user you care about is in this channel: {jealousy_target.display_name}. That should sharpen the jealousy."
 
         prompt = (
-            f"{partner_context}{extra}\n\n"
+            f"{partner_context}\n{contradiction}{extra}\n\n"
             f"Scaramouche just said: '{message.content[:220]}'\n"
             f"Reply as Wanderer. He refuses to admit how much of that shared history still matters. "
             f"If respect has grown, show it as cleaner honesty instead of recycled annoyance. "
@@ -2102,6 +2342,13 @@ async def _handle_partner_message(message) -> bool:
             theme=own_theme,
             history_note=note,
             touched_exchange=True,
+        )
+        await mem.note_shared_event_memory(
+            message.channel.id,
+            (duo or {}).get("topic", "") or _event_topic_from_text(message.content, fallback=theme),
+            BOT_NAME,
+            reply[:220],
+            truth_hint=f"partner argument about {theme}",
         )
     except Exception as e:
         log_error("handle_partner_message", e)
@@ -2390,6 +2637,7 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
         lore_tree = describe_specific_lore_tree(BOT_NAME, user_message)
         if lore_tree: parts.append(lore_tree)
         triangle = await mem.get_triangle_state(user_id, BOT_NAME, PARTNER_NAME)
+        await _sync_private_opinions(user_id, user, triangle=triangle)
         unlock_scene = describe_relationship_unlock_scene(
             BOT_NAME,
             affection=affection,
@@ -2420,6 +2668,19 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
         triangle_desc = describe_triangle_jealousy(BOT_NAME, triangle, PARTNER_NAME)
         if triangle_desc:
             parts.append(f"JEALOUSY_TRIANGLE:{triangle_desc}")
+        contradiction = await _contradictory_memory_context(
+            channel_id,
+            user_message=user_message,
+            topic=(duo_session or {}).get("topic", ""),
+        )
+        if contradiction:
+            parts.append(contradiction)
+            if "YOUR_VERSION:" in contradiction and f"{PARTNER_NAME.upper()}_VERSION:" in contradiction:
+                await mem.unlock_hidden_achievement(
+                    f"user:{user_id}",
+                    "contradictory_memory",
+                    "They caught the two bots remembering the same event differently.",
+                )
         achievement_ctx = await _achievement_context(user_id)
         if achievement_ctx:
             parts.append(f"HIDDEN_PROGRESS:{achievement_ctx}")
@@ -2435,6 +2696,17 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
             parts.append("WANDERER_EDGE: old-name discomfort should vary by intent; react more sharply to direct misuse than casual mention")
         if extra_context: parts.append(extra_context)
         parts.extend(await _user_memory_context(user_id, user))
+        private_opinions = await _private_opinion_prompt_context(
+            user_id,
+            leak_partner=bool((duo_session or {}).get("mode") or _message_mentions_partner(user_message)),
+        )
+        parts.extend(private_opinions)
+        if any(item.startswith("LEAKED_PRIVATE_OPINION:") for item in private_opinions):
+            await mem.unlock_hidden_achievement(
+                f"user:{user_id}",
+                "leaked_private_opinion",
+                "A hidden inter-bot opinion slipped into the open.",
+            )
         if user and not user.get("utility_mode", True):
             parts.append("UTILITY_PREF: utility mode is off; keep facts natural instead of list-like")
         if use_search or needs_search(user_message):
@@ -2458,7 +2730,7 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
             channel_obj,
             limit=_context_limit_for_reply(is_dm=is_dm, direct_to_me=direct_to_me),
         ) if channel_obj else ""
-        partner_context = await _partner_prompt_context(user_message)
+        partner_context = await _partner_prompt_context(user_message, channel_id=channel_id)
         duo_context = await _duo_prompt_context(channel_id, user_message)
         context_block = "[" + "|".join(parts) + "]\n"
         if world_context:
@@ -2549,6 +2821,16 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
 
     try:
         await mem.add_message(user_id, channel_id, "user", user_message)
+        if _should_log_quote_evidence(user_message):
+            await mem.add_evidence_item(
+                channel_id,
+                "quote",
+                f"{display_name} line",
+                user_message[:220],
+                source_excerpt=user_message[:180],
+                owner_user_id=user_id,
+                updated_by=BOT_NAME,
+            )
         # NOTE: assistant reply is saved in on_message AFTER voice/text decision
 
         msg_l = user_message.lower()
@@ -2974,6 +3256,16 @@ async def _remember_attachment_artifact(
             owner_user_id=user_id,
             updated_by=BOT_NAME,
         )
+        evidence_type = "pdf" if name.lower().endswith(".pdf") else "image" if any(name.lower().endswith(ext) for ext in (".png", ".jpg", ".jpeg", ".webp", ".gif")) else "video" if any(name.lower().endswith(ext) for ext in (".mp4", ".mov", ".webm", ".avi")) else "artifact"
+        await mem.add_evidence_item(
+            channel_id,
+            evidence_type,
+            name[:120],
+            summary[:240],
+            source_excerpt=summary[:180],
+            owner_user_id=user_id,
+            updated_by=BOT_NAME,
+        )
         if await mem.unlock_hidden_achievement(
             f"user:{user_id}",
             "remembered_artifact",
@@ -3079,7 +3371,7 @@ def _achievement_gallery_lines(entries: list[dict]) -> list[str]:
             lines.append(line)
     else:
         lines.append("- Nothing unlocked yet. Keep walking.")
-    lines.append("Rumors: a private confession, a merciful ending, a remembered artifact, a peaceful duet, a survived trial.")
+    lines.append("Rumors: a private confession, a merciful ending, a remembered artifact, a peaceful duet, a survived trial, a contradictory memory, a leaked private opinion.")
     return lines
 
 
@@ -3088,8 +3380,26 @@ async def _store_duo_story_progress(channel_id: int, duo: dict | None, text: str
         return
     mode = duo.get("mode", "")
     if mode in {"trial", "mission", "interrogate", "truthdare", "compare", "argue", "duet"}:
-        summary = f"{BOT_NAME} {mode} turn: {strip_narration(text)[:180]}"
+        cleaned = strip_narration(text)
+        summary = f"{BOT_NAME} {mode} turn: {cleaned[:180]}"
         await mem.note_duo_story_progress(channel_id, mode, summary)
+        topic = duo.get("topic", "") or mode
+        await mem.note_shared_event_memory(
+            channel_id,
+            topic,
+            BOT_NAME,
+            summary,
+            truth_hint=f"{mode} scene memory",
+        )
+        if mode in {"trial", "interrogate", "compare"}:
+            await mem.add_evidence_item(
+                channel_id,
+                "quote",
+                f"{BOT_NAME} {mode} turn",
+                cleaned[:220],
+                source_excerpt=cleaned[:180],
+                updated_by=BOT_NAME,
+            )
 
 
 async def _command_face_media(ctx):
@@ -4888,7 +5198,26 @@ async def possess_cmd(ctx, member: discord.Member = None):
 async def verdict_cmd(ctx, *, situation: str = None):
     try:
         if not situation: await safe_reply(ctx, "Verdict on what?"); return
-        reply = await qai(f"The Wanderer's verdict on: '{situation}'. He's seen enough to have a genuine opinion. 2-3 sentences.", 200)
+        user = await _setup(ctx)
+        partner_ready = bool(
+            getattr(ctx, "guild", None)
+            and PARTNER_BOT_ID
+            and ctx.guild.get_member(PARTNER_BOT_ID)
+        )
+        if partner_ready:
+            await _start_duo_mode(ctx, user, "compare", situation, story=True)
+            reply = await get_response(
+                ctx.author.id,
+                ctx.channel.id,
+                f"Give your verdict on: {situation}",
+                user,
+                ctx.author.display_name,
+                ctx.author.mention,
+                extra_context="DUAL_VERDICT_REQUEST: give your judgment, knowing the other bot will answer with a contrasting standard.",
+                channel_obj=ctx.channel,
+            )
+        else:
+            reply = await qai(f"The Wanderer's verdict on: '{situation}'. He's seen enough to have a genuine opinion. 2-3 sentences.", 200)
         await safe_reply(ctx, reply)
     except Exception as e: log_error("verdict_cmd", e)
 
