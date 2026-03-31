@@ -386,6 +386,13 @@ class Memory:
                     opened_ts     REAL DEFAULT 0,
                     updated_ts    REAL DEFAULT 0
                 );
+                CREATE TABLE IF NOT EXISTS face_profiles (
+                    profile_key   TEXT PRIMARY KEY,
+                    owner_user_id INTEGER DEFAULT 0,
+                    label         TEXT DEFAULT NULL,
+                    profile_json  TEXT DEFAULT NULL,
+                    updated_ts    REAL DEFAULT 0
+                );
             """)
             for stmt in (
                 "ALTER TABLE duo_sessions ADD COLUMN initiator_user_id INTEGER DEFAULT 0",
@@ -1861,6 +1868,50 @@ class Memory:
             await db.execute("DELETE FROM user_bot_attention WHERE user_id=?", (user_id,))
             await db.execute("DELETE FROM hidden_achievements WHERE scope LIKE ?", (f"%user:{user_id}",))
             await db.execute("DELETE FROM relationship_milestones WHERE scope LIKE ?", (f"%user:{user_id}",))
+            await db.commit()
+
+    async def get_face_profile(self, profile_key: str = "owner_face") -> dict | None:
+        async with aiosqlite.connect(self.shared_db_path) as db:
+            async with db.execute(
+                "SELECT owner_user_id,label,profile_json,updated_ts FROM face_profiles WHERE profile_key=?",
+                (profile_key,),
+            ) as cur:
+                row = await cur.fetchone()
+        if not row:
+            return None
+        profile = {}
+        if row[2]:
+            try:
+                profile = json.loads(row[2]) or {}
+            except Exception:
+                profile = {}
+        profile["profile_key"] = profile_key
+        profile["owner_user_id"] = row[0] or 0
+        profile["label"] = row[1] or ""
+        profile["updated_ts"] = row[3] or 0
+        profile["sample_count"] = int(profile.get("sample_count") or len(profile.get("templates") or []))
+        return profile
+
+    async def save_face_profile(
+        self,
+        profile_key: str,
+        owner_user_id: int,
+        label: str,
+        profile: dict,
+    ):
+        payload = json.dumps(profile or {})
+        async with aiosqlite.connect(self.shared_db_path) as db:
+            await db.execute(
+                "INSERT INTO face_profiles (profile_key,owner_user_id,label,profile_json,updated_ts) VALUES (?,?,?,?,?) "
+                "ON CONFLICT(profile_key) DO UPDATE SET owner_user_id=excluded.owner_user_id,label=excluded.label,"
+                "profile_json=excluded.profile_json,updated_ts=excluded.updated_ts",
+                (profile_key, owner_user_id, label[:120], payload, time.time()),
+            )
+            await db.commit()
+
+    async def delete_face_profile(self, profile_key: str = "owner_face"):
+        async with aiosqlite.connect(self.shared_db_path) as db:
+            await db.execute("DELETE FROM face_profiles WHERE profile_key=?", (profile_key,))
             await db.commit()
 
     # ── Mute (in-memory) ──────────────────────────────────────────────────────
