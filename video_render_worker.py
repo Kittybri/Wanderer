@@ -77,7 +77,14 @@ def _make_job_dir(job_id: str) -> Path:
     return path
 
 
-def _run_render_script(script_path: Path, notes_text: str, *, title: str, output_dir: Path) -> dict:
+def _run_render_script(
+    script_path: Path,
+    notes_text: str,
+    *,
+    title: str,
+    output_dir: Path,
+    env_overrides: dict[str, str] | None = None,
+) -> dict:
     if not script_path.exists():
         raise FileNotFoundError(f"Render script not found: {script_path}")
 
@@ -102,6 +109,12 @@ def _run_render_script(script_path: Path, notes_text: str, *, title: str, output
     if title.strip():
         cmd.extend(["--title", title.strip()])
 
+    run_env = os.environ.copy()
+    if env_overrides:
+        for key, value in env_overrides.items():
+            if isinstance(key, str) and isinstance(value, str):
+                run_env[key] = value
+
     proc = subprocess.run(
         cmd,
         cwd=str(script_path.parent),
@@ -111,6 +124,7 @@ def _run_render_script(script_path: Path, notes_text: str, *, title: str, output
         text=True,
         encoding="utf-8",
         errors="ignore",
+        env=run_env,
     )
     combined = proc.stdout or ""
     summary_path = output_dir / "run_summary.json"
@@ -168,6 +182,7 @@ def _worker_loop():
                 job["notes_text"],
                 title=job["title"],
                 output_dir=output_dir,
+                env_overrides=job.get("env_overrides") or {},
             )
             with JOBS_LOCK:
                 job["summary"] = summary
@@ -275,6 +290,14 @@ class RenderRequestHandler(BaseHTTPRequestHandler):
         bot_name = (body.get("bot_name") or "").strip().lower()
         notes_text = (body.get("notes_text") or "").strip()
         title = (body.get("title") or "").strip()
+        env_overrides = body.get("env_overrides") or {}
+        if not isinstance(env_overrides, dict):
+            self._send_json({"ok": False, "error": "env_overrides must be an object when provided."}, status=400)
+            return
+        clean_overrides = {}
+        for key, value in env_overrides.items():
+            if isinstance(key, str) and isinstance(value, str):
+                clean_overrides[key] = value
 
         if job_type not in {"teaching", "duo"}:
             self._send_json({"ok": False, "error": "job_type must be 'teaching' or 'duo'."}, status=400)
@@ -302,6 +325,7 @@ class RenderRequestHandler(BaseHTTPRequestHandler):
             "summary": {},
             "error": "",
             "traceback": "",
+            "env_overrides": clean_overrides,
         }
         with JOBS_LOCK:
             JOBS[job_id] = job

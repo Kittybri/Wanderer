@@ -24,6 +24,13 @@ VIDEO_RENDER_FPS = int(os.getenv("VIDEO_RENDER_FPS", "8") or "8")
 VIDEO_RENDER_ENGINE = os.getenv("VIDEO_RENDER_ENGINE", "BLENDER_WORKBENCH").strip() or "BLENDER_WORKBENCH"
 VIDEO_RENDER_MODE = (os.getenv("VIDEO_RENDER_MODE", "auto") or "auto").strip().lower()
 VIDEO_RENDER_BASE_URL = (os.getenv("VIDEO_RENDER_BASE_URL") or "").strip().rstrip("/")
+VIDEO_RENDER_PRIMARY_URL = (os.getenv("VIDEO_RENDER_PRIMARY_URL") or "").strip().rstrip("/")
+VIDEO_RENDER_FALLBACK_URL = (os.getenv("VIDEO_RENDER_FALLBACK_URL") or "").strip().rstrip("/")
+VIDEO_RENDER_BASE_URLS = (
+    os.getenv("VIDEO_RENDER_BASE_URLS")
+    or os.getenv("VIDEO_RENDER_REMOTE_URLS")
+    or ""
+).strip()
 VIDEO_RENDER_SECRET = (
     os.getenv("VIDEO_RENDER_SECRET")
     or os.getenv("VIDEO_RENDER_SHARED_SECRET")
@@ -34,6 +41,21 @@ VIDEO_RENDER_REMOTE_TIMEOUT_S = int(
     os.getenv("VIDEO_RENDER_REMOTE_TIMEOUT_S", str(VIDEO_RENDER_TIMEOUT_S + 180))
     or str(VIDEO_RENDER_TIMEOUT_S + 180)
 )
+
+
+def _render_env_overrides() -> dict[str, str]:
+    overrides: dict[str, str] = {}
+    for name in (
+        "FISH_AUDIO_API_KEY",
+        "SCARAMOUCHE_FISH_VOICE_ID",
+        "SCARAMOUCHE_VOICE_ID",
+        "WANDERER_FISH_VOICE_ID",
+        "WANDERER_VOICE_ID",
+    ):
+        value = (os.getenv(name) or "").strip()
+        if value:
+            overrides[name] = value
+    return overrides
 
 
 def _video_root() -> Path:
@@ -60,7 +82,7 @@ def _remote_requested() -> bool:
         return True
     if VIDEO_RENDER_MODE == "local":
         return False
-    return bool(VIDEO_RENDER_BASE_URL)
+    return bool(_remote_base_urls())
 
 
 def _local_requested() -> bool:
@@ -74,6 +96,28 @@ def _remote_headers() -> dict[str, str]:
     if VIDEO_RENDER_SECRET:
         headers["X-Render-Secret"] = VIDEO_RENDER_SECRET
     return headers
+
+
+def _remote_base_urls() -> list[str]:
+    values: list[str] = []
+    for item in [VIDEO_RENDER_PRIMARY_URL, VIDEO_RENDER_BASE_URL]:
+        if item:
+            values.append(item)
+    if VIDEO_RENDER_BASE_URLS:
+        for raw in VIDEO_RENDER_BASE_URLS.replace("\n", ",").split(","):
+            cleaned = raw.strip().rstrip("/")
+            if cleaned:
+                values.append(cleaned)
+    if VIDEO_RENDER_FALLBACK_URL:
+        values.append(VIDEO_RENDER_FALLBACK_URL)
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if value not in seen:
+            deduped.append(value)
+            seen.add(value)
+    return deduped
 
 
 def _aiohttp():
@@ -95,8 +139,8 @@ def _make_job_dir(prefix: str) -> Path:
 
 def video_renderer_available(bot_name: str | None = None, *, duo: bool = False) -> tuple[bool, str]:
     if _remote_requested():
-        if not VIDEO_RENDER_BASE_URL:
-            return False, "VIDEO_RENDER_BASE_URL is not set for remote rendering."
+        if not _remote_base_urls():
+            return False, "VIDEO_RENDER_BASE_URL or VIDEO_RENDER_BASE_URLS is not set for remote rendering."
         return True, ""
 
     if not _local_requested():
@@ -113,6 +157,27 @@ def video_renderer_available(bot_name: str | None = None, *, duo: bool = False) 
         if not script.exists():
             return False, f"Missing renderer script: {script}"
     return True, ""
+
+
+def _can_failover_remote(exc: Exception | str) -> bool:
+    text = str(exc).lower()
+    return any(
+        token in text
+        for token in [
+            "cannot connect",
+            "name or service not known",
+            "temporary failure in name resolution",
+            "status check failed (530)",
+            "status check failed (502)",
+            "status check failed (503)",
+            "status check failed (504)",
+            "timed out",
+            "timeout",
+            "connection reset",
+            "connection refused",
+            "cloudflare tunnel error",
+        ]
+    )
 
 
 async def _run_render_script(
@@ -176,15 +241,12 @@ async def _run_render_script(
     return summary
 
 
-async def _submit_remote_job(payload: dict) -> dict:
-    if not VIDEO_RENDER_BASE_URL:
-        raise RuntimeError("VIDEO_RENDER_BASE_URL is not set.")
-
+async def _submit_remote_job_once(base_url: str, payload: dict) -> dict:
     aiohttp = _aiohttp()
     timeout = aiohttp.ClientTimeout(total=45)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         async with session.post(
-            f"{VIDEO_RENDER_BASE_URL}/jobs",
+            f"{base_url}/jobs",
             json=payload,
             headers=_remote_headers(),
         ) as resp:
@@ -200,7 +262,7 @@ async def _submit_remote_job(payload: dict) -> dict:
         while asyncio.get_running_loop().time() < deadline:
             await asyncio.sleep(VIDEO_RENDER_POLL_S)
             async with session.get(
-                f"{VIDEO_RENDER_BASE_URL}/jobs/{job_id}",
+                f"{base_url}/jobs/{job_id}",
                 headers=_remote_headers(),
             ) as resp:
                 body_text = await resp.text()
@@ -216,13 +278,31 @@ async def _submit_remote_job(payload: dict) -> dict:
                     summary = body.get("summary") or {}
                     download_url = (body.get("download_url") or "").strip()
                     if download_url:
-                        summary["final_video_url"] = urljoin(f"{VIDEO_RENDER_BASE_URL}/", download_url.lstrip("/"))
+                        summary["final_video_url"] = urljoin(f"{base_url}/", download_url.lstrip("/"))
                     summary["final_video_name"] = body.get("final_video_name") or summary.get("final_video_name") or "presentation.mp4"
                     summary["_remote_job_id"] = job_id
+                    summary["_remote_base_url"] = base_url
                     return summary
                 raise RuntimeError(f"Remote render worker returned an unknown status: {status or 'missing'}")
 
     raise RuntimeError("Remote video rendering timed out while waiting for the worker.")
+
+
+async def _submit_remote_job(payload: dict) -> dict:
+    base_urls = _remote_base_urls()
+    if not base_urls:
+        raise RuntimeError("VIDEO_RENDER_BASE_URL or VIDEO_RENDER_BASE_URLS is not set.")
+
+    errors: list[str] = []
+    for index, base_url in enumerate(base_urls, start=1):
+        try:
+            return await _submit_remote_job_once(base_url, payload)
+        except Exception as exc:
+            errors.append(f"[{index}] {base_url} -> {exc}")
+            if not _can_failover_remote(exc) or index == len(base_urls):
+                break
+
+    raise RuntimeError("Remote render failed across all configured workers.\n" + "\n".join(errors[:4]))
 
 
 async def render_teaching_video(bot_name: str, notes_text: str, *, title: str = "") -> dict:
@@ -233,6 +313,7 @@ async def render_teaching_video(bot_name: str, notes_text: str, *, title: str = 
                 "bot_name": (bot_name or "").strip().lower(),
                 "notes_text": notes_text,
                 "title": title,
+                "env_overrides": _render_env_overrides(),
             }
         )
     return await _run_render_script(_script_for_bot(bot_name), notes_text, title=title)
@@ -246,6 +327,7 @@ async def render_duo_debate_video(notes_text: str, *, title: str = "") -> dict:
                 "bot_name": "scaramouche",
                 "notes_text": notes_text,
                 "title": title,
+                "env_overrides": _render_env_overrides(),
             }
         )
     return await _run_render_script(DUO_VIDEO_SCRIPT, notes_text, title=title)

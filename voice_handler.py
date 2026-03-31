@@ -4,6 +4,7 @@ voice_handler.py - shared Fish Audio / gTTS voice helper.
 
 import asyncio
 import io
+import os
 
 import httpx
 import ormsgpack
@@ -12,12 +13,50 @@ VOICE_ID = "fb95ab47841a4db189cb35fb619d4ea1"
 FISH_API_URL = "https://api.fish.audio/v1/tts"
 
 
-def _fish_tts_blocking(text: str, api_key: str, chunk_length: int = 220) -> bytes | None:
+def resolve_voice_id(bot_name: str | None = None, voice_id: str | None = None) -> str:
+    explicit = (voice_id or "").strip()
+    if explicit:
+        return explicit
+
+    key = (bot_name or "").strip().lower()
+    if key == "scaramouche":
+        env_names = (
+            "SCARAMOUCHE_FISH_VOICE_ID",
+            "SCARAMOUCHE_VOICE_ID",
+            "FISH_AUDIO_REFERENCE_ID",
+            "FISH_REFERENCE_ID",
+        )
+    elif key == "wanderer":
+        env_names = (
+            "WANDERER_FISH_VOICE_ID",
+            "WANDERER_VOICE_ID",
+            "FISH_AUDIO_REFERENCE_ID",
+            "FISH_REFERENCE_ID",
+        )
+    else:
+        env_names = ("FISH_AUDIO_REFERENCE_ID", "FISH_REFERENCE_ID")
+
+    for env_name in env_names:
+        value = (os.getenv(env_name) or "").strip()
+        if value:
+            return value
+    return VOICE_ID
+
+
+def _fish_tts_blocking(
+    text: str,
+    api_key: str,
+    chunk_length: int = 220,
+    *,
+    voice_id: str | None = None,
+    bot_name: str | None = None,
+) -> bytes | None:
     try:
+        reference_id = resolve_voice_id(bot_name=bot_name, voice_id=voice_id)
         payload = ormsgpack.packb(
             {
                 "text": text[:1500],
-                "reference_id": VOICE_ID,
+                "reference_id": reference_id,
                 "format": "mp3",
                 "mp3_bitrate": 192,
                 "latency": "balanced",
@@ -42,9 +81,19 @@ def _fish_tts_blocking(text: str, api_key: str, chunk_length: int = 220) -> byte
         return None
 
 
-async def generate_tts_fish_audio(text: str, api_key: str, chunk_length: int = 220) -> bytes | None:
+async def generate_tts_fish_audio(
+    text: str,
+    api_key: str,
+    chunk_length: int = 220,
+    *,
+    voice_id: str | None = None,
+    bot_name: str | None = None,
+) -> bytes | None:
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, _fish_tts_blocking, text, api_key, chunk_length)
+    return await loop.run_in_executor(
+        None,
+        lambda: _fish_tts_blocking(text, api_key, chunk_length, voice_id=voice_id, bot_name=bot_name),
+    )
 
 
 async def generate_tts_gtts(text: str) -> bytes | None:
@@ -60,9 +109,15 @@ async def generate_tts_gtts(text: str) -> bytes | None:
         return None
 
 
-async def get_audio(text: str, fish_audio_key: str) -> bytes | None:
+async def get_audio(
+    text: str,
+    fish_audio_key: str,
+    *,
+    voice_id: str | None = None,
+    bot_name: str | None = None,
+) -> bytes | None:
     if fish_audio_key:
-        audio = await generate_tts_fish_audio(text, fish_audio_key)
+        audio = await generate_tts_fish_audio(text, fish_audio_key, voice_id=voice_id, bot_name=bot_name)
         if audio:
             return audio
     return await generate_tts_gtts(text)
@@ -93,7 +148,15 @@ def _style_tts_text(text: str, style: str = "guarded") -> str:
     return cleaned
 
 
-async def get_audio_mooded(text: str, fish_audio_key: str, mood: int = 0, style: str = "guarded") -> bytes | None:
+async def get_audio_mooded(
+    text: str,
+    fish_audio_key: str,
+    mood: int = 0,
+    style: str = "guarded",
+    *,
+    voice_id: str | None = None,
+    bot_name: str | None = None,
+) -> bytes | None:
     if not fish_audio_key:
         return await generate_tts_gtts(text)
 
@@ -128,7 +191,7 @@ async def get_audio_mooded(text: str, fish_audio_key: str, mood: int = 0, style:
     styled_text = _style_tts_text(text, style)
 
     def _blocking():
-        return _fish_tts_blocking(styled_text, fish_audio_key, chunk)
+        return _fish_tts_blocking(styled_text, fish_audio_key, chunk, voice_id=voice_id, bot_name=bot_name)
 
     try:
         audio = await asyncio.get_event_loop().run_in_executor(None, _blocking)

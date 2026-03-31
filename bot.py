@@ -3129,7 +3129,13 @@ async def get_audio_with_mood(
             duo_mode=duo_mode,
             jealousy_level=jealousy_level,
         )
-        return await get_audio_mooded(strip_narration(text), FISH_AUDIO_API_KEY, mood, style)
+        return await get_audio_mooded(
+            strip_narration(text),
+            FISH_AUDIO_API_KEY,
+            mood,
+            style,
+            bot_name="wanderer",
+        )
     except Exception as e:
         log_error("get_audio_with_mood", e)
         return None
