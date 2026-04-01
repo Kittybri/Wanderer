@@ -47,11 +47,44 @@ def find_wanderer_mesh(scene):
 
 
 def find_wanderer_root(scene):
-    return next((obj for obj in scene.objects if obj.parent and obj.parent.name.split(".")[0] == "WANDERER_ATTACH"), None)
+    attach = next((obj for obj in scene.objects if obj.name.split(".")[0] == "WANDERER_ATTACH"), None)
+    if attach is None:
+        return None
+    for obj in scene.objects:
+        if obj.parent is not attach:
+            continue
+        stem = obj.name.split(".")[0]
+        if stem.startswith("WANDERER_GUIDE") or stem.startswith("PARTNER_GUIDE"):
+            continue
+        if obj.type in {"EMPTY", "ARMATURE"}:
+            return obj
+    return next((obj for obj in scene.objects if obj.parent is attach), None)
 
 
 def find_wanderer_armature(scene, root):
-    return next((obj for obj in scene.objects if obj.type == "ARMATURE" and obj.parent is root), None)
+    if root is None:
+        return None
+    for obj in scene.objects:
+        if obj.type != "ARMATURE":
+            continue
+        current = obj.parent
+        while current is not None:
+            if current is root:
+                return obj
+            current = current.parent
+    return None
+
+
+def bind_mesh_to_armature(mesh_obj, armature):
+    if mesh_obj is None:
+        return
+    if armature is None and mesh_obj.parent is not None and mesh_obj.parent.type == "ARMATURE":
+        armature = mesh_obj.parent
+    if armature is None:
+        return
+    for modifier in mesh_obj.modifiers:
+        if modifier.type == "ARMATURE":
+            modifier.object = armature
 
 
 def collect_descendants(root):
@@ -71,7 +104,7 @@ def collect_descendants(root):
 def prune_scene_for_fast_render(scene, presenter_only=False):
     root = find_wanderer_root(scene)
     mesh = find_wanderer_mesh(scene)
-    armature = next((obj for obj in scene.objects if obj.type == "ARMATURE" and obj.parent is root), None)
+    armature = find_wanderer_armature(scene, root)
     keep = {obj for obj in (root, mesh, armature) if obj is not None}
 
     if root is not None:
@@ -186,6 +219,29 @@ def apply_presenter_pose(armature):
     bpy.context.view_layer.update()
 
 
+def apply_presenter_pose(armature):
+    if armature is None:
+        return
+    reset_pose(armature)
+    pose_map = {
+        "\u80a9.R": (0.0, 0.0, -6.0),
+        "\u80a9.L": (0.0, 0.0, -6.0),
+        "\u8155.R": (0.0, 0.0, 86.0),
+        "\u8155.L": (0.0, 0.0, 86.0),
+        "\u3072\u3058.R": (0.0, 0.0, 14.0),
+        "\u3072\u3058.L": (0.0, 0.0, 14.0),
+        "\u624b\u9996.R": (0.0, 0.0, -6.0),
+        "\u624b\u9996.L": (0.0, 0.0, -6.0),
+    }
+    for bone_name, degrees_xyz in pose_map.items():
+        bone = armature.pose.bones.get(bone_name)
+        if bone is None:
+            continue
+        bone.rotation_mode = "XYZ"
+        bone.rotation_euler = tuple(math.radians(value) for value in degrees_xyz)
+    bpy.context.view_layer.update()
+
+
 def set_viseme(mesh_obj, viseme: str, mood: str):
     reset_face(mesh_obj)
     mood_expression(mesh_obj, mood)
@@ -258,10 +314,12 @@ def main():
     scene.frame_current = max(1, scene.frame_end // 2)
     prune_scene_for_fast_render(scene, presenter_only=presenter_only)
 
+    root = find_wanderer_root(scene)
     mesh_obj = find_wanderer_mesh(scene)
     if mesh_obj is None:
         raise SystemExit("Could not find Wanderer mesh with viseme shape keys.")
-    armature = find_wanderer_armature(scene, find_wanderer_root(scene))
+    armature = find_wanderer_armature(scene, root)
+    bind_mesh_to_armature(mesh_obj, armature)
     apply_presenter_pose(armature)
     stabilize_materials()
 
