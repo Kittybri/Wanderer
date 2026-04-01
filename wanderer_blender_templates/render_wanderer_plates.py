@@ -200,48 +200,22 @@ def apply_presenter_pose(armature):
     if armature is None:
         return
     reset_pose(armature)
-    pose_map = {
-        "肩.R": (0.0, 0.0, -26.0),
-        "肩.L": (0.0, 0.0, 26.0),
-        "腕.R": (0.0, 0.0, -66.0),
-        "腕.L": (0.0, 0.0, 66.0),
-        "ひじ.R": (0.0, 0.0, 14.0),
-        "ひじ.L": (0.0, 0.0, -14.0),
-        "手首.R": (0.0, 0.0, 2.0),
-        "手首.L": (0.0, 0.0, -2.0),
+    # Match the tested resting presenter pose from `_test_wanderer_presenter_pose2.py`.
+    pose_radians = {
+        "\u80a9.L": (0.0, 0.15, -1.15),
+        "\u8155.L": (0.0, 0.05, 1.15),
+        "\u3072\u3058.L": (0.0, 0.0, -0.28),
+        "\u80a9.R": (0.0, -0.15, 1.15),
+        "\u8155.R": (0.0, -0.05, -1.15),
+        "\u3072\u3058.R": (0.0, 0.0, 0.28),
     }
-    for bone_name, degrees_xyz in pose_map.items():
+    for bone_name, radians_xyz in pose_radians.items():
         bone = armature.pose.bones.get(bone_name)
         if bone is None:
             continue
         bone.rotation_mode = "XYZ"
-        bone.rotation_euler = tuple(math.radians(value) for value in degrees_xyz)
+        bone.rotation_euler = radians_xyz
     bpy.context.view_layer.update()
-
-
-def apply_presenter_pose(armature):
-    if armature is None:
-        return
-    reset_pose(armature)
-    pose_map = {
-        "\u80a9.R": (0.0, 0.0, -8.0),
-        "\u80a9.L": (0.0, 0.0, -8.0),
-        "\u8155.R": (0.0, 0.0, 96.0),
-        "\u8155.L": (0.0, 0.0, 96.0),
-        "\u3072\u3058.R": (0.0, 0.0, 12.0),
-        "\u3072\u3058.L": (0.0, 0.0, 12.0),
-        "\u624b\u9996.R": (0.0, 0.0, -2.0),
-        "\u624b\u9996.L": (0.0, 0.0, -2.0),
-    }
-    for bone_name, degrees_xyz in pose_map.items():
-        bone = armature.pose.bones.get(bone_name)
-        if bone is None:
-            continue
-        bone.rotation_mode = "XYZ"
-        bone.rotation_euler = tuple(math.radians(value) for value in degrees_xyz)
-    bpy.context.view_layer.update()
-
-
 def set_viseme(mesh_obj, viseme: str, mood: str):
     reset_face(mesh_obj)
     mood_expression(mesh_obj, mood)
