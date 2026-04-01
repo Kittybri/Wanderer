@@ -433,6 +433,24 @@ _mmod.random = _rmod
 _silence_pending: set[tuple[int, int]] = set()
 
 # ── Narration stripper ────────────────────────────────────────────────────────
+def _unwrap_dialogue_quotes(text: str) -> str:
+    cleaned = (text or "").strip()
+    quote_pairs = [
+        ('"', '"'),
+        ('“', '”'),
+    ]
+    for _ in range(2):
+        changed = False
+        for left, right in quote_pairs:
+            if cleaned.startswith(left) and cleaned.endswith(right) and len(cleaned) >= (len(left) + len(right) + 1):
+                cleaned = cleaned[len(left):-len(right)].strip()
+                changed = True
+                break
+        if not changed:
+            break
+    return cleaned
+
+
 def strip_narration(text: str) -> str:
     try:
         original = text
@@ -444,10 +462,12 @@ def strip_narration(text: str) -> str:
         text = re.sub(r'<#\d+>', '', text)
         text = re.sub(r'<@&\d+>', '', text)
         text = re.sub(r'\s{2,}', ' ', text).strip().lstrip('.,; ')
+        text = _unwrap_dialogue_quotes(text)
         if not text or len(text) < 3:
             text = original.replace('*','').replace('[','').replace(']','').replace('(','').replace(')','')
             text = re.sub(r'<@!?\d+>', '', text)
             text = re.sub(r'\s{2,}', ' ', text).strip().lstrip('.,; ')
+            text = _unwrap_dialogue_quotes(text)
         return text
     except Exception:
         return text
@@ -1449,7 +1469,7 @@ def _case_lines(cases: list[dict]) -> list[str]:
     return lines
 
 
-def _relationship_lines(user: dict | None, scene: dict | None, topics: list[dict], marks: list[dict]) -> list[str]:
+def _relationship_lines(user: dict | None, topics: list[dict], marks: list[dict]) -> list[str]:
     stage, stage_desc = _progression_parts(user)
     arc = _current_arc(user)
     aftermath = describe_conflict_aftermath(
@@ -1470,9 +1490,6 @@ def _relationship_lines(user: dict | None, scene: dict | None, topics: list[dict
         lines.append("Top topics: " + ", ".join(item["topic"] for item in topics[:3]))
     if marks:
         lines.append("Consequences: " + " | ".join(f"{item['kind']}[{item.get('remaining', 0)}]" for item in marks[:4]))
-    scene_desc = describe_scene_state(scene)
-    if scene_desc:
-        lines.append(f"Current scene: {scene_desc}")
     return lines
 
 
@@ -3227,12 +3244,14 @@ async def _setup(ctx):
         log_error("_setup", e); return None
 
 async def safe_reply(ctx, text):
+    text = _unwrap_dialogue_quotes(text)
     if not (text or "").strip():
         return
     try: await ctx.reply(text)
     except Exception as e: log_error("safe_reply", e)
 
 async def safe_send(ctx, text):
+    text = _unwrap_dialogue_quotes(text)
     if not (text or "").strip():
         return
     try: await ctx.send(text)
@@ -3515,6 +3534,7 @@ async def _command_face_media(ctx):
 
 async def _interaction_reply(interaction: discord.Interaction, text: str, *, thinking: bool = False):
     try:
+        text = _unwrap_dialogue_quotes(text)
         if not (text or "").strip():
             return
         if thinking and not interaction.response.is_done():
@@ -5660,10 +5680,9 @@ async def pinjoke_cmd(ctx, *, text: str = None):
 async def relationship_cmd(ctx):
     try:
         user = await _setup(ctx)
-        scene = await mem.get_scene_state(ctx.channel.id)
         topics = await mem.get_top_topics(ctx.author.id, 3)
         marks = await mem.get_active_consequence_marks(ctx.author.id, 4)
-        lines = _relationship_lines(user, scene, topics, marks)
+        lines = _relationship_lines(user, topics, marks)
         await safe_reply(ctx, "\n".join(lines))
     except Exception as e: log_error("relationship_cmd", e)
 
@@ -6280,14 +6299,13 @@ prefs_group = app_commands.Group(name="prefs", description="Tune voice, utility,
 duo_group = app_commands.Group(name="duo", description="Start or inspect coordinated two-bot scenes.")
 
 
-@dashboard_group.command(name="relationship", description="Show trust, arc, scene, and consequence scars.")
+@dashboard_group.command(name="relationship", description="Show trust, arc, and consequence scars.")
 async def slash_relationship(interaction: discord.Interaction):
     try:
         user = await _setup_user(interaction.user)
-        scene = await mem.get_scene_state(interaction.channel_id)
         topics = await mem.get_top_topics(interaction.user.id, 3)
         marks = await mem.get_active_consequence_marks(interaction.user.id, 4)
-        await _interaction_reply(interaction, "\n".join(_relationship_lines(user, scene, topics, marks)))
+        await _interaction_reply(interaction, "\n".join(_relationship_lines(user, topics, marks)))
     except Exception as e:
         log_error("slash_relationship", e)
         await _interaction_reply(interaction, "Something went wrong reading the relationship state.")
