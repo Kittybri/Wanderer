@@ -215,11 +215,16 @@ async def _run_render_script(
     if title.strip():
         cmd.extend(["--title", title.strip()])
 
+    run_env = os.environ.copy()
+    for key, value in _render_env_overrides().items():
+        run_env[key] = value
+
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
         cwd=str(script_path.parent),
+        env=run_env,
     )
     try:
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=VIDEO_RENDER_TIMEOUT_S)
