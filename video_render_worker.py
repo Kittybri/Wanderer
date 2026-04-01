@@ -40,6 +40,25 @@ JOBS_LOCK = threading.Lock()
 ACTIVE_JOB_ID: str | None = None
 
 
+def _load_worker_env():
+    candidates = [
+        ROOT_DIR / "video_render_worker.env",
+        ROOT_DIR / ".env",
+    ]
+    for path in candidates:
+        if not path.exists():
+            continue
+        for raw_line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip().strip("\"'")
+            if key and value and not os.getenv(key):
+                os.environ[key] = value
+
+
 def _video_root() -> Path:
     configured = (os.getenv("VIDEO_RENDER_ROOT") or "").strip()
     if configured:
@@ -90,6 +109,19 @@ def _run_render_script(
 
     notes_path = output_dir / "notes.txt"
     notes_path.write_text(notes_text, encoding="utf-8")
+    payload_path = output_dir / "job_payload.json"
+    payload_path.write_text(
+        json.dumps(
+            {
+                "script": str(script_path),
+                "title": title,
+                "env_keys": sorted((env_overrides or {}).keys()),
+                "fish_key_present": bool((env_overrides or {}).get("FISH_AUDIO_API_KEY") or os.getenv("FISH_AUDIO_API_KEY")),
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
 
     cmd = [
         sys.executable,
@@ -337,6 +369,7 @@ class RenderRequestHandler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    _load_worker_env()
     print(f"[video-worker] Starting on http://{VIDEO_RENDER_HOST}:{VIDEO_RENDER_PORT}")
     print(f"[video-worker] Queue size limit: {VIDEO_RENDER_MAX_QUEUE}")
     print(f"[video-worker] Secret protection: {'enabled' if VIDEO_RENDER_SECRET else 'disabled'}")

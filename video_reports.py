@@ -47,14 +47,42 @@ def _render_env_overrides() -> dict[str, str]:
     overrides: dict[str, str] = {}
     for name in (
         "FISH_AUDIO_API_KEY",
+        "FISH_AUDIO_REFERENCE_ID",
+        "FISH_REFERENCE_ID",
+        "VOICE_ID",
         "SCARAMOUCHE_FISH_VOICE_ID",
         "SCARAMOUCHE_VOICE_ID",
         "WANDERER_FISH_VOICE_ID",
         "WANDERER_VOICE_ID",
+        "PARTNER_FISH_VOICE_ID",
+        "PARTNER_VOICE_ID",
     ):
         value = (os.getenv(name) or "").strip()
         if value:
             overrides[name] = value
+
+    generic_reference = (
+        overrides.get("FISH_AUDIO_REFERENCE_ID")
+        or overrides.get("FISH_REFERENCE_ID")
+        or overrides.get("VOICE_ID")
+        or ""
+    ).strip()
+    if generic_reference:
+        overrides.setdefault("FISH_AUDIO_REFERENCE_ID", generic_reference)
+        overrides.setdefault("FISH_REFERENCE_ID", generic_reference)
+        overrides.setdefault("VOICE_ID", generic_reference)
+        overrides.setdefault("SCARAMOUCHE_VOICE_ID", generic_reference)
+
+    partner_reference = (
+        overrides.get("WANDERER_FISH_VOICE_ID")
+        or overrides.get("WANDERER_VOICE_ID")
+        or overrides.get("PARTNER_FISH_VOICE_ID")
+        or overrides.get("PARTNER_VOICE_ID")
+        or ""
+    ).strip()
+    if partner_reference:
+        overrides.setdefault("WANDERER_FISH_VOICE_ID", partner_reference)
+        overrides.setdefault("WANDERER_VOICE_ID", partner_reference)
     return overrides
 
 
