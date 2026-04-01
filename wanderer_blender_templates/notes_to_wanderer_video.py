@@ -536,16 +536,17 @@ def build_segment_frame_labels(text: str, frames: int) -> list[str]:
     for idx, word in enumerate(words):
         start = int(round(idx * per_word))
         end = min(len(labels), max(start + 1, int(round((idx + 1) * per_word))))
-        mid = start + max(1, (end - start) // 2)
         viseme = word_viseme(word)
-        for pos in range(start, end):
-            labels[pos] = "rest"
-        if start < len(labels):
-            labels[start] = "rest"
-        if mid < len(labels):
-            labels[mid] = viseme
-        if end - 1 < len(labels):
-            labels[end - 1] = "rest"
+        word_frames = end - start
+        if word_frames <= 1:
+            if start < len(labels):
+                labels[start] = viseme
+        else:
+            mouth_end = end - 1 if word_frames >= 3 else end
+            for pos in range(start, min(mouth_end, len(labels))):
+                labels[pos] = viseme
+            if word_frames >= 3 and end - 1 < len(labels):
+                labels[end - 1] = "rest"
     return labels
 
 
