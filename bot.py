@@ -2338,7 +2338,7 @@ async def _find_romance_target(channel) -> discord.Member | None:
 async def _handle_partner_message(message) -> bool:
     try:
         # If Scaramouche is talking TO a user (mentions them) but NOT mentioning us,
-        # and not replying to us — stay out of it
+        # check if we're jealous (high affection with that user) — butt in ~50% of the time
         we_mentioned = bot.user in message.mentions
         replying_to_us = False
         if message.reference:
@@ -2350,9 +2350,38 @@ async def _handle_partner_message(message) -> bool:
                     replying_to_us = True
             except Exception:
                 pass
-        mentions_a_user = any(not u.bot for u in message.mentions)
-        if mentions_a_user and not we_mentioned and not replying_to_us:
-            # Scaramouche is talking to someone else, not us — stay quiet
+        mentioned_users = [u for u in message.mentions if not u.bot]
+        if mentioned_users and not we_mentioned and not replying_to_us:
+            # Check if we have high affection (70+) with any mentioned user
+            jealous_of = None
+            for u in mentioned_users:
+                try:
+                    u_data = await mem.get_user(u.id)
+                    if u_data and (u_data.get("affection", 0) or 0) >= 70:
+                        jealous_of = u
+                        break
+                except Exception:
+                    pass
+            if not jealous_of:
+                # Low affection — don't care, stay quiet
+                return True
+            if random.random() > 0.50:
+                # 50% chance to butt in jealously
+                return True
+            # Jealous butt-in: generate a jealous response
+            relation, recent_banter, theme = await _observe_partner_message(message.content)
+            prompt = (
+                f"You (Wanderer) just saw Scaramouche talking to {jealous_of.display_name}, someone you quietly care about. "
+                f"Scaramouche said: '{message.content[:220]}'\n"
+                f"You feel a pang of jealousy but you'd never say it outright. Step in with something understated but pointed — "
+                f"a quiet redirect, a subtle claim on the person's attention, or a calm observation that undercuts Scaramouche. "
+                f"1-2 sentences. No narration. Don't say you're jealous."
+            )
+            reply = await qai(prompt, 180)
+            if reply:
+                reply = strip_narration(reply)
+                await message.reply(reply)
+                await mem.record_bot_banter(PARTNER_PAIR_KEY, BOT_NAME, reply, "jealousy")
             return True
 
         relation, recent_banter, theme = await _observe_partner_message(message.content)
