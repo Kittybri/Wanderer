@@ -957,6 +957,26 @@ def build_system(user, display_name="you", is_owner=False):
     try:
         if not user: return _BASE
         s = _BASE
+        # Inject current time awareness
+        try:
+            tz = ZoneInfo((user or {}).get("timezone_name") or "America/Los_Angeles")
+            now = datetime.now(tz)
+            time_str = now.strftime("%I:%M %p").lstrip("0")
+            day_str = now.strftime("%A, %B %d")
+            hour = now.hour
+            if hour < 5:
+                period = "It's very late at night / early morning"
+            elif hour < 12:
+                period = "It's morning"
+            elif hour < 17:
+                period = "It's afternoon"
+            elif hour < 21:
+                period = "It's evening"
+            else:
+                period = "It's nighttime"
+            s += f"\n\nCURRENT TIME: {time_str} on {day_str}. {period}. You are aware of the time and can comment on it naturally — if it's very late (past midnight), you might question why they're still awake. If it's early morning, you might be surprised they're up. Use this naturally, don't force it into every message."
+        except Exception:
+            pass
         if is_owner: s += _OWNER_EXTRA
         if user.get("nsfw_mode") and user.get("romance_mode"): s += _NSFW_ROMANCE.format(name=display_name)
         elif user.get("nsfw_mode"): s += _NSFW
