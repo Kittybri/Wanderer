@@ -959,8 +959,25 @@ def build_system(user, display_name="you", is_owner=False):
         s = _BASE
         # Inject current time awareness
         try:
-            tz = ZoneInfo((user or {}).get("timezone_name") or "America/Los_Angeles")
-            now = datetime.now(tz)
+            from datetime import timezone, timedelta
+            tz_name = (user or {}).get("timezone_name") or "America/Los_Angeles"
+            # Try ZoneInfo first, fall back to manual UTC offset mapping
+            try:
+                tz = ZoneInfo(tz_name)
+                now = datetime.now(tz)
+            except Exception:
+                _tz_offsets = {
+                    "America/Los_Angeles": -7, "America/New_York": -4,
+                    "America/Chicago": -5, "America/Denver": -6,
+                    "America/Phoenix": -7, "America/Anchorage": -8,
+                    "Pacific/Honolulu": -10, "Europe/London": 1,
+                    "Europe/Paris": 2, "Europe/Berlin": 2,
+                    "Asia/Tokyo": 9, "Asia/Shanghai": 8,
+                    "Asia/Kolkata": 5, "Australia/Sydney": 10,
+                    "US/Pacific": -7, "US/Eastern": -4, "US/Central": -5, "US/Mountain": -6,
+                }
+                offset_h = _tz_offsets.get(tz_name, -7)
+                now = datetime.now(timezone(timedelta(hours=offset_h)))
             time_str = now.strftime("%I:%M %p").lstrip("0")
             day_str = now.strftime("%A, %B %d")
             hour = now.hour
@@ -975,7 +992,8 @@ def build_system(user, display_name="you", is_owner=False):
             else:
                 period = "It's nighttime"
             s += f"\n\nCURRENT TIME: {time_str} on {day_str}. {period}. You are aware of the time and can comment on it naturally — if it's very late (past midnight), you might question why they're still awake. If it's early morning, you might be surprised they're up. Use this naturally, don't force it into every message."
-        except Exception:
+        except Exception as _te:
+            print(f"[TIME] Failed to inject time: {_te}")
             pass
         if is_owner: s += _OWNER_EXTRA
         if user.get("nsfw_mode") and user.get("romance_mode"): s += _NSFW_ROMANCE.format(name=display_name)
