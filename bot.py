@@ -2337,6 +2337,24 @@ async def _find_romance_target(channel) -> discord.Member | None:
 
 async def _handle_partner_message(message) -> bool:
     try:
+        # If Scaramouche is talking TO a user (mentions them) but NOT mentioning us,
+        # and not replying to us — stay out of it
+        we_mentioned = bot.user in message.mentions
+        replying_to_us = False
+        if message.reference:
+            try:
+                ref = message.reference.resolved
+                if ref is None:
+                    ref = await message.channel.fetch_message(message.reference.message_id)
+                if ref and ref.author.id == bot.user.id:
+                    replying_to_us = True
+            except Exception:
+                pass
+        mentions_a_user = any(not u.bot for u in message.mentions)
+        if mentions_a_user and not we_mentioned and not replying_to_us:
+            # Scaramouche is talking to someone else, not us — stay quiet
+            return True
+
         relation, recent_banter, theme = await _observe_partner_message(message.content)
         if time.time() - relation.get("last_exchange", 0) < 90:
             return True
