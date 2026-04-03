@@ -227,6 +227,10 @@ class Memory:
                     created_ts  REAL DEFAULT 0,
                     last_seen   REAL DEFAULT 0
                 );
+                CREATE TABLE IF NOT EXISTS blocked_users (
+                    user_id     INTEGER PRIMARY KEY,
+                    blocked_ts  REAL DEFAULT 0
+                );
             """)
             migrations = [
                 ("allow_dms",          "INTEGER DEFAULT 1"),
@@ -2137,6 +2141,41 @@ class Memory:
             ) as cur:
                 rows = await cur.fetchall()
         return [{"user_id":r[0],"display_name":r[1],"message_count":r[2]} for r in rows]
+
+    # ── Blocked users ─────────────────────────────────────────────────────────
+    async def block_user(self, user_id: int):
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "INSERT OR REPLACE INTO blocked_users (user_id, blocked_ts) VALUES (?, ?)",
+                (user_id, time.time()))
+            await db.commit()
+
+    async def unblock_user(self, user_id: int):
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("DELETE FROM blocked_users WHERE user_id=?", (user_id,))
+            await db.commit()
+
+    async def get_blocked_users(self) -> set[int]:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("SELECT user_id FROM blocked_users") as cur:
+                rows = await cur.fetchall()
+        return {r[0] for r in rows}
+
+    async def is_blocked(self, user_id: int) -> bool:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("SELECT 1 FROM blocked_users WHERE user_id=?", (user_id,)) as cur:
+                return await cur.fetchone() is not None
+
+    async def get_user_logs(self, user_id: int, limit: int = 200) -> list[dict]:
+        """Get full conversation log for a user across all channels, newest last."""
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("""
+                SELECT role, content, ts FROM messages
+                WHERE user_id=? AND (bot_name=? OR bot_name IS NULL)
+                ORDER BY ts ASC LIMIT ?
+            """, (user_id, self.bot_name, limit)) as cur:
+                rows = await cur.fetchall()
+        return [{"role": r[0], "content": r[1], "ts": r[2]} for r in rows]
 
     # ── Greetings ─────────────────────────────────────────────────────────────
     async def should_greet(self, user_id: int) -> bool:
