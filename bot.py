@@ -2424,14 +2424,15 @@ async def _handle_partner_message(message) -> bool:
                     f"{partner_context}\n"
                     f"{contradiction}\n"
                     f"INTERVENTION_MODE:{intervention_reason}. {PARTNER_NAME.title()} just said: '{message.content[:220]}'.\n"
-                    "Cut in unprompted as Wanderer. You can stop him, undercut the tone, or redirect the scene, "
+                    "Cut in unprompted as Wanderer, talking DIRECTLY TO SCARAMOUCHE. Do NOT address any human users by name. "
+                    "You can stop him, undercut the tone, or redirect the scene, "
                     "but make it sound like you noticed the line crossed into blunt damage instead of useful precision. "
                     "One or two sentences. No narration."
                 )
                 reply = await qai(prompt, 180, route="primary")
                 reply = await _apply_phrase_policy(reply, [item.get("content", "") for item in recent_banter], mood=-3, conflict_open=True)
                 if reply:
-                    await message.reply(reply)
+                    await message.channel.send(f"<@{PARTNER_BOT_ID}> {reply}")
                     await mem.record_bot_banter(PARTNER_PAIR_KEY, BOT_NAME, reply, "intervention")
                     await mem.note_shared_event_memory(
                         message.channel.id,
@@ -2464,9 +2465,11 @@ async def _handle_partner_message(message) -> bool:
         prompt = (
             f"{partner_context}\n{contradiction}{extra}\n\n"
             f"Scaramouche just said: '{message.content[:220]}'\n"
-            f"Reply as Wanderer. He refuses to admit how much of that shared history still matters. "
+            f"Reply as Wanderer DIRECTLY TO SCARAMOUCHE. You are talking to Scaramouche, NOT to any human users. "
+            f"Do NOT address or mention any users by name — this is between you and Scaramouche only. "
+            f"He refuses to admit how much of that shared history still matters. "
             f"If respect has grown, show it as cleaner honesty instead of recycled annoyance. "
-            f"Let the disagreement bite into morality, strategy, loyalty, power, forgiveness, or whether the user is worth trusting when it fits the theme. "
+            f"Let the disagreement bite into morality, strategy, loyalty, power, forgiveness, or whether trust is worth it. "
             f"One or two sentences. No narration."
         )
         recent_partner_lines = [item.get('content', '') for item in recent_banter]
@@ -2476,10 +2479,7 @@ async def _handle_partner_message(message) -> bool:
         if not reply:
             return True
 
-        if jealousy_target and random.random() < 0.45:
-            await message.channel.send(f"{jealousy_target.mention} {reply}")
-        else:
-            await message.reply(reply)
+        await message.channel.send(f"<@{PARTNER_BOT_ID}> {reply}")
 
         own_theme = detect_banter_theme(reply)
         await mem.record_bot_banter(PARTNER_PAIR_KEY, BOT_NAME, reply, own_theme)
