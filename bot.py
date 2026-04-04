@@ -2382,7 +2382,8 @@ async def _handle_partner_message(message) -> bool:
             reply = await qai(prompt, 180)
             if reply:
                 reply = strip_narration(reply)
-                await message.reply(reply)
+                # Send as a new message @mentioning the partner, not a reply (which looks like it's directed at the user)
+                await message.channel.send(f"<@{PARTNER_BOT_ID}> {reply}")
                 await mem.record_bot_banter(PARTNER_PAIR_KEY, BOT_NAME, reply, "jealousy")
             return True
 
