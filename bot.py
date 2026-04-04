@@ -3859,6 +3859,7 @@ async def lore_drop_loop():
         if not channels: return
         random.shuffle(channels)
         for cid, _ in channels:
+            if cid in _banned_channels: continue
             if not await mem.can_lore_drop(cid): continue
             ch = bot.get_channel(cid)
             if not ch: continue
@@ -3874,6 +3875,7 @@ async def conversation_starter_loop():
         if not channels: return
         random.shuffle(channels)
         for cid, _ in channels:
+            if cid in _banned_channels: continue
             if not await mem.can_starter(cid): continue
             ch = bot.get_channel(cid)
             if not ch: continue
@@ -3889,7 +3891,9 @@ async def existential_loop():
         if random.random() > .15: return
         channels = await mem.get_active_channels()
         if not channels: return
-        ch = bot.get_channel(random.choice(channels)[0])
+        eligible = [(cid,n) for cid,n in channels if cid not in _banned_channels]
+        if not eligible: return
+        ch = bot.get_channel(random.choice(eligible)[0])
         if ch: await ch.send(random.choice(EXISTENTIAL_LINES))
     except Exception as e: log_error("existential_loop", e)
 
@@ -4636,6 +4640,7 @@ async def _proactive_loop():
             random.shuffle(channels)
             for cid, _ in channels:
                 try:
+                    if cid in _banned_channels: continue
                     ch = bot.get_channel(cid)
                     if not ch or not await mem.can_proactive(cid, 3600): continue
                     perms = ch.permissions_for(ch.guild.me) if getattr(ch, "guild", None) and ch.guild.me else None
@@ -4782,6 +4787,7 @@ async def _rival_event_loop():
             random.shuffle(channels)
             for channel_id, _ in channels:
                 try:
+                    if channel_id in _banned_channels: continue
                     channel = bot.get_channel(channel_id)
                     if not channel or not getattr(channel, "guild", None):
                         continue
