@@ -991,10 +991,12 @@ def build_system(user, display_name="you", is_owner=False):
                 period = "It's evening"
             else:
                 period = "It's nighttime"
-            s += f"\n\nCURRENT TIME: {time_str} on {day_str}. {period}. You are aware of the time and can comment on it naturally — if it's very late (past midnight), you might question why they're still awake. If it's early morning, you might be surprised they're up. Use this naturally, don't force it into every message."
+            time_block = f"\n\nCURRENT TIME: {time_str} on {day_str}. {period}. You are aware of the time and can comment on it naturally — if it's very late (past midnight), you might question why they're still awake. If it's early morning, you might be surprised they're up. Use this naturally, don't force it into every message."
+            s += time_block
+            print(f"[TIME] Injected: tz={tz_name} now={now.isoformat()} hour={hour} period={period}")
         except Exception as _te:
             print(f"[TIME] Failed to inject time: {_te}")
-            pass
+            import traceback; traceback.print_exc()
         if is_owner: s += _OWNER_EXTRA
         if user.get("nsfw_mode") and user.get("romance_mode"): s += _NSFW_ROMANCE.format(name=display_name)
         elif user.get("nsfw_mode"): s += _NSFW
