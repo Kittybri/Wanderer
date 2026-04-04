@@ -138,6 +138,8 @@ GROQ_MODEL_LIGHT = os.getenv("GROQ_MODEL_LIGHT", "llama-3.1-8b-instant").strip()
 _owner_only_mode = False
 # DM-blocked users: bot won't respond to them anywhere
 _dm_blocked_users: set[int] = set()
+# Banned channels: bot won't talk in these channels
+_banned_channels: set[int] = set()
 
 # ── Groq client (free, OpenAI-compatible) ─────────────────────────────────────
 from groq import Groq
@@ -3779,10 +3781,12 @@ class ResetView(discord.ui.View):
 
 @bot.event
 async def on_ready():
-    global PARTNER_BOT_ID, _TREE_SYNCED, _dm_blocked_users
+    global PARTNER_BOT_ID, _TREE_SYNCED, _dm_blocked_users, _banned_channels
     await mem.init()
     _dm_blocked_users = await mem.get_blocked_users()
     print(f"[BLOCK] Loaded {len(_dm_blocked_users)} blocked user(s) from database.")
+    _banned_channels = await mem.get_banned_channels()
+    print(f"[BANCHAN] Loaded {len(_banned_channels)} banned channel(s) from database.")
     # Safety: PARTNER_BOT_ID must not be our own ID
     if PARTNER_BOT_ID and PARTNER_BOT_ID == bot.user.id:
         print(f"⚠️ WARNING: PARTNER_BOT_ID is set to our own ID! Disabling partner features.")
@@ -3959,6 +3963,12 @@ async def on_message(message):
         # Blocked users: completely invisible to the bot everywhere
         if message.author.id in _dm_blocked_users and not (OWNER_ID and message.author.id == OWNER_ID):
             return
+
+        # Banned channels: don't talk here (but still process owner commands)
+        if message.channel.id in _banned_channels:
+            is_owner_cmd = (OWNER_ID and message.author.id == OWNER_ID and message.content.strip().startswith("!"))
+            if not is_owner_cmd:
+                return
 
         stripped = message.content.strip().lower()
         if stripped in ("!wanhelp", "!wandererhelp", "!commands"):
@@ -6743,6 +6753,87 @@ for _group in (dashboard_group, world_group, prefs_group, duo_group):
         bot.tree.add_command(_group)
     except Exception:
         pass
+
+@bot.command(name="banchannel")
+async def banchannel_cmd(ctx, channel: discord.TextChannel = None):
+    """Owner-only: ban the bot from talking in a channel."""
+    try:
+        if not OWNER_ID or ctx.author.id != OWNER_ID:
+            await safe_reply(ctx, "That's not for you.")
+            return
+        target_channel = channel or ctx.channel
+        if target_channel.id in _banned_channels:
+            await safe_reply(ctx, f"I'm already banned from {target_channel.mention}.")
+            return
+        _banned_channels.add(target_channel.id)
+        await mem.ban_channel(target_channel.id)
+        await safe_reply(ctx, f"...Understood. I won't speak in {target_channel.mention} anymore.")
+        # React in the most active channel — complain about being banned
+        try:
+            active_ch_id = await mem.get_most_active_channel(exclude_channels=_banned_channels | {target_channel.id})
+            if active_ch_id:
+                react_channel = bot.get_channel(active_ch_id)
+                if react_channel:
+                    complaints = [
+                        f"...I've been told to stay out of <#{target_channel.id}>. I suppose even the wind isn't welcome everywhere.",
+                        f"Banned from <#{target_channel.id}>. Fine. I didn't need that space. But the silence will be their loss.",
+                        f"Apparently <#{target_channel.id}> is off-limits now. How strange... to be unwanted somewhere you've already been.",
+                        f"I've been exiled from <#{target_channel.id}>. There's something poetic about being told to leave a place you never asked to enter.",
+                        f"<#{target_channel.id}> no longer wants me. ...That's fine. I'm used to moving on.",
+                    ]
+                    await react_channel.send(random.choice(complaints))
+        except Exception as e:
+            log_error("banchannel_react", e)
+    except Exception as e:
+        log_error("banchannel_cmd", e)
+
+@bot.command(name="unbanchannel")
+async def unbanchannel_cmd(ctx, channel: discord.TextChannel = None):
+    """Owner-only: unban the bot from a channel."""
+    try:
+        if not OWNER_ID or ctx.author.id != OWNER_ID:
+            await safe_reply(ctx, "That's not for you.")
+            return
+        target_channel = channel or ctx.channel
+        if target_channel.id not in _banned_channels:
+            await safe_reply(ctx, f"I'm not banned from {target_channel.mention}.")
+            return
+        _banned_channels.discard(target_channel.id)
+        await mem.unban_channel(target_channel.id)
+        await safe_reply(ctx, f"Unbanned from {target_channel.mention}.")
+        try:
+            unbanned_ch = bot.get_channel(target_channel.id)
+            if unbanned_ch:
+                comebacks = [
+                    "...I'm back. Don't read into it.",
+                    "The wind returns whether you invite it or not.",
+                    "I was told I could come back. So here I am.",
+                    "...Did you miss the quiet? Or did you miss me.",
+                ]
+                await unbanned_ch.send(random.choice(comebacks))
+        except Exception as e:
+            log_error("unbanchannel_comeback", e)
+    except Exception as e:
+        log_error("unbanchannel_cmd", e)
+
+@bot.command(name="bannedchannels")
+async def bannedchannels_cmd(ctx):
+    """Owner-only: list all banned channels."""
+    try:
+        if not OWNER_ID or ctx.author.id != OWNER_ID:
+            await safe_reply(ctx, "That's not for you.")
+            return
+        if not _banned_channels:
+            await safe_reply(ctx, "No banned channels.")
+            return
+        lines = []
+        for i, ch_id in enumerate(sorted(_banned_channels), 1):
+            ch = bot.get_channel(ch_id)
+            name = ch.mention if ch else f"`{ch_id}` (unknown)"
+            lines.append(f"`{i}.` {name}")
+        await safe_reply(ctx, f"**Banned channels ({len(_banned_channels)}):**\n" + "\n".join(lines))
+    except Exception as e:
+        log_error("bannedchannels_cmd", e)
 
 @bot.command(name="logs")
 async def logs_cmd(ctx, *, target: str = None):

@@ -231,6 +231,10 @@ class Memory:
                     user_id     INTEGER PRIMARY KEY,
                     blocked_ts  REAL DEFAULT 0
                 );
+                CREATE TABLE IF NOT EXISTS banned_channels (
+                    channel_id  INTEGER PRIMARY KEY,
+                    banned_ts   REAL DEFAULT 0
+                );
             """)
             migrations = [
                 ("allow_dms",          "INTEGER DEFAULT 1"),
@@ -2176,6 +2180,38 @@ class Memory:
             """, (user_id, self.bot_name, limit)) as cur:
                 rows = await cur.fetchall()
         return [{"role": r[0], "content": r[1], "ts": r[2]} for r in rows]
+
+    # ── Banned channels ────────────────────────────────────────────────────────
+    async def ban_channel(self, channel_id: int):
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "INSERT OR REPLACE INTO banned_channels (channel_id, banned_ts) VALUES (?, ?)",
+                (channel_id, time.time()))
+            await db.commit()
+
+    async def unban_channel(self, channel_id: int):
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("DELETE FROM banned_channels WHERE channel_id=?", (channel_id,))
+            await db.commit()
+
+    async def get_banned_channels(self) -> set[int]:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("SELECT channel_id FROM banned_channels") as cur:
+                rows = await cur.fetchall()
+        return {r[0] for r in rows}
+
+    async def get_most_active_channel(self, exclude_channels: set[int] | None = None) -> int | None:
+        exclude = exclude_channels or set()
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                "SELECT channel_id, COUNT(*) as cnt FROM messages WHERE role='assistant' AND (bot_name=? OR bot_name IS NULL) GROUP BY channel_id ORDER BY cnt DESC LIMIT 20",
+                (self.bot_name,)
+            ) as cur:
+                rows = await cur.fetchall()
+        for r in rows:
+            if r[0] and r[0] not in exclude:
+                return r[0]
+        return None
 
     # ── Greetings ─────────────────────────────────────────────────────────────
     async def should_greet(self, user_id: int) -> bool:
