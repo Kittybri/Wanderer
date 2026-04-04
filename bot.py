@@ -955,9 +955,8 @@ _OWNER_EXTRA  = "\n\n## Creator:\nThis person built you. Chose everything about 
 
 def build_system(user, display_name="you", is_owner=False):
     try:
-        if not user: return _BASE
         s = _BASE
-        # Inject current time awareness
+        # Inject current time awareness (always, even if user is None)
         try:
             from datetime import timezone, timedelta
             tz_name = (user or {}).get("timezone_name") or "America/Los_Angeles"
@@ -998,9 +997,10 @@ def build_system(user, display_name="you", is_owner=False):
             print(f"[TIME] Failed to inject time: {_te}")
             import traceback; traceback.print_exc()
         if is_owner: s += _OWNER_EXTRA
-        if user.get("nsfw_mode") and user.get("romance_mode"): s += _NSFW_ROMANCE.format(name=display_name)
-        elif user.get("nsfw_mode"): s += _NSFW
-        elif user.get("romance_mode"): s += _ROMANCE.format(name=display_name)
+        if user:
+            if user.get("nsfw_mode") and user.get("romance_mode"): s += _NSFW_ROMANCE.format(name=display_name)
+            elif user.get("nsfw_mode"): s += _NSFW
+            elif user.get("romance_mode"): s += _ROMANCE.format(name=display_name)
         return s
     except Exception:
         return _BASE
