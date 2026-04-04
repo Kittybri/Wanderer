@@ -2200,16 +2200,18 @@ class Memory:
                 rows = await cur.fetchall()
         return {r[0] for r in rows}
 
-    async def get_most_active_channel(self, exclude_channels: set[int] | None = None) -> int | None:
+    async def get_most_active_channel(self, exclude_channels: set[int] | None = None, only_channels: set[int] | None = None) -> int | None:
         exclude = exclude_channels or set()
         async with aiosqlite.connect(DB_PATH) as db:
             async with db.execute(
-                "SELECT channel_id, COUNT(*) as cnt FROM messages WHERE role='assistant' AND (bot_name=? OR bot_name IS NULL) GROUP BY channel_id ORDER BY cnt DESC LIMIT 20",
+                "SELECT channel_id, COUNT(*) as cnt FROM messages WHERE role='assistant' AND (bot_name=? OR bot_name IS NULL) GROUP BY channel_id ORDER BY cnt DESC LIMIT 50",
                 (self.bot_name,)
             ) as cur:
                 rows = await cur.fetchall()
         for r in rows:
             if r[0] and r[0] not in exclude:
+                if only_channels is not None and r[0] not in only_channels:
+                    continue
                 return r[0]
         return None
 

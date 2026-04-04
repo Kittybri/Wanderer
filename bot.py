@@ -6770,7 +6770,9 @@ async def banchannel_cmd(ctx, channel: discord.TextChannel = None):
         await safe_reply(ctx, f"...Understood. I won't speak in {target_channel.mention} anymore.")
         # React in the most active channel — complain about being banned
         try:
-            active_ch_id = await mem.get_most_active_channel(exclude_channels=_banned_channels | {target_channel.id})
+            # Only pick a channel from the same server
+            guild_ch_ids = {ch.id for ch in target_channel.guild.text_channels} if target_channel.guild else set()
+            active_ch_id = await mem.get_most_active_channel(exclude_channels=_banned_channels | {target_channel.id}, only_channels=guild_ch_ids)
             if active_ch_id:
                 react_channel = bot.get_channel(active_ch_id)
                 if react_channel:
