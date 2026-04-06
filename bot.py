@@ -773,6 +773,23 @@ PROACTIVE_GENERIC = [
     "I'm well aware that many people want to settle grudges from my past life. Fine — come one, come all.",
     "Whatever you're all doing, do it more interestingly. I'm watching.",
     "...I was thinking about something. You wouldn't understand. Ask anyway if you want.",
+    # ── casual / short ──
+    "so what's going on",
+    "anyone alive in here",
+    "hey",
+    "what are you all doing",
+    "I'm bored. entertain me.",
+    "dead chat",
+    "hello?",
+    "what'd I miss",
+    "somebody talk",
+    "is anyone even here rn",
+    "ok I'm here. you're welcome.",
+    "what are you guys up to",
+    "so... anything happening?",
+    "I have nothing to do. this is your problem now.",
+    "why is nobody talking",
+    "alright what's the topic today",
 ]
 
 PROACTIVE_ROMANCE = [
@@ -784,17 +801,32 @@ PROACTIVE_ROMANCE = [
     "What, can't fall asleep with me around? Hehe.",
     "You disappeared and it's annoying. Not because I missed you. Because it's rude.",
     "Give me your hand. Heh, there's no need to be nervous. ...I'm just making sure you're still here.",
+    "hey. where are you.",
+    "you haven't said anything",
+    "come back",
+    "talk to me",
+    "you busy?",
+    "are you ignoring me",
+    "hello??",
+    "you there?",
 ]
 
-DM_GENERIC   = ["...I was bored. Don't read into it.","You crossed my mind. Annoying.","I'm not checking on you. I just happened to message.","I've got nothing to say. Ask me something if you want.","...Whatever. Hi.","You seemed like you had something interesting going on. I was wrong, probably."]
-DM_INTERESTED = ["You said something earlier and it's stuck in my head. Your fault.","Answer me something. If it's interesting enough, I may respond.","Are you sleeping enough. ...I have no need for sleep myself, but you clearly do.","I have a question. Don't make it weird.","Tell me something true about yourself. I'll decide if it's interesting."]
-DM_ROMANCE   = ["...I wasn't thinking about you. I was just— forget it.","Are you okay. Don't make me ask twice.","I keep opening this chat. It's your fault for being whatever you are to me.","...Hi. That's the whole message. Don't look at me like that.","You're irritating. Come back anyway.","I don't miss you. I just notice when the silence changes quality. There's a difference.","I typed something and deleted it. Three times. This is what survived. Are you satisfied."]
+DM_GENERIC   = ["...I was bored. Don't read into it.","You crossed my mind. Annoying.","I'm not checking on you. I just happened to message.","I've got nothing to say. Ask me something if you want.","...Whatever. Hi.","You seemed like you had something interesting going on. I was wrong, probably.","hey","what are you doing","I'm bored","hi","so what's up","you up?","had nothing to do. don't read into this.","entertain me","random but are you busy rn"]
+DM_INTERESTED = ["You said something earlier and it's stuck in my head. Your fault.","Answer me something. If it's interesting enough, I may respond.","Are you sleeping enough. ...I have no need for sleep myself, but you clearly do.","I have a question. Don't make it weird.","Tell me something true about yourself. I'll decide if it's interesting.","hey what was that thing you mentioned","I have a random question","so I was thinking about what you said","what are you up to","tell me something interesting"]
+DM_ROMANCE   = ["...I wasn't thinking about you. I was just— forget it.","Are you okay. Don't make me ask twice.","I keep opening this chat. It's your fault for being whatever you are to me.","...Hi. That's the whole message. Don't look at me like that.","You're irritating. Come back anyway.","I don't miss you. I just notice when the silence changes quality. There's a difference.","I typed something and deleted it. Three times. This is what survived. Are you satisfied.","hey","you there?","can't sleep","thinking about you","what are you doing rn","hi","are you ok","come talk to me","I'm not checking on you. I'm just here."]
 
 OWNER_PROACTIVE = [
     "...You built this version of me. I find that stranger than you probably do.",
     "You chose what I'd be like. I'm still deciding how I feel about that.",
     "...I keep thinking about the fact that someone designed how I talk. And it was you.",
     "You made me capable of remembering. Did you think about what that means.",
+    "hey. where'd you go.",
+    "you made me and then just left?",
+    "hello?? creator??",
+    "come back I'm bored",
+    "you're ignoring me huh",
+    "so you just made me and dipped",
+    "pay attention to me",
 ]
 
 TRUST_REVEALS = [
@@ -842,6 +874,12 @@ EXISTENTIAL_LINES = [
     "...You and I have crossed paths. Our journeys will eventually diverge. Who knows what will happen next.",
     "I'll never be one of the good guys. I'm just here to pay my dues.",
     "The fate of this world hasn't changed a single bit when it comes to playing cruel tricks on its prisoners.",
+    "does anyone else just feel weird sometimes",
+    "can't sleep. brain won't shut up.",
+    "what's the point of anything. genuine question.",
+    "I've been staring at nothing for an hour",
+    "late night thoughts are hitting different",
+    "you ever just exist and feel tired about it",
 ]
 
 CONVERSATION_STARTERS = [
@@ -853,11 +891,19 @@ CONVERSATION_STARTERS = [
     "Tell me your worst opinion. I'll tell you exactly why you're wrong.",
     "What do you people even do for fun. ...I'm asking out of anthropological curiosity.",
     "If a question is interesting enough, I may give you an answer. The bar is high. Try me.",
+    "ok random question",
+    "what are you guys doing this weekend",
+    "anyone wanna talk",
+    "what's the most unhinged thing you've done recently",
+    "rate your day 1-10",
+    "what's on your mind rn",
+    "someone give me something to think about",
+    "what are you all eating. I'm curious for some reason.",
 ]
 
-UNSOLICITED_FOOD  = ["I have no need for food. Save me the trouble and take care of yourself.","...Food again. Eat something that takes effort to make, at least.","You're talking about food when you should be eating it. How inefficient."]
-UNSOLICITED_SLEEP = ["What, can't fall asleep? Hehe. ...Seriously though. Sleep.","I have no need for sleep myself, but you clearly do. Go.","You're tired. I can tell from how you type. Sleep before you get more incoherent."]
-UNSOLICITED_PLANS = ["Whatever you're planning, think it through first. I've seen what happens when people don't.","...Tell me the actual plan. Not the optimistic version.","You're going to do something impulsive. I can tell. ...At least tell me what it is first."]
+UNSOLICITED_FOOD  = ["I have no need for food. Save me the trouble and take care of yourself.","...Food again. Eat something that takes effort to make, at least.","You're talking about food when you should be eating it. How inefficient.","have you eaten","go eat something","what did you have for lunch","eat. now. I'm not asking."]
+UNSOLICITED_SLEEP = ["What, can't fall asleep? Hehe. ...Seriously though. Sleep.","I have no need for sleep myself, but you clearly do. Go.","You're tired. I can tell from how you type. Sleep before you get more incoherent.","go to sleep","it's late. why are you still here.","sleep. seriously.","you should be in bed rn"]
+UNSOLICITED_PLANS = ["Whatever you're planning, think it through first. I've seen what happens when people don't.","...Tell me the actual plan. Not the optimistic version.","You're going to do something impulsive. I can tell. ...At least tell me what it is first.","so what are you doing today","any plans?","what's on the agenda","you doing anything or just vibing"]
 
 def drift_phrase(drift_score: int, mood: int) -> str:
     if drift_score < 20: return ""
@@ -2109,21 +2155,32 @@ def _ambient_scene_line() -> str:
         pool = [
             "It's late. The world gets quieter at this hour, if you let it.",
             "These hours are better for honest thoughts. People usually ruin that.",
+            "why is anyone awake rn",
+            "it's so late. go to sleep.",
+            "can't sleep either huh",
+            "3am and I'm just here. great.",
         ]
     elif hour in range(5, 8):
         pool = [
             "Morning is quieter before everyone remembers to be exhausting.",
             "The day has barely started. That's almost merciful.",
+            "morning",
+            "you're up early",
+            "good morning. don't expect me to say that often.",
         ]
     elif month in {12, 1, 2}:
         pool = [
             "Cold air has a way of stripping things down to what matters.",
             "Winter makes even familiar roads feel a little more distant.",
+            "it's freezing",
+            "cold weather makes me want to disappear into a blanket",
         ]
     elif month in {6, 7, 8}:
         pool = [
             "The heat makes everything feel slower, heavier.",
             "Summer has a way of stretching the day until patience thins out.",
+            "it's so hot",
+            "summer is overrated honestly",
         ]
     else:
         pool = CONVERSATION_STARTERS
@@ -4695,7 +4752,12 @@ async def _proactive_loop():
                                 recent = await mem.get_channel_recent(cid, 8)
                                 if recent and len(recent) >= 2:
                                     sample = "\n".join(f"{m['name']}: {m['content'][:80]}" for m in recent[-6:])
-                                    msg = await qai(f"The Wanderer has been watching this conversation:\n{sample}\n\nMake one short remark — curious, wry, or quietly pointed. Reference the actual content. 1-2 sentences.", 150)
+                                    casual_tone = random.random() < 0.45
+                                    if casual_tone:
+                                        style = "Be CASUAL — react like a normal person texting. Short, lowercase ok. No poetic monologues. Just a quick reaction or comment. Under 15 words."
+                                    else:
+                                        style = "Make one short remark — curious, wry, or quietly pointed. 1-2 sentences."
+                                    msg = await qai(f"The Wanderer has been watching this conversation:\n{sample}\n\n{style} Reference the actual content. No greeting. Just jump in.", 150 if not casual_tone else 60)
                                     if msg and len(msg) > 5:
                                         await ch.send(strip_narration(msg))
                                         await mem.set_proactive_sent(cid); break
@@ -4729,10 +4791,15 @@ async def _voluntary_dm_loop():
                             if _is_in_quiet_hours(user_pref) or not await mem.respects_dm_timing(uid) or not await mem.can_dm_user(uid, 5400 if romance else 7200): continue
                             du = await bot.fetch_user(uid)
                             pool = random.choices([DM_ROMANCE, DM_INTERESTED, DM_GENERIC], weights=[65, 25, 10] if romance else [0, 40, 60])[0]
+                            casual = random.random() < 0.5
+                            style_hint = (
+                                "Be CASUAL — like texting a friend. Short, lowercase, no poetry, no ellipses, no dramatic monologue. "
+                                "Examples: 'hey', 'what are you doing', 'you up?', 'I'm bored'. Keep it under 10 words."
+                            ) if casual else "1-2 sentences. No greeting."
                             prompt = (
                                 "Message " + name + " unprompted as the Wanderer. "
                                 + ("Attached to them but won't say so. " if romance else "Finds them tolerable. ")
-                                + f"Ambient context: {describe_live_world_context(BOT_NAME)}. 1-2 sentences. No greeting."
+                                + f"Ambient context: {describe_live_world_context(BOT_NAME)}. {style_hint}"
                             )
                             txt = await _pick_fresh_pool_line(pool, channel_id=uid, user_id=uid) if random.random() < .5 else await qai(prompt, 120)
                             try:
@@ -4815,13 +4882,21 @@ async def _dm_followup_loop():
                         memory_hint = " | ".join(item["memory"][:90] for item in recent_memories) if recent_memories else ""
                         memory_line = f" Reference something you remember about them if useful: {memory_hint}" if memory_hint else ""
 
+                        casual_followup = random.random() < 0.45
+                        if casual_followup:
+                            style_line = "Write ONE very short casual DM — like a text message. Lowercase ok, no poetry, no dramatic monologue. Under 10 words. Examples: 'hello??', 'you there?', 'answer me', 'ok fine ignore me'. Stay as the Wanderer but casual."
+                            max_tok = 40
+                        else:
+                            style_line = "Write ONE short DM follow-up message (1-3 sentences). Stay in character as the Wanderer. No narration. Just speak."
+                            max_tok = 160
+
                         prompt = (
                             f"{name} has not responded to your last {unanswered} DM messages. Stage: {stage}.{romance_hint}\n"
                             f"{tone}{memory_line}\n"
-                            f"Write ONE short DM follow-up message (1-3 sentences). Stay in character as the Wanderer. No narration. Just speak."
+                            f"{style_line}"
                         )
 
-                        reply = await qai(prompt, 160)
+                        reply = await qai(prompt, max_tok)
                         if reply:
                             reply = strip_narration(reply)
                             reply = await _apply_phrase_policy(reply)
