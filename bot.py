@@ -4033,7 +4033,7 @@ async def on_message(message):
                             j_reply = await qai(j_prompt, 180)
                             if j_reply:
                                 j_reply = strip_narration(j_reply)
-                                j_reply = _apply_phrase_policy(j_reply)
+                                j_reply = await _apply_phrase_policy(j_reply)
                                 await message.channel.send(j_reply)
                                 await mem.add_message(OWNER_ID, message.channel.id, "assistant", j_reply)
                                 print(f"[JEALOUSY] Wanderer jealous of owner talking to {PARTNER_NAME}")
