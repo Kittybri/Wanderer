@@ -2643,3 +2643,40 @@ class Memory:
             "affection_nick":row[6], "romance_mode":bool(row[7]), "nsfw_mode":bool(row[8]),
             "drift_score":row[9] or 0, "slow_burn":row[10] or 0, "joke_count":jokes,
         }
+
+    # ── DM follow-up (unanswered messages) ───────────────────────────────────
+    async def get_dm_unanswered_count(self, user_id: int) -> int:
+        """Count consecutive 'assistant' messages at the tail of a DM conversation (channel_id == user_id)."""
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                "SELECT role FROM messages WHERE user_id=? AND channel_id=? AND (bot_name=? OR bot_name IS NULL) ORDER BY ts DESC LIMIT 30",
+                (user_id, user_id, self.bot_name),
+            ) as cur:
+                rows = await cur.fetchall()
+        count = 0
+        for r in rows:
+            if r[0] == "assistant":
+                count += 1
+            else:
+                break
+        return count
+
+    async def get_dm_followup_candidates(self, min_unanswered: int = 5) -> list[dict]:
+        """Find DM-eligible users who have min_unanswered+ consecutive bot messages with no reply."""
+        eligible = await self.get_dm_eligible_users()
+        candidates = []
+        for ud in eligible:
+            uid = ud["user_id"]
+            count = await self.get_dm_unanswered_count(uid)
+            if count >= min_unanswered:
+                ud["unanswered_count"] = count
+                # Get timestamp of the last bot message
+                async with aiosqlite.connect(DB_PATH) as db:
+                    async with db.execute(
+                        "SELECT ts FROM messages WHERE user_id=? AND channel_id=? AND role='assistant' AND (bot_name=? OR bot_name IS NULL) ORDER BY ts DESC LIMIT 1",
+                        (uid, uid, self.bot_name),
+                    ) as cur:
+                        row = await cur.fetchone()
+                        ud["last_bot_msg_ts"] = row[0] if row else 0
+                candidates.append(ud)
+        return candidates
