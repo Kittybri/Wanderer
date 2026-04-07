@@ -124,8 +124,9 @@ CHANNEL_CONTEXT_LIMIT_DM = int(os.getenv("CHANNEL_CONTEXT_LIMIT_DM", "16") or "1
 CHANNEL_CONTEXT_MESSAGE_CHARS = int(os.getenv("CHANNEL_CONTEXT_MESSAGE_CHARS", "110") or "110")
 HISTORY_LIMIT_DIRECT = int(os.getenv("HISTORY_LIMIT_DIRECT", "120") or "120")
 HISTORY_LIMIT_AMBIENT = int(os.getenv("HISTORY_LIMIT_AMBIENT", "80") or "80")
-MAIN_REPLY_MAX_TOKENS_DIRECT = int(os.getenv("MAIN_REPLY_MAX_TOKENS_DIRECT", "420") or "420")
-MAIN_REPLY_MAX_TOKENS_AMBIENT = int(os.getenv("MAIN_REPLY_MAX_TOKENS_AMBIENT", "220") or "220")
+MAIN_REPLY_MAX_TOKENS_DIRECT = int(os.getenv("MAIN_REPLY_MAX_TOKENS_DIRECT", "120") or "120")
+MAIN_REPLY_MAX_TOKENS_AMBIENT = int(os.getenv("MAIN_REPLY_MAX_TOKENS_AMBIENT", "80") or "80")
+MAIN_REPLY_MAX_TOKENS_LONG   = 220   # used ~10% of the time for longer replies
 SELF_EDIT_MIN_REPLY_CHARS = int(os.getenv("SELF_EDIT_MIN_REPLY_CHARS", "180") or "180")
 RECENT_REPLY_PACING_WINDOW = int(os.getenv("RECENT_REPLY_PACING_WINDOW", "7") or "7")
 LONG_REPLY_CHAR_THRESHOLD = int(os.getenv("LONG_REPLY_CHAR_THRESHOLD", "420") or "420")
@@ -438,8 +439,11 @@ def _history_limit_for_reply(*, is_dm: bool, direct_to_me: bool) -> int:
 
 
 def _reply_token_budget(*, is_dm: bool, direct_to_me: bool, use_search: bool, is_owner: bool) -> int:
+    # 10% chance of a longer reply
+    if random.random() < 0.10:
+        return MAIN_REPLY_MAX_TOKENS_LONG
     if use_search or is_owner:
-        return max(MAIN_REPLY_MAX_TOKENS_DIRECT, 420)
+        return MAIN_REPLY_MAX_TOKENS_DIRECT
     if is_dm or direct_to_me:
         return MAIN_REPLY_MAX_TOKENS_DIRECT
     return MAIN_REPLY_MAX_TOKENS_AMBIENT
