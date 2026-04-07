@@ -6675,6 +6675,27 @@ async def help_cmd(ctx):
         await ctx.send(embed=e1)
         await ctx.send(embed=e2)
         await ctx.send(embed=e3)
+        # Owner-only page — sent via DM so only the owner sees it
+        if OWNER_ID and ctx.author.id == OWNER_ID:
+            e4 = discord.Embed(title="🔒 Owner Commands (Private)", color=0xFF0000,
+                               description="These are sent to your DMs so only you can see them.")
+            for n, v in [
+                ("!servers", "List all servers the bot is in"),
+                ("!leaveserver <#>", "Leave a server by number or ID"),
+                ("!owneronly", "Toggle bot to only respond to you"),
+                ("!dmlist", "List all DM-only users"),
+                ("!blockdm <target>", "Block a user (sends farewell)"),
+                ("!unblockdm <target>", "Unblock a user"),
+                ("!blockall", "Block all strangers at once"),
+                ("!logs [target]", "View conversation logs with a user"),
+                ("!whois [target]", "Look up user details"),
+                ("!banchannel [#channel]", "Ban bot from a channel"),
+                ("!unbanchannel [#channel]", "Unban bot from a channel"),
+                ("!bannedchannels", "List all banned channels"),
+            ]:
+                e4.add_field(name=n, value=v, inline=False)
+            e4.set_footer(text="All responses are sent to your DMs privately.")
+            await owner_reply(ctx, None, embed=e4)
     except Exception as e:
         log_error("help_cmd", e)
         try: await ctx.send("Something went wrong displaying commands.")
@@ -7365,7 +7386,7 @@ async def unblockdm_cmd(ctx, *, target: str = None):
             await safe_reply(ctx, "That's not for you.")
             return
         if not target:
-            await safe_reply(ctx, "Usage: `!unblockdm <number from !dmlist>` or `!unblockdm <user ID>`")
+            await owner_reply(ctx, "Usage: `!unblockdm <number from !dmlist>` or `!unblockdm <user ID>`")
             return
         target = target.strip()
         all_users = await mem.get_top_users(200)
@@ -7391,15 +7412,15 @@ async def unblockdm_cmd(ctx, *, target: str = None):
                     user_record = u
                     break
         if not user_record:
-            await safe_reply(ctx, f"No user matching `{target}`. Use `!dmlist` to see the list.")
+            await owner_reply(ctx, f"No user matching `{target}`. Use `!dmlist` to see the list.")
             return
         uid = user_record["user_id"]
         if uid not in _dm_blocked_users:
-            await safe_reply(ctx, f"**{user_record['display_name']}** isn't blocked.")
+            await owner_reply(ctx, f"**{user_record['display_name']}** isn't blocked.")
             return
         _dm_blocked_users.discard(uid)
         await mem.unblock_user(uid)
-        await safe_reply(ctx, f"Unblocked **{user_record['display_name']}** (`{uid}`). They can talk to me again.")
+        await owner_reply(ctx, f"Unblocked **{user_record['display_name']}** (`{uid}`). They can talk to me again.")
     except Exception as e:
         log_error("unblockdm_cmd", e)
 
@@ -7412,7 +7433,7 @@ async def whois_cmd(ctx, *, target: str = None):
             return
         top = await mem.get_top_users(50)
         if not top:
-            await safe_reply(ctx, "No users in my records yet.")
+            await owner_reply(ctx, "No users in my records yet.")
             return
         if not target:
             lines = []
@@ -7429,7 +7450,7 @@ async def whois_cmd(ctx, *, target: str = None):
             if page:
                 pages.append(page)
             for p in pages:
-                await safe_reply(ctx, p)
+                await owner_reply(ctx, p)
             return
         target = target.strip()
         user_record = None
@@ -7449,7 +7470,7 @@ async def whois_cmd(ctx, *, target: str = None):
                     user_record = u
                     break
         if not user_record:
-            await safe_reply(ctx, f"No user matching `{target}`.")
+            await owner_reply(ctx, f"No user matching `{target}`.")
             return
         uid = user_record["user_id"]
         try:
@@ -7477,7 +7498,7 @@ async def whois_cmd(ctx, *, target: str = None):
             embed.add_field(name="Shared servers", value=", ".join(shared), inline=False)
         else:
             embed.add_field(name="Shared servers", value="*None — they may have DM'd me or left*", inline=False)
-        await ctx.send(embed=embed)
+        await owner_reply(ctx, None, embed=embed)
     except Exception as e:
         log_error("whois_cmd", e)
 
