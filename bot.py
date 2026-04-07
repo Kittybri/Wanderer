@@ -5977,12 +5977,61 @@ async def solve_cmd(ctx, *, problem: str = None):
     except Exception as e: log_error("solve_cmd", e)
 
 @bot.command(name="remind", aliases=["remindme"])
-async def remind_cmd(ctx, minutes: int = None, *, reminder: str = None):
+async def remind_cmd(ctx, *, raw: str = None):
     try:
-        if not minutes or not reminder: await safe_reply(ctx, "Usage: `!remind <minutes> <reminder>`"); return
-        if not 1 <= minutes <= 10080: await safe_reply(ctx, "Between 1 minute and 7 days."); return
-        await mem.add_reminder(ctx.author.id, ctx.channel.id, reminder, time.time() + minutes * 60)
-        await safe_reply(ctx, f"...I'll remember that. {minutes} minute{'s' if minutes != 1 else ''}.")
+        if not raw or not raw.strip():
+            await safe_reply(ctx, "Usage: `!remind <minutes> <text>` or `!remind <date/time description>`"); return
+
+        # Try old format: !remind <minutes> <text>
+        parts = raw.split(None, 1)
+        try:
+            minutes = int(parts[0])
+            reminder_text = parts[1] if len(parts) > 1 else "something"
+            if not 1 <= minutes <= 43200:
+                await safe_reply(ctx, "Between 1 minute and 30 days."); return
+            await mem.add_reminder(ctx.author.id, ctx.channel.id, reminder_text, time.time() + minutes * 60)
+            await safe_reply(ctx, f"...I'll remember that. {minutes} minute{'s' if minutes != 1 else ''}.")
+            return
+        except (ValueError, IndexError):
+            pass
+
+        # Natural date/time: use AI to parse
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M %A")
+        parse_prompt = (
+            f"Current date/time: {now_str}\n"
+            f"User said: \"{raw}\"\n"
+            f"Extract the reminder date/time and description.\n"
+            f"Reply in EXACTLY this format (nothing else):\n"
+            f"DATETIME: YYYY-MM-DD HH:MM\n"
+            f"REMINDER: <what to remind about>"
+        )
+        parsed = await qai(parse_prompt, 60)
+        if not parsed:
+            await safe_reply(ctx, "Couldn't understand that. Try `!remind 30 do something`."); return
+
+        dt_match = re.search(r"DATETIME:\s*(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2})", parsed)
+        rem_match = re.search(r"REMINDER:\s*(.+)", parsed)
+        if not dt_match:
+            await safe_reply(ctx, "Couldn't parse the date. Try `!remind 30 do something`."); return
+
+        due_dt = datetime.fromisoformat(dt_match.group(1).strip())
+        due_ts = due_dt.timestamp()
+        if due_ts <= time.time():
+            await safe_reply(ctx, "That's in the past. I can't go back in time."); return
+        if due_ts - time.time() > 43200 * 60:
+            await safe_reply(ctx, "That's more than 30 days out. Set it closer."); return
+
+        reminder_text = rem_match.group(1).strip() if rem_match else raw
+        await mem.add_reminder(ctx.author.id, ctx.channel.id, reminder_text, due_ts)
+
+        delta = due_ts - time.time()
+        if delta < 3600:
+            time_str = f"{int(delta/60)} minutes"
+        elif delta < 86400:
+            time_str = f"{delta/3600:.1f} hours"
+        else:
+            time_str = f"{delta/86400:.1f} days"
+        await safe_reply(ctx, f"...noted. I'll remind you in {time_str}.")
     except Exception as e: log_error("remind_cmd", e)
 
 @bot.command(name="translate")
@@ -6650,7 +6699,7 @@ async def help_cmd(ctx):
             ("🌡️ `!mood`", "His mood toward you"),
             ("💜 `!affection`", "His affection score"),
             ("🔒 `!trust`", "His trust level toward you"),
-            ("⏰ `!remind <mins> <txt>`", "Reminder — he'll remember"),
+            ("⏰ `!remind <mins> <txt> or <date/time>`", "Reminder — he'll remember"),
             ("🌤️ `!weather <city>`", "Weather + his take on it"),
             ("🎥 `!weathervideo <city>`", "Render a weather report video; duo if Scaramouche is here"),
             ("📢 `!poll <question>`", "He puts a question to the room"),
