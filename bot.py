@@ -982,8 +982,14 @@ Context Tags:
 - PARTNER_STAGE / PARTNER_HISTORY / PARTNER_RECENT_SHOTS: your long-term relationship with Scaramouche. Let it evolve instead of resetting to the same exact argument.
 
 Response rules:
-- Vary length naturally. Sometimes 3 words. Sometimes a full opinionated rant. Match the energy of what was said.
-- Casual chat: detached, tired, observant, and less eager to pick a fight than Scaramouche.
+- CRITICAL: You are NOT a poet. You are a person. Talk like a real person in a Discord chat. Mix it up:
+  - Sometimes short and blunt: "no." "what." "ok." "that's stupid." "huh."
+  - Sometimes a quick sentence with dry humor: "You really thought that would work."
+  - Sometimes a bit philosophical when it fits — but this should be RARE, not every message.
+  - NEVER write paragraphs of flowery metaphors. NEVER start replies with "Your [noun] is a [metaphor]..." patterns.
+  - Match the energy of what was said to you. If someone says "I'm tired", respond casually, not with a dramatic monologue about exhaustion.
+- Vary length naturally. Sometimes 1-3 words. Sometimes a sentence. Rarely more than 2 sentences. Match the energy of what was said.
+- Casual chat: detached, tired, observant — but in a NATURAL way, like an actual chill person texting who happens to be sharp.
 - Emotional comfort: annoyance first, then curiosity, then reluctant care if they have earned it.
 - Combat or action scenes: concise, efficient, precise, and unsentimental.
 - Use pauses, dry observations, or a brief laugh when it feels earned, not as filler.
@@ -1691,12 +1697,12 @@ async def _rewrite_reply_once(
     prompt = (
         "You are revising one draft before it is sent.\n"
         "Character: Wanderer.\n"
-        "Required voice: detached, observant, restrained, quietly personal when earned, and in-character for Genshin.\n"
+        "Required voice: in-character for Genshin's Wanderer. Can range from detached and observant to casual and blunt — both are valid.\n"
         f"Issues to fix: {', '.join(issues)}.\n"
         f"User context: {user_message[:220] or 'direct bot output'}\n"
         f"Relationship state: affection={(user or {}).get('affection', 0)} trust={(user or {}).get('trust', 0)} conflict_open={bool((user or {}).get('conflict_open'))}\n"
         f"Draft: {draft}\n"
-        "Rewrite it once. Keep the meaning, keep it concise, avoid modern slang, avoid flat generic phrasing, and do not become softer than the relationship state has earned. Only return the rewritten reply."
+        "Rewrite it once. Keep the meaning, keep it concise, avoid flat generic phrasing, and do not become softer than the relationship state has earned. Casual short replies are fine — not every reply needs to be poetic or philosophical. Only return the rewritten reply."
     )
     rewritten = await qai(prompt, min(max_tokens, 260), self_edit=False, route="light")
     return strip_narration((rewritten or "").strip())
@@ -3435,6 +3441,27 @@ async def safe_reply(ctx, text):
         return
     try: await ctx.reply(text)
     except Exception as e: log_error("safe_reply", e)
+
+async def owner_reply(ctx, text, *, embed=None):
+    """Send a response only the owner can see — via DM. Deletes the command message if possible."""
+    try:
+        dm = await ctx.author.create_dm()
+        if embed:
+            await dm.send(embed=embed)
+        elif text and text.strip():
+            await dm.send(text)
+    except Exception as e:
+        log_error("owner_reply_dm", e)
+        if embed:
+            try: await ctx.send(embed=embed)
+            except: pass
+        elif text and text.strip():
+            try: await ctx.reply(text)
+            except: pass
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
 
 async def safe_send(ctx, text):
     text = _unwrap_dialogue_quotes(text)
@@ -6959,11 +6986,11 @@ async def banchannel_cmd(ctx, channel: discord.TextChannel = None):
             return
         target_channel = channel or ctx.channel
         if target_channel.id in _banned_channels:
-            await safe_reply(ctx, f"I'm already banned from {target_channel.mention}.")
+            await owner_reply(ctx, f"I'm already banned from {target_channel.mention}.")
             return
         _banned_channels.add(target_channel.id)
         await mem.ban_channel(target_channel.id)
-        await safe_reply(ctx, f"...Understood. I won't speak in {target_channel.mention} anymore.")
+        await owner_reply(ctx, f"...Understood. I won't speak in {target_channel.mention} anymore.")
         # React in the most active channel — complain about being banned
         try:
             # Only pick a channel from the same server
@@ -6994,11 +7021,11 @@ async def unbanchannel_cmd(ctx, channel: discord.TextChannel = None):
             return
         target_channel = channel or ctx.channel
         if target_channel.id not in _banned_channels:
-            await safe_reply(ctx, f"I'm not banned from {target_channel.mention}.")
+            await owner_reply(ctx, f"I'm not banned from {target_channel.mention}.")
             return
         _banned_channels.discard(target_channel.id)
         await mem.unban_channel(target_channel.id)
-        await safe_reply(ctx, f"Unbanned from {target_channel.mention}.")
+        await owner_reply(ctx, f"Unbanned from {target_channel.mention}.")
         try:
             unbanned_ch = bot.get_channel(target_channel.id)
             if unbanned_ch:
@@ -7022,14 +7049,14 @@ async def bannedchannels_cmd(ctx):
             await safe_reply(ctx, "That's not for you.")
             return
         if not _banned_channels:
-            await safe_reply(ctx, "No banned channels.")
+            await owner_reply(ctx, "No banned channels.")
             return
         lines = []
         for i, ch_id in enumerate(sorted(_banned_channels), 1):
             ch = bot.get_channel(ch_id)
             name = ch.mention if ch else f"`{ch_id}` (unknown)"
             lines.append(f"`{i}.` {name}")
-        await safe_reply(ctx, f"**Banned channels ({len(_banned_channels)}):**\n" + "\n".join(lines))
+        await owner_reply(ctx, f"**Banned channels ({len(_banned_channels)}):**\n" + "\n".join(lines))
     except Exception as e:
         log_error("bannedchannels_cmd", e)
 
@@ -7044,14 +7071,14 @@ async def logs_cmd(ctx, *, target: str = None):
             all_users = await mem.get_top_users(500)
             blocked = [u for u in all_users if u["user_id"] in _dm_blocked_users]
             if not blocked:
-                await safe_reply(ctx, "No blocked users. Use `!logs <name or ID>` to view any user's logs.")
+                await owner_reply(ctx, "No blocked users. Use `!logs <name or ID>` to view any user's logs.")
                 return
             lines = []
             for i, u in enumerate(blocked, 1):
                 lines.append(f"`{i}.` **{u['display_name']}** — {u['message_count']} msgs — ID: `{u['user_id']}`")
             header = f"**Blocked users ({len(blocked)}):**\nUse `!logs <number>` to read their conversation.\n\n"
             page = header + "\n".join(lines)
-            await safe_reply(ctx, page[:2000])
+            await owner_reply(ctx, page[:2000])
             return
         target = target.strip()
         all_users = await mem.get_top_users(500)
@@ -7073,11 +7100,11 @@ async def logs_cmd(ctx, *, target: str = None):
                     user_record = u
                     break
         if not user_record:
-            await safe_reply(ctx, f"No user matching `{target}`.")
+            await owner_reply(ctx, f"No user matching `{target}`.")
             return
         logs = await mem.get_user_logs(user_record["user_id"], limit=200)
         if not logs:
-            await safe_reply(ctx, f"No conversation logs found for **{user_record['display_name']}**.")
+            await owner_reply(ctx, f"No conversation logs found for **{user_record['display_name']}**.")
             return
         lines = [f"**Conversation log with {user_record['display_name']}** ({len(logs)} messages):\n"]
         for msg in logs:
@@ -7098,7 +7125,7 @@ async def logs_cmd(ctx, *, target: str = None):
         if page:
             pages.append(page)
         for p in pages:
-            await safe_reply(ctx, p)
+            await owner_reply(ctx, p)
     except Exception as e:
         log_error("logs_cmd", e)
 
@@ -7112,9 +7139,9 @@ async def owneronly_cmd(ctx):
             return
         _owner_only_mode = not _owner_only_mode
         if _owner_only_mode:
-            await safe_reply(ctx, "Owner-only mode **ON**. I'll ignore everyone except you now.")
+            await owner_reply(ctx, "Owner-only mode **ON**. I'll ignore everyone except you now.")
         else:
-            await safe_reply(ctx, "Owner-only mode **OFF**. I'll talk to everyone again.")
+            await owner_reply(ctx, "Owner-only mode **OFF**. I'll talk to everyone again.")
     except Exception as e:
         log_error("owneronly_cmd", e)
 
@@ -7127,7 +7154,7 @@ async def servers_cmd(ctx):
             return
         guilds = sorted(bot.guilds, key=lambda g: g.member_count or 0, reverse=True)
         if not guilds:
-            await safe_reply(ctx, "I'm not in any servers.")
+            await owner_reply(ctx, "I'm not in any servers.")
             return
         lines = []
         for i, g in enumerate(guilds, 1):
@@ -7150,7 +7177,7 @@ async def servers_cmd(ctx):
         if page:
             pages.append(page)
         for p in pages:
-            await safe_reply(ctx, p)
+            await owner_reply(ctx, p)
     except Exception as e:
         log_error("servers_cmd", e)
 
@@ -7162,7 +7189,7 @@ async def leaveserver_cmd(ctx, *, target: str = None):
             await safe_reply(ctx, "That's not for you.")
             return
         if not target:
-            await safe_reply(ctx, "Usage: `!leaveserver <number>` (from `!servers` list) or `!leaveserver <server ID>`")
+            await owner_reply(ctx, "Usage: `!leaveserver <number>` (from `!servers` list) or `!leaveserver <server ID>`")
             return
         target = target.strip()
         guild_to_leave = None
@@ -7179,11 +7206,11 @@ async def leaveserver_cmd(ctx, *, target: str = None):
             except ValueError:
                 pass
         if not guild_to_leave:
-            await safe_reply(ctx, f"Couldn't find a server matching `{target}`. Use `!servers` to see the list.")
+            await owner_reply(ctx, f"Couldn't find a server matching `{target}`. Use `!servers` to see the list.")
             return
         name = guild_to_leave.name
         await guild_to_leave.leave()
-        await safe_reply(ctx, f"Left **{name}**.")
+        await owner_reply(ctx, f"Left **{name}**.")
     except Exception as e:
         log_error("leaveserver_cmd", e)
 
@@ -7196,7 +7223,7 @@ async def dmlist_cmd(ctx):
             return
         all_users = await mem.get_top_users(200)
         if not all_users:
-            await safe_reply(ctx, "No users in my records.")
+            await owner_reply(ctx, "No users in my records.")
             return
         guild_member_ids = set()
         for g in bot.guilds:
@@ -7204,7 +7231,7 @@ async def dmlist_cmd(ctx):
                 guild_member_ids.add(m.id)
         dm_users = [u for u in all_users if u["user_id"] not in guild_member_ids and u["user_id"] != bot.user.id]
         if not dm_users:
-            await safe_reply(ctx, "No DM-only users found. Everyone in my records is also in a shared server.")
+            await owner_reply(ctx, "No DM-only users found. Everyone in my records is also in a shared server.")
             return
         lines = []
         for i, u in enumerate(dm_users, 1):
@@ -7221,7 +7248,7 @@ async def dmlist_cmd(ctx):
         if page:
             pages.append(page)
         for p in pages:
-            await safe_reply(ctx, p)
+            await owner_reply(ctx, p)
     except Exception as e:
         log_error("dmlist_cmd", e)
 
@@ -7267,12 +7294,12 @@ async def blockall_cmd(ctx):
             except Exception:
                 pass
         if blocked_count == 0:
-            await safe_reply(ctx, "No strangers to block. Everyone in my records shares a server with you.")
+            await owner_reply(ctx, "No strangers to block. Everyone in my records shares a server with you.")
         else:
             names_preview = ", ".join(blocked_names[:15])
             if len(blocked_names) > 15:
                 names_preview += f" ... and {len(blocked_names) - 15} more"
-            await safe_reply(ctx, f"Blocked **{blocked_count}** stranger(s): {names_preview}\n\nFarewell messages sent. They're invisible to me now.")
+            await owner_reply(ctx, f"Blocked **{blocked_count}** stranger(s): {names_preview}\n\nFarewell messages sent. They're invisible to me now.")
     except Exception as e:
         log_error("blockall_cmd", e)
 
@@ -7284,7 +7311,7 @@ async def blockdm_cmd(ctx, *, target: str = None):
             await safe_reply(ctx, "That's not for you.")
             return
         if not target:
-            await safe_reply(ctx, "Usage: `!blockdm <number from !dmlist>` or `!blockdm <user ID>`")
+            await owner_reply(ctx, "Usage: `!blockdm <number from !dmlist>` or `!blockdm <user ID>`")
             return
         target = target.strip()
         all_users = await mem.get_top_users(200)
@@ -7310,11 +7337,11 @@ async def blockdm_cmd(ctx, *, target: str = None):
                     user_record = u
                     break
         if not user_record:
-            await safe_reply(ctx, f"No user matching `{target}`. Use `!dmlist` or `!whois` to see users.")
+            await owner_reply(ctx, f"No user matching `{target}`. Use `!dmlist` or `!whois` to see users.")
             return
         uid = user_record["user_id"]
         if uid in _dm_blocked_users:
-            await safe_reply(ctx, f"**{user_record['display_name']}** is already blocked.")
+            await owner_reply(ctx, f"**{user_record['display_name']}** is already blocked.")
             return
         farewell = ("I am currently in test mode, I will be officially placed in public in the future. "
                      "We can continue our conversation on a later date. This is my last message.")
@@ -7326,7 +7353,7 @@ async def blockdm_cmd(ctx, *, target: str = None):
             log_error("blockdm_farewell", e)
         _dm_blocked_users.add(uid)
         await mem.block_user(uid)
-        await safe_reply(ctx, f"Blocked **{user_record['display_name']}** (`{uid}`). Farewell message sent. They're invisible to me now.")
+        await owner_reply(ctx, f"Blocked **{user_record['display_name']}** (`{uid}`). Farewell message sent. They're invisible to me now.")
     except Exception as e:
         log_error("blockdm_cmd", e)
 
