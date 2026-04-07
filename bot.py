@@ -118,10 +118,10 @@ PARTNER_INVITE_SCOPES = os.getenv("PARTNER_BOT_SCOPES", "bot applications.comman
 PARTNER_CLIENT_ID_OVERRIDE = (os.getenv("SCARAMOUCHE_CLIENT_ID") or os.getenv("PARTNER_CLIENT_ID") or "").strip()
 GROQ_EXHAUSTED_SILENCE_S = int(os.getenv("GROQ_EXHAUSTED_SILENCE_S", "600") or "600")
 PROVIDER_PAUSE_COOLDOWN_S = int(os.getenv("PROVIDER_PAUSE_COOLDOWN_S", "120") or "120")
-CHANNEL_CONTEXT_LIMIT_DIRECT = int(os.getenv("CHANNEL_CONTEXT_LIMIT_DIRECT", "20") or "20")
-CHANNEL_CONTEXT_LIMIT_AMBIENT = int(os.getenv("CHANNEL_CONTEXT_LIMIT_AMBIENT", "8") or "8")
-CHANNEL_CONTEXT_LIMIT_DM = int(os.getenv("CHANNEL_CONTEXT_LIMIT_DM", "16") or "16")
-CHANNEL_CONTEXT_MESSAGE_CHARS = int(os.getenv("CHANNEL_CONTEXT_MESSAGE_CHARS", "110") or "110")
+CHANNEL_CONTEXT_LIMIT_DIRECT = int(os.getenv("CHANNEL_CONTEXT_LIMIT_DIRECT", "30") or "30")
+CHANNEL_CONTEXT_LIMIT_AMBIENT = int(os.getenv("CHANNEL_CONTEXT_LIMIT_AMBIENT", "15") or "15")
+CHANNEL_CONTEXT_LIMIT_DM = int(os.getenv("CHANNEL_CONTEXT_LIMIT_DM", "24") or "24")
+CHANNEL_CONTEXT_MESSAGE_CHARS = int(os.getenv("CHANNEL_CONTEXT_MESSAGE_CHARS", "250") or "250")
 HISTORY_LIMIT_DIRECT = int(os.getenv("HISTORY_LIMIT_DIRECT", "120") or "120")
 HISTORY_LIMIT_AMBIENT = int(os.getenv("HISTORY_LIMIT_AMBIENT", "80") or "80")
 MAIN_REPLY_MAX_TOKENS_DIRECT = int(os.getenv("MAIN_REPLY_MAX_TOKENS_DIRECT", "120") or "120")
@@ -979,7 +979,7 @@ Context Tags:
 - SCENE: persistent roleplay scene state. Keep continuity across long exchanges.
 - ARC_UNLOCKS: behavior patterns unlocked by this relationship stage. Actually follow them.
 - LORE_HOOK: if lore is mentioned, answer with personal history and specific feeling, not generic exposition.
-- CHANNEL_CONTEXT: recent chat. "Wanderer (you)" = YOUR messages. "Scaramouche" = other bot. Use naturally.
+- CHANNEL_CONTEXT: recent chat. READ IT CAREFULLY before responding — understand who said what, who they're talking to, and what they're asking for. "Wanderer (you)" = YOUR messages. "Scaramouche" = other bot. Use naturally. Pay attention to the FLOW of conversation — if someone is asking you to do something, understand what they want before responding.
 - Messages prefixed with [voice message] = things YOU said as audio. You know you sent them.
 - DM_MODE: private. Slightly more honest. Slightly.
 - DATE/HOUR/LAST_SEEN: be time-aware.
@@ -5022,6 +5022,13 @@ async def _rival_event_loop():
                         continue
                     if await mem.get_duo_session(channel_id):
                         continue
+                    # Skip if bot responded in this channel recently (avoid duplicating on_message replies)
+                    try:
+                        recent = [m async for m in channel.history(limit=3)]
+                        if any(m.author.id == bot.user.id and (discord.utils.utcnow() - m.created_at).total_seconds() < 120 for m in recent):
+                            continue
+                    except Exception:
+                        pass
                     topic = await _recent_rival_topic(channel)
                     if not topic:
                         continue
