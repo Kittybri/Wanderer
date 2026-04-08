@@ -144,7 +144,17 @@ class Memory:
                     round       INTEGER DEFAULT 0,
                     scores      TEXT    DEFAULT '{}',
                     active      INTEGER DEFAULT 1,
+                    turn_user   INTEGER DEFAULT 0,
                     ts          REAL
+                );
+                CREATE TABLE IF NOT EXISTS game_scores (
+                    user_id     INTEGER,
+                    game_type   TEXT,
+                    wins        INTEGER DEFAULT 0,
+                    losses      INTEGER DEFAULT 0,
+                    draws       INTEGER DEFAULT 0,
+                    total_points INTEGER DEFAULT 0,
+                    PRIMARY KEY (user_id, game_type)
                 );
                 CREATE TABLE IF NOT EXISTS phrase_cooldowns (
                     scope       TEXT,
@@ -463,6 +473,15 @@ class Memory:
             except Exception:
                 pass
             await db.execute("UPDATE messages SET bot_name=? WHERE bot_name IS NULL", (self.bot_name,))
+            # Game system migrations
+            for stmt in (
+                "ALTER TABLE roast_battles ADD COLUMN turn_user INTEGER DEFAULT 0",
+                "CREATE TABLE IF NOT EXISTS game_scores (user_id INTEGER, game_type TEXT, wins INTEGER DEFAULT 0, losses INTEGER DEFAULT 0, draws INTEGER DEFAULT 0, total_points INTEGER DEFAULT 0, PRIMARY KEY (user_id, game_type))",
+            ):
+                try:
+                    await db.execute(stmt)
+                except Exception:
+                    pass
             await db.commit()
 
     # ── Users ────────────────────────────────────────────────────────────────
@@ -2487,44 +2506,93 @@ class Memory:
 
     # ── Roast battles ─────────────────────────────────────────────────────────
     async def start_roast_battle(self, channel_id: int, u1: int, u2: int) -> int:
+        # End any existing active battle first
         async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("UPDATE roast_battles SET active=0 WHERE channel_id=? AND active=1", (channel_id,))
             cur = await db.execute(
-                "INSERT INTO roast_battles (channel_id,user1_id,user2_id,round,scores,active,ts) VALUES (?,?,?,0,'{}',1,?)",
-                (channel_id,u1,u2,time.time()))
+                "INSERT INTO roast_battles (channel_id,user1_id,user2_id,round,scores,active,turn_user,ts) VALUES (?,?,?,1,'{}',1,?,?)",
+                (channel_id, u1, u2, u1, time.time()))
             await db.commit()
             return cur.lastrowid
 
     async def get_active_roast(self, channel_id: int) -> dict | None:
         async with aiosqlite.connect(DB_PATH) as db:
             async with db.execute(
-                "SELECT id,user1_id,user2_id,round,scores FROM roast_battles WHERE channel_id=? AND active=1", (channel_id,)
+                "SELECT id,user1_id,user2_id,round,scores,turn_user FROM roast_battles WHERE channel_id=? AND active=1", (channel_id,)
             ) as cur:
                 row = await cur.fetchone()
                 if not row: return None
-                return {"id":row[0],"user1":row[1],"user2":row[2],"round":row[3],"scores":json.loads(row[4])}
+                return {"id":row[0],"user1":row[1],"user2":row[2],"round":row[3],"scores":json.loads(row[4]),"turn_user":row[5] or row[1]}
 
     async def end_roast_battle(self, battle_id: int):
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute("UPDATE roast_battles SET active=0 WHERE id=?", (battle_id,))
             await db.commit()
 
-    async def increment_roast_round(self, battle_id: int):
+    async def advance_roast_turn(self, battle_id: int, next_user: int, new_round: bool = False):
         async with aiosqlite.connect(DB_PATH) as db:
-            await db.execute("UPDATE roast_battles SET round=round+1 WHERE id=?", (battle_id,))
+            if new_round:
+                await db.execute("UPDATE roast_battles SET round=round+1, turn_user=? WHERE id=?", (next_user, battle_id))
+            else:
+                await db.execute("UPDATE roast_battles SET turn_user=? WHERE id=?", (next_user, battle_id))
             await db.commit()
 
-    async def award_roast_round(self, battle_id: int, winner_user_id: int):
+    async def award_roast_points(self, battle_id: int, user_id: int, points: int):
         async with aiosqlite.connect(DB_PATH) as db:
             async with db.execute("SELECT scores FROM roast_battles WHERE id=?", (battle_id,)) as cur:
                 row = await cur.fetchone()
             scores = json.loads(row[0] or "{}") if row else {}
-            key = str(winner_user_id)
-            scores[key] = int(scores.get(key, 0)) + 1
+            key = str(user_id)
+            scores[key] = int(scores.get(key, 0)) + points
             await db.execute(
                 "UPDATE roast_battles SET scores=? WHERE id=?",
                 (json.dumps(scores, ensure_ascii=True), battle_id),
             )
             await db.commit()
+
+    # ── Game scores (persistent leaderboard) ──────────────────────────────────
+    async def record_game_result(self, user_id: int, game_type: str, won: bool | None, points: int = 0):
+        """Record a game result. won=True/False/None(draw)."""
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "INSERT INTO game_scores (user_id, game_type, wins, losses, draws, total_points) "
+                "VALUES (?,?,?,?,?,?) "
+                "ON CONFLICT(user_id, game_type) DO UPDATE SET "
+                "wins=wins+excluded.wins, losses=losses+excluded.losses, "
+                "draws=draws+excluded.draws, total_points=total_points+excluded.total_points",
+                (user_id, game_type,
+                 1 if won is True else 0,
+                 1 if won is False else 0,
+                 1 if won is None else 0,
+                 points),
+            )
+            await db.commit()
+
+    async def get_game_stats(self, user_id: int) -> list[dict]:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                "SELECT game_type, wins, losses, draws, total_points FROM game_scores WHERE user_id=? ORDER BY wins DESC",
+                (user_id,),
+            ) as cur:
+                rows = await cur.fetchall()
+        return [{"game": r[0], "wins": r[1], "losses": r[2], "draws": r[3], "points": r[4]} for r in rows]
+
+    async def get_leaderboard(self, game_type: str = None, limit: int = 10) -> list[dict]:
+        async with aiosqlite.connect(DB_PATH) as db:
+            if game_type:
+                async with db.execute(
+                    "SELECT user_id, wins, losses, draws, total_points FROM game_scores WHERE game_type=? ORDER BY wins DESC, total_points DESC LIMIT ?",
+                    (game_type, limit),
+                ) as cur:
+                    rows = await cur.fetchall()
+            else:
+                async with db.execute(
+                    "SELECT user_id, SUM(wins) as w, SUM(losses) as l, SUM(draws) as d, SUM(total_points) as p "
+                    "FROM game_scores GROUP BY user_id ORDER BY w DESC, p DESC LIMIT ?",
+                    (limit,),
+                ) as cur:
+                    rows = await cur.fetchall()
+        return [{"user_id": r[0], "wins": r[1], "losses": r[2], "draws": r[3], "points": r[4]} for r in rows]
 
     async def list_inside_jokes(self, user_id: int, limit: int = 6) -> list[str]:
         async with aiosqlite.connect(DB_PATH) as db:

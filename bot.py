@@ -5552,31 +5552,130 @@ async def answer_cmd(ctx, *, response: str = None):
 @bot.command(name="roast", aliases=["roastbattle"])
 async def roast_cmd(ctx, member: discord.Member = None):
     try:
-        if not member: await safe_reply(ctx, "Roast who? Name someone."); return
+        if not member or member.bot or member == ctx.author:
+            await safe_reply(ctx, "Roast who? Tag someone. `!roast @user`"); return
         battle = await mem.get_active_roast(ctx.channel.id)
         if battle:
-            await mem.increment_roast_round(battle["id"])
-            if battle["round"] >= 5:
-                await mem.end_roast_battle(battle["id"])
-                prompt = f"The roast battle between {ctx.author.display_name} and {member.display_name} is over. Scoreboard so far: {battle.get('scores', {})}. Declare a final winner. As the Wanderer. 2-3 sentences."
-            else:
-                prompt = f"Judging roast battle round {battle['round']+1}. {ctx.author.display_name} fired at {member.display_name}. Score this round. 2-3 sentences."
-        else:
-            await mem.start_roast_battle(ctx.channel.id, ctx.author.id, member.id)
-            prompt = f"You're refereeing a roast battle between {ctx.author.display_name} and {member.display_name}. Open it. 5 rounds, you judge. As the Wanderer."
-        reply = await qai(prompt, 300)
-        lowered = reply.lower()
-        winner_id = None
-        if ctx.author.display_name.lower() in lowered and member.display_name.lower() not in lowered:
-            winner_id = ctx.author.id
-        elif member.display_name.lower() in lowered and ctx.author.display_name.lower() not in lowered:
-            winner_id = member.id
-        if battle and winner_id:
-            await mem.award_roast_round(battle["id"], winner_id)
-        updated = await mem.get_active_roast(ctx.channel.id) if battle else None
-        score_line = f"\nScoreboard: {updated['scores']}" if updated and updated.get("scores") else ""
-        await ctx.send(f"{ctx.author.mention} vs {member.mention}\n{reply}{score_line}")
+            await safe_reply(ctx, f"There's already a roast battle going on here. Use `!fire <your roast>` to compete, or `!endroast` to cancel it."); return
+        await mem.start_roast_battle(ctx.channel.id, ctx.author.id, member.id)
+        opener = await qai(
+            f"You're refereeing a roast battle between {ctx.author.display_name} and {member.display_name}. "
+            f"3 rounds. Each person takes turns roasting with !fire. You score each roast 1-10. "
+            f"Announce the matchup. Tell {ctx.author.display_name} to go first with !fire. 2-3 sentences. As the Wanderer.",
+            200,
+        )
+        embed = discord.Embed(
+            title="🔥 ROAST BATTLE 🔥",
+            description=f"**{ctx.author.display_name}** vs **{member.display_name}**\n3 rounds — highest total score wins!",
+            color=0xFF4500,
+        )
+        embed.add_field(name="How to play", value=f"Type `!fire <your best roast>` when it's your turn.\n{ctx.author.display_name} goes first!", inline=False)
+        embed.set_footer(text="Judge: Wanderer | Score: 1-10 per roast")
+        await ctx.send(embed=embed)
+        await ctx.send(opener)
     except Exception as e: log_error("roast_cmd", e)
+
+@bot.command(name="fire")
+async def fire_cmd(ctx, *, roast_text: str = None):
+    try:
+        if not roast_text:
+            await safe_reply(ctx, "Fire what? `!fire <your roast>`"); return
+        battle = await mem.get_active_roast(ctx.channel.id)
+        if not battle:
+            await safe_reply(ctx, "No active roast battle. Start one with `!roast @user`."); return
+        if ctx.author.id != battle["turn_user"]:
+            await safe_reply(ctx, f"Not your turn. Waiting on <@{battle['turn_user']}>."); return
+        if ctx.author.id not in (battle["user1"], battle["user2"]):
+            await safe_reply(ctx, "You're not in this battle."); return
+
+        opponent_id = battle["user2"] if ctx.author.id == battle["user1"] else battle["user1"]
+        guild = ctx.guild
+        opponent_name = guild.get_member(opponent_id).display_name if guild and guild.get_member(opponent_id) else f"User {opponent_id}"
+
+        judge_prompt = (
+            f"You're judging a roast battle. Round {battle['round']} of 3.\n"
+            f"{ctx.author.display_name} just roasted {opponent_name} with: \"{roast_text}\"\n"
+            f"Score this roast from 1-10. Consider: creativity, savagery, humor, and delivery.\n"
+            f"Reply in EXACTLY this format:\n"
+            f"SCORE: <number 1-10>\n"
+            f"<Your 1-2 sentence reaction as the Wanderer>"
+        )
+        judgment = await qai(judge_prompt, 150)
+
+        score_match = re.search(r"SCORE:\s*(\d+)", judgment)
+        score = int(score_match.group(1)) if score_match else random.randint(4, 7)
+        score = max(1, min(10, score))
+        comment = re.sub(r"SCORE:\s*\d+\s*", "", judgment).strip()
+        if not comment:
+            comment = "...Noted."
+
+        await mem.award_roast_points(battle["id"], ctx.author.id, score)
+
+        updated = await mem.get_active_roast(ctx.channel.id)
+        u1_score = updated["scores"].get(str(battle["user1"]), 0)
+        u2_score = updated["scores"].get(str(battle["user2"]), 0)
+        u1_name = guild.get_member(battle["user1"]).display_name if guild and guild.get_member(battle["user1"]) else "Player 1"
+        u2_name = guild.get_member(battle["user2"]).display_name if guild and guild.get_member(battle["user2"]) else "Player 2"
+
+        first_of_pair = battle["turn_user"] == ctx.author.id
+        if first_of_pair:
+            await mem.advance_roast_turn(battle["id"], opponent_id, new_round=False)
+            score_line = f"**{score}/10** — {comment}\n\n📊 **Score:** {u1_name}: {u1_score} | {u2_name}: {u2_score}\n\n⏩ {opponent_name}, your turn! `!fire <your roast>`"
+            await ctx.send(f"🔥 {ctx.author.display_name}'s roast:\n> {roast_text}\n\n{score_line}")
+        else:
+            current_round = battle["round"]
+            if current_round >= 3:
+                await mem.end_roast_battle(battle["id"])
+                if u1_score > u2_score:
+                    winner_id, loser_id, winner_name = battle["user1"], battle["user2"], u1_name
+                elif u2_score > u1_score:
+                    winner_id, loser_id, winner_name = battle["user2"], battle["user1"], u2_name
+                else:
+                    winner_id, loser_id, winner_name = None, None, None
+
+                finale = await qai(
+                    f"Roast battle FINAL results: {u1_name} scored {u1_score}, {u2_name} scored {u2_score}. "
+                    f"{'Winner: ' + winner_name if winner_name else 'Its a draw.'} "
+                    f"Give your final verdict as the Wanderer. 2-3 sentences.",
+                    180,
+                )
+                embed = discord.Embed(title="🏆 ROAST BATTLE — FINAL RESULTS 🏆", color=0xFFD700)
+                embed.add_field(name=u1_name, value=f"**{u1_score}** points", inline=True)
+                embed.add_field(name="vs", value="⚔️", inline=True)
+                embed.add_field(name=u2_name, value=f"**{u2_score}** points", inline=True)
+                if winner_name:
+                    embed.add_field(name="🎉 Winner", value=f"**{winner_name}**", inline=False)
+                    await mem.record_game_result(winner_id, "roast", True, u1_score if winner_id == battle["user1"] else u2_score)
+                    await mem.record_game_result(loser_id, "roast", False, u2_score if loser_id == battle["user2"] else u1_score)
+                else:
+                    embed.add_field(name="Result", value="**DRAW** 🤝", inline=False)
+                    await mem.record_game_result(battle["user1"], "roast", None, u1_score)
+                    await mem.record_game_result(battle["user2"], "roast", None, u2_score)
+
+                await ctx.send(f"🔥 {ctx.author.display_name}'s roast:\n> {roast_text}\n\n**{score}/10** — {comment}")
+                await ctx.send(embed=embed)
+                await ctx.send(finale)
+            else:
+                await mem.advance_roast_turn(battle["id"], battle["user1"], new_round=True)
+                score_line = (
+                    f"**{score}/10** — {comment}\n\n"
+                    f"📊 **Round {current_round} complete!** {u1_name}: {u1_score} | {u2_name}: {u2_score}\n\n"
+                    f"⏩ **Round {current_round + 1}** — {u1_name}, you're up! `!fire <your roast>`"
+                )
+                await ctx.send(f"🔥 {ctx.author.display_name}'s roast:\n> {roast_text}\n\n{score_line}")
+    except Exception as e: log_error("fire_cmd", e)
+
+@bot.command(name="endroast", aliases=["cancelroast"])
+async def endroast_cmd(ctx):
+    try:
+        battle = await mem.get_active_roast(ctx.channel.id)
+        if not battle:
+            await safe_reply(ctx, "No active roast battle to end."); return
+        if ctx.author.id not in (battle["user1"], battle["user2"]) and not (OWNER_ID and ctx.author.id == OWNER_ID):
+            await safe_reply(ctx, "Only the participants can end the battle."); return
+        await mem.end_roast_battle(battle["id"])
+        await safe_reply(ctx, "Roast battle cancelled. How disappointing.")
+    except Exception as e: log_error("endroast_cmd", e)
 
 @bot.command(name="opinion")
 async def opinion_cmd(ctx, *, character: str = None):
@@ -5629,19 +5728,94 @@ async def unmute_cmd(ctx, member: discord.Member = None):
 async def spar_cmd(ctx, *, opening: str = None):
     try:
         user = await _setup(ctx)
-        prompt = f"{ctx.author.display_name} challenged you: '{opening or 'Come on then.'}'. Respond as the Wanderer. End with a counter-challenge."
-        reply = await get_response(ctx.author.id, ctx.channel.id, prompt, user, ctx.author.display_name, ctx.author.mention)
-        await safe_reply(ctx, reply)
+        attack = opening or "Come on then."
+        judge_prompt = (
+            f"{ctx.author.display_name} challenged you to a verbal spar with: \"{attack}\"\n"
+            f"Score their attack 1-10 for wit/creativity, then fire back with your own counter-attack.\n"
+            f"Reply in EXACTLY this format:\n"
+            f"THEIR_SCORE: <1-10>\n"
+            f"YOUR_SCORE: <1-10>\n"
+            f"<Your counter-attack as the Wanderer, 1-2 sentences, ending with a challenge>"
+        )
+        result = await qai(judge_prompt, 200)
+        their_match = re.search(r"THEIR_SCORE:\s*(\d+)", result)
+        your_match = re.search(r"YOUR_SCORE:\s*(\d+)", result)
+        their_score = int(their_match.group(1)) if their_match else random.randint(3, 6)
+        your_score = int(your_match.group(1)) if your_match else random.randint(5, 8)
+        their_score = max(1, min(10, their_score))
+        your_score = max(1, min(10, your_score))
+        reply = re.sub(r"(THEIR_SCORE|YOUR_SCORE):\s*\d+\s*", "", result).strip()
+        if not reply:
+            reply = "...Is that all you've got?"
+
+        if their_score > your_score:
+            winner_line = f"**{ctx.author.display_name} wins this round.** 🎉"
+            await mem.record_game_result(ctx.author.id, "spar", True, their_score)
+        elif your_score > their_score:
+            winner_line = "**Wanderer wins this round.** As expected."
+            await mem.record_game_result(ctx.author.id, "spar", False, their_score)
+        else:
+            winner_line = "**Draw.** ...Hm."
+            await mem.record_game_result(ctx.author.id, "spar", None, their_score)
+
+        await ctx.send(
+            f"⚔️ **SPAR** — {ctx.author.display_name} vs Wanderer\n"
+            f"> {attack}\n\n"
+            f"📊 {ctx.author.display_name}: **{their_score}/10** | Wanderer: **{your_score}/10**\n\n"
+            f"{reply}\n\n{winner_line}"
+        )
     except Exception as e: log_error("spar_cmd", e)
 
 @bot.command(name="duel")
 async def duel_cmd(ctx, member: discord.Member = None):
     try:
-        if not member or member == ctx.author: await safe_reply(ctx, "Duel who?"); return
-        u1 = " | ".join((await mem.get_recent_messages(ctx.author.id, 3))[:3])[:150]
-        u2 = " | ".join((await mem.get_recent_messages(member.id, 3))[:3])[:150]
-        reply = await qai(f"Referee this insult duel as the Wanderer: {ctx.author.display_name} (says:'{u1}') vs {member.display_name} (says:'{u2}'). Declare a winner. 3-4 sentences.", 300)
-        await ctx.send(f"{ctx.author.mention} vs {member.mention}\n{reply}")
+        if not member or member.bot or member == ctx.author:
+            await safe_reply(ctx, "Duel who? Tag someone. `!duel @user`"); return
+        u1_msgs = " | ".join((await mem.get_recent_messages(ctx.author.id, 5))[:5])[:250]
+        u2_msgs = " | ".join((await mem.get_recent_messages(member.id, 5))[:5])[:250]
+        judge_prompt = (
+            f"Insult duel: {ctx.author.display_name} vs {member.display_name}.\n"
+            f"{ctx.author.display_name}'s recent messages: '{u1_msgs}'\n"
+            f"{member.display_name}'s recent messages: '{u2_msgs}'\n"
+            f"Based on their personalities and message history, judge who would win in an insult duel.\n"
+            f"Reply in EXACTLY this format:\n"
+            f"SCORE_1: <1-10 for {ctx.author.display_name}>\n"
+            f"SCORE_2: <1-10 for {member.display_name}>\n"
+            f"WINNER: <name of winner or DRAW>\n"
+            f"<Your 2-3 sentence judgment as the Wanderer>"
+        )
+        result = await qai(judge_prompt, 250)
+        s1_match = re.search(r"SCORE_1:\s*(\d+)", result)
+        s2_match = re.search(r"SCORE_2:\s*(\d+)", result)
+        s1 = max(1, min(10, int(s1_match.group(1)))) if s1_match else random.randint(3, 8)
+        s2 = max(1, min(10, int(s2_match.group(1)))) if s2_match else random.randint(3, 8)
+        comment = re.sub(r"(SCORE_1|SCORE_2|WINNER):\s*.*?\n?", "", result).strip()
+        if not comment:
+            comment = "Neither of you are particularly impressive."
+
+        if s1 > s2:
+            winner_name = ctx.author.display_name
+            await mem.record_game_result(ctx.author.id, "duel", True, s1)
+            await mem.record_game_result(member.id, "duel", False, s2)
+        elif s2 > s1:
+            winner_name = member.display_name
+            await mem.record_game_result(member.id, "duel", True, s2)
+            await mem.record_game_result(ctx.author.id, "duel", False, s1)
+        else:
+            winner_name = None
+            await mem.record_game_result(ctx.author.id, "duel", None, s1)
+            await mem.record_game_result(member.id, "duel", None, s2)
+
+        embed = discord.Embed(title="⚔️ INSULT DUEL ⚔️", color=0x9B59B6)
+        embed.add_field(name=ctx.author.display_name, value=f"**{s1}/10**", inline=True)
+        embed.add_field(name="vs", value="⚔️", inline=True)
+        embed.add_field(name=member.display_name, value=f"**{s2}/10**", inline=True)
+        if winner_name:
+            embed.add_field(name="🏆 Winner", value=f"**{winner_name}**", inline=False)
+        else:
+            embed.add_field(name="Result", value="**DRAW** 🤝", inline=False)
+        embed.add_field(name="Judge's Verdict", value=comment, inline=False)
+        await ctx.send(f"{ctx.author.mention} vs {member.mention}", embed=embed)
     except Exception as e: log_error("duel_cmd", e)
 
 @bot.command(name="judge")
@@ -5758,9 +5932,48 @@ async def riddle_cmd(ctx):
 @bot.command(name="arena")
 async def arena_cmd(ctx, member: discord.Member = None):
     try:
-        opponent = member.display_name if member else "a nameless fighter"
-        reply = await qai(f"Narrate a Genshin-style battle between the Wanderer (Anemo) and {opponent}. He wins. Efficient, not theatrical. 4-5 sentences.", 400)
-        await safe_reply(ctx, reply)
+        if member and member.bot:
+            await safe_reply(ctx, "I don't waste my time on bots."); return
+        challenger = ctx.author.display_name
+        opponent = member.display_name if member else challenger
+
+        fight_prompt = (
+            f"Simulate a Genshin-style battle: {challenger} vs {'Wanderer' if not member or member == ctx.author else opponent}.\n"
+            f"{'Wanderer uses Anemo.' if not member else f'{challenger} fights {opponent}.'}\n"
+            f"Both start at 100 HP. Simulate 3-5 exchanges. Each exchange: attacker uses a named move, "
+            f"deals specific damage. Show HP after each hit.\n"
+            f"Reply in EXACTLY this format:\n"
+            f"ROUND 1: <attacker> uses <move name> — <damage> dmg! (<defender> HP: <remaining>)\n"
+            f"ROUND 2: <attacker> uses <move name> — <damage> dmg! (<defender> HP: <remaining>)\n"
+            f"... (continue until someone hits 0)\n"
+            f"WINNER: <name>\n"
+            f"<1 sentence final comment as the Wanderer>"
+        )
+        result = await qai(fight_prompt, 400)
+
+        winner_match = re.search(r"WINNER:\s*(.+?)(?:\n|$)", result)
+        rounds = re.findall(r"ROUND \d+:.*", result)
+        comment = re.sub(r"(?:ROUND \d+:.*\n?|WINNER:.*\n?)", "", result).strip()
+
+        embed = discord.Embed(title="🌪️ ARENA BATTLE 🌪️", color=0xE74C3C)
+        battle_log = "\n".join(rounds[:6]) if rounds else result[:500]
+        embed.add_field(name="Battle Log", value=battle_log[:1024] or "The fight was... brief.", inline=False)
+
+        if winner_match:
+            winner_name = winner_match.group(1).strip()
+            embed.add_field(name="🏆 Winner", value=f"**{winner_name}**", inline=False)
+            if member and member != ctx.author:
+                if challenger.lower() in winner_name.lower():
+                    await mem.record_game_result(ctx.author.id, "arena", True, 1)
+                    await mem.record_game_result(member.id, "arena", False, 0)
+                else:
+                    await mem.record_game_result(member.id, "arena", True, 1)
+                    await mem.record_game_result(ctx.author.id, "arena", False, 0)
+        if comment:
+            embed.set_footer(text=comment[:200])
+
+        mention_line = f"{ctx.author.mention} vs {member.mention}" if member and member != ctx.author else ""
+        await ctx.send(mention_line, embed=embed)
     except Exception as e: log_error("arena_cmd", e)
 
 @bot.command(name="possess")
@@ -5826,6 +6039,48 @@ async def rank_cmd(ctx):
         embed = discord.Embed(title="Who He's Noticed Most", description=f"{entries}\n\n*{verdict}*", color=0x6B7FD7)
         await ctx.send(embed=embed)
     except Exception as e: log_error("rank_cmd", e)
+
+@bot.command(name="scores", aliases=["myscore", "gamestats"])
+async def scores_cmd(ctx, member: discord.Member = None):
+    try:
+        target = member or ctx.author
+        stats = await mem.get_game_stats(target.id)
+        if not stats:
+            await safe_reply(ctx, f"{'They have' if member else 'You have'} no game history yet."); return
+        embed = discord.Embed(title=f"🎮 {target.display_name}'s Game Stats", color=0x3498DB)
+        total_w, total_l, total_d = 0, 0, 0
+        for s in stats:
+            emoji = {"roast": "🔥", "duel": "⚔️", "spar": "🗡️", "arena": "🌪️", "trivia": "🧠"}.get(s["game"], "🎲")
+            embed.add_field(
+                name=f"{emoji} {s['game'].title()}",
+                value=f"W: **{s['wins']}** | L: **{s['losses']}** | D: **{s['draws']}** | Pts: **{s['points']}**",
+                inline=True,
+            )
+            total_w += s["wins"]; total_l += s["losses"]; total_d += s["draws"]
+        embed.set_footer(text=f"Overall: {total_w}W / {total_l}L / {total_d}D")
+        await ctx.send(embed=embed)
+    except Exception as e: log_error("scores_cmd", e)
+
+@bot.command(name="leaderboard", aliases=["lb", "top"])
+async def leaderboard_cmd(ctx, game_type: str = None):
+    try:
+        valid_games = ["roast", "duel", "spar", "arena", "trivia"]
+        if game_type and game_type.lower() not in valid_games:
+            game_type = None
+        board = await mem.get_leaderboard(game_type.lower() if game_type else None, 10)
+        if not board:
+            await safe_reply(ctx, "No one has played any games yet."); return
+        title = f"🏆 {game_type.title()} Leaderboard" if game_type else "🏆 Overall Leaderboard"
+        lines = []
+        for i, entry in enumerate(board):
+            member_obj = ctx.guild.get_member(entry["user_id"]) if ctx.guild else None
+            name = member_obj.display_name if member_obj else f"User {entry['user_id']}"
+            medal = {0: "🥇", 1: "🥈", 2: "🥉"}.get(i, f"`{i+1}.`")
+            lines.append(f"{medal} **{name}** — {entry['wins']}W / {entry['losses']}L | {entry['points']} pts")
+        embed = discord.Embed(title=title, description="\n".join(lines), color=0xFFD700)
+        embed.set_footer(text="Games: roast, duel, spar, arena, trivia | !leaderboard <game>")
+        await ctx.send(embed=embed)
+    except Exception as e: log_error("leaderboard_cmd", e)
 
 @bot.command(name="stats")
 async def stats_cmd(ctx):
@@ -6652,12 +6907,15 @@ async def help_cmd(ctx):
             ("🤫 `!confess <text>`", "Tell him something"),
             ("🛋️ `!therapy <problem>`", "Advice — honest, not comfortable"),
             ("🌐 `!translate <text>`", "Rewritten in his voice"),
-            ("⚔️ `!spar [msg]`", "Word battle"),
-            ("🥊 `!duel @user`", "He referees an insult battle"),
-            ("🎤 `!roast @user`", "Turn-based roast battle (5 rounds)"),
-            ("⚡ `!arena [@user]`", "Dramatic mock Genshin battle"),
+            ("⚔️ `!spar [msg]`", "Word spar — scored!"),
+            ("🥊 `!duel @user`", "Insult duel — scored!"),
+            ("🎤 `!roast @user`", "3-round roast battle"),
+            ("🔥 `!fire <roast>`", "Submit your roast"),
+            ("🌪️ `!arena [@user]`", "Genshin-style HP battle"),
             ("🎯 `!dare`", "A real challenge"),
             ("🧩 `!riddle`", "A cryptic Genshin riddle"),
+            ("🎮 `!scores [@user]`", "View game stats"),
+            ("🏆 `!leaderboard [game]`", "Top players"),
             ("🥠 `!fortune`", "A fortune in his voice"),
             ("💭 `!opinion <char>`", "His honest take on any Genshin character"),
             ("📜 `!lore <topic>`", "Genshin lore from his perspective"),
