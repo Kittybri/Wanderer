@@ -5776,7 +5776,7 @@ async def rpg_cmd(ctx):
                 description=intro or "The world has ended. The Harbingers remain. You must rise.",
                 color=0x8B0000,
             )
-            embed.add_field(name="Your Mission", value="Defeat all 11 Fatui Harbingers to become the new #1.", inline=False)
+            embed.add_field(name="Your Mission", value="Defeat all 11 Fatui Harbingers to save Teyvat.", inline=False)
             embed.add_field(name="How It Works", value=(
                 "• 10 rounds of choices per boss\n"
                 "• Each choice earns 0, 1, or 3 skill points\n"
