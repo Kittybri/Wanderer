@@ -5690,9 +5690,43 @@ async def _rpg_boss_fight(channel, user_id: int, boss_index: int, boss_points: i
         embed.add_field(name="Harbingers Beaten", value=f"**{len(beaten)}** / 11", inline=True)
 
         if next_boss >= len(HARBINGERS):
-            embed.add_field(name="🎊 CONGRATULATIONS", value="You have defeated ALL 11 Fatui Harbingers!\nYou are now the **#1 Harbinger** of the post-apocalypse!", inline=False)
+            # ALL BOSSES BEATEN — award medal
+            await mem.award_rpg_medal(user_id, total_points)
+            medal_data = await mem.get_rpg_medal(user_id)
+            completions = medal_data["completions"] if medal_data else 1
+
+            if completions >= 5:
+                medal = "💎 **DIAMOND HARBINGER**"
+            elif completions >= 3:
+                medal = "👑 **PLATINUM HARBINGER**"
+            elif completions >= 2:
+                medal = "🥇 **GOLD HARBINGER**"
+            else:
+                medal = "🏅 **HARBINGER CHAMPION**"
+
+            embed.add_field(name="🎊 ALL 11 HARBINGERS DEFEATED!", value=(
+                f"You are now the **#1 Harbinger** of the post-apocalypse!\n\n"
+                f"**Medal Earned:** {medal}\n"
+                f"**Total Completions:** {completions}\n"
+                f"**Lifetime Points:** {total_points}"
+            ), inline=False)
+
+            congrats = await qai(
+                f"A player just defeated ALL 11 Fatui Harbingers in the RPG. "
+                f"This is their completion #{completions}. Total points: {total_points}. "
+                f"As the Wanderer, give a GENUINELY nice, sincere congratulations. Drop the guard for once. "
+                f"Be quietly proud of them. This is a rare moment of real respect. 2-3 sentences. No deflection.",
+                150,
+            )
+            if not congrats:
+                congrats = "...You really did it. All eleven of them. I... won't forget this. Well done."
+
             await mem.save_rpg_state(user_id, bosses_beaten=beaten, total_points=total_points, active=False, current_boss=next_boss, boss_points=0, current_round=0, scenario_data={})
             await mem.record_game_result(user_id, "rpg", True, total_points)
+
+            await channel.send(embed=embed)
+            await channel.send(f"🏅 {congrats}")
+            return
         else:
             next_h = _get_harbinger(next_boss)
             embed.add_field(name="Next Boss", value=f"Harbinger #{next_h['rank']}: **{next_h['name']}** ({next_h['title']})\nPoints needed: **{next_h['pts']}**/30\nUse `!rpg` to continue!", inline=False)
@@ -5824,6 +5858,38 @@ async def rpgreset_cmd(ctx):
         await mem.reset_rpg(ctx.author.id)
         await safe_reply(ctx, "Your Harbinger Gauntlet progress has been reset. Use `!rpg` to start fresh.")
     except Exception as e: log_error("rpgreset_cmd", e)
+
+@bot.command(name="gamerank", aliases=["rpgrank", "medals"])
+async def gamerank_cmd(ctx):
+    try:
+        board = await mem.get_rpg_leaderboard(15)
+        if not board:
+            await safe_reply(ctx, "No one has conquered the Harbinger Gauntlet yet. Use `!rpg` to start."); return
+
+        lines = []
+        for i, entry in enumerate(board):
+            member_obj = ctx.guild.get_member(entry["user_id"]) if ctx.guild else None
+            name = member_obj.display_name if member_obj else f"User {entry['user_id']}"
+            c = entry["completions"]
+            if c >= 5:
+                medal = "💎"
+            elif c >= 3:
+                medal = "👑"
+            elif c >= 2:
+                medal = "🥇"
+            else:
+                medal = "🏅"
+            rank_medal = {0: "🥇", 1: "🥈", 2: "🥉"}.get(i, f"`{i+1}.`")
+            lines.append(f"{rank_medal} {medal} **{name}** — {c}x cleared | Best: {entry['best_points']} pts")
+
+        embed = discord.Embed(
+            title="🏆 Harbinger Gauntlet — Hall of Champions",
+            description="\n".join(lines),
+            color=0xFFD700,
+        )
+        embed.set_footer(text="💎 = 5+ clears | 👑 = 3+ | 🥇 = 2+ | 🏅 = 1 clear")
+        await ctx.send(embed=embed)
+    except Exception as e: log_error("gamerank_cmd", e)
 
 
 @bot.command(name="dare")
@@ -7253,6 +7319,7 @@ async def help_cmd(ctx):
             ("🏆 `!leaderboard [game]`", "Top players"),
             ("🎮 `!rpg`", "Harbinger Gauntlet RPG — defeat all 11 bosses!"),
             ("📊 `!rpgstats`", "View your RPG progress"),
+            ("🏆 `!gamerank`", "Hall of Champions — medal rankings"),
             ("🥠 `!fortune`", "A fortune in his voice"),
             ("💭 `!opinion <char>`", "His honest take on any Genshin character"),
             ("📜 `!lore <topic>`", "Genshin lore from his perspective"),

@@ -156,6 +156,13 @@ class Memory:
                     total_points INTEGER DEFAULT 0,
                     PRIMARY KEY (user_id, game_type)
                 );
+                CREATE TABLE IF NOT EXISTS rpg_medals (
+                    user_id        INTEGER PRIMARY KEY,
+                    completions    INTEGER DEFAULT 0,
+                    best_points    INTEGER DEFAULT 0,
+                    first_clear_ts REAL DEFAULT 0,
+                    last_clear_ts  REAL DEFAULT 0
+                );
                 CREATE TABLE IF NOT EXISTS rpg_state (
                     user_id        INTEGER PRIMARY KEY,
                     current_boss   INTEGER DEFAULT 0,
@@ -2651,6 +2658,41 @@ class Memory:
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute("DELETE FROM rpg_state WHERE user_id=?", (user_id,))
             await db.commit()
+
+    async def award_rpg_medal(self, user_id: int, total_points: int):
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("SELECT completions, best_points FROM rpg_medals WHERE user_id=?", (user_id,)) as cur:
+                row = await cur.fetchone()
+            now = time.time()
+            if row:
+                new_best = max(row[1], total_points)
+                await db.execute(
+                    "UPDATE rpg_medals SET completions=completions+1, best_points=?, last_clear_ts=? WHERE user_id=?",
+                    (new_best, now, user_id),
+                )
+            else:
+                await db.execute(
+                    "INSERT INTO rpg_medals (user_id, completions, best_points, first_clear_ts, last_clear_ts) VALUES (?,1,?,?,?)",
+                    (user_id, total_points, now, now),
+                )
+            await db.commit()
+
+    async def get_rpg_medal(self, user_id: int) -> dict | None:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("SELECT completions, best_points, first_clear_ts FROM rpg_medals WHERE user_id=?", (user_id,)) as cur:
+                row = await cur.fetchone()
+        if not row:
+            return None
+        return {"completions": row[0], "best_points": row[1], "first_clear_ts": row[2]}
+
+    async def get_rpg_leaderboard(self, limit: int = 15) -> list[dict]:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                "SELECT user_id, completions, best_points, first_clear_ts FROM rpg_medals ORDER BY completions DESC, best_points DESC LIMIT ?",
+                (limit,),
+            ) as cur:
+                rows = await cur.fetchall()
+        return [{"user_id": r[0], "completions": r[1], "best_points": r[2], "first_clear_ts": r[3]} for r in rows]
 
     async def list_inside_jokes(self, user_id: int, limit: int = 6) -> list[str]:
         async with aiosqlite.connect(DB_PATH) as db:
