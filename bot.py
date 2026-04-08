@@ -5832,9 +5832,9 @@ async def rpg_cmd(ctx):
 
         if not state["active"]:
             if state["current_boss"] >= len(HARBINGERS):
-                await safe_reply(ctx, "You've already conquered all 11 Harbingers. Use `!rpgreset` to play again.")
+                await safe_reply(ctx, "You've already conquered all 11 Harbingers. Use `!rpg0reset` to play again.")
             else:
-                await safe_reply(ctx, "Your quest was interrupted. Use `!rpgreset` to start fresh.")
+                await safe_reply(ctx, "Your quest was interrupted. Use `!rpg0reset` to start fresh.")
             return
 
         boss_index = state["current_boss"]
@@ -5890,7 +5890,7 @@ async def rpgstats_cmd(ctx, member: discord.Member = None):
         await ctx.send(embed=embed)
     except Exception as e: log_error("rpgstats_cmd", e)
 
-@bot.command(name="rpgreset0", aliases=["rpgreset"])
+@bot.command(name="rpg0reset", aliases=["rpgreset"])
 async def rpgreset_cmd(ctx):
     try:
         state = await mem.get_rpg_state(ctx.author.id)
