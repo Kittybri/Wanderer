@@ -4045,7 +4045,30 @@ async def on_message(message):
         if message.author.bot:
             # Allow partner bot messages through for cross-bot interaction
             if PARTNER_BOT_ID and message.author.id == PARTNER_BOT_ID:
-                pass  # Let it through
+                # Don't respond to partner's RPG game messages
+                if message.embeds and any(
+                    e.title and ("HARBINGER" in (e.title or "") or "ARENA BATTLE" in (e.title or "") or "Round" in (e.title or ""))
+                    for e in message.embeds
+                ):
+                    return
+                rpg_text = (message.content or "").lower()
+                if "!rpg" in rpg_text or "!fire" in rpg_text or "!quest" in rpg_text or "harbinger gauntlet" in rpg_text:
+                    return
+                # React to partner bot's RPG victory announcements
+                if "conquered all 11 fatui harbingers" in rpg_text and "scaramouche" in rpg_text:
+                    try:
+                        comment = await qai(
+                            "Someone just beat all 11 Fatui Harbingers in Scaramouche's RPG game. "
+                            "As the Wanderer, make a short comment acknowledging it — something like "
+                            "'seems like you were able to take the game brought by my other me with no problem' "
+                            "but in your own words. Stay in character. 1-2 sentences.",
+                            100,
+                        )
+                        if comment:
+                            await message.channel.send(comment)
+                    except Exception:
+                        pass
+                    return
             else:
                 return
 
@@ -5531,13 +5554,27 @@ async def _rpg_generate_scenario(user_name: str, boss: dict, round_num: int, bos
     raw = await qai(prompt, 400)
     if not raw:
         return None
-    scenario_match = re.search(r"SCENARIO:\s*(.+?)(?=\nA\))", raw, re.DOTALL)
+    scenario_match = re.search(r"SCENARIO:\s*(.+?)(?=\s*\n\s*A[\)\.])", raw, re.DOTALL)
+    if not scenario_match:
+        scenario_match = re.search(r"SCENARIO:\s*(.+?)(?=\n[A-C][\)\.])", raw, re.DOTALL)
+    if not scenario_match:
+        scenario_match = re.search(r"^(.+?)(?=\n\s*A[\)\.])", raw, re.DOTALL)
     choices = []
     for letter in ("A", "B", "C"):
-        m = re.search(rf"{letter}\)\s*(.+?)\s*\|\s*PTS:\s*(\d+)\s*\|\s*RESULT:\s*(.+?)(?=\n[ABC]\)|\Z)", raw, re.DOTALL)
+        m = re.search(rf"{letter}[\)\.\:]\s*(.+?)\s*\|\s*PTS:\s*(\d+)\s*\|\s*RESULT:\s*(.+?)(?=\n\s*[A-C][\)\.\:]|\Z)", raw, re.DOTALL)
+        if not m:
+            m = re.search(rf"{letter}[\)\.\:]\s*(.+?)\s*\|\s*(?:PTS|POINTS?):\s*(\d+)\s*\|\s*(?:RESULT:)?\s*(.+?)(?=\n\s*[A-C][\)\.\:]|\Z)", raw, re.DOTALL | re.IGNORECASE)
         if m:
-            choices.append({"label": m.group(1).strip()[:80], "points": int(m.group(2)), "result": m.group(3).strip()})
-    if len(choices) < 3 or not scenario_match:
+            choices.append({"label": m.group(1).strip()[:80], "points": max(0, min(3, int(m.group(2)))), "result": m.group(3).strip()})
+    if len(choices) < 3 and scenario_match:
+        pts_order = [3, 1, 0]
+        random.shuffle(pts_order)
+        choices = [
+            {"label": "Press forward aggressively", "points": pts_order[0], "result": "Bold move." if pts_order[0] == 3 else "Reckless." if pts_order[0] == 0 else "Could work."},
+            {"label": "Take a cautious approach", "points": pts_order[1], "result": "Smart." if pts_order[1] == 3 else "Too slow." if pts_order[1] == 0 else "Reasonable."},
+            {"label": "Fall back and regroup", "points": pts_order[2], "result": "Wise retreat." if pts_order[2] == 3 else "Cowardly." if pts_order[2] == 0 else "Safe enough."},
+        ]
+    if not scenario_match:
         return None
     return {"scenario": scenario_match.group(1).strip(), "choices": choices}
 
@@ -5569,7 +5606,7 @@ async def _rpg_handle_choice(interaction: discord.Interaction, user_id: int, cho
     try:
         state = await mem.get_rpg_state(user_id)
         if not state or not state["active"]:
-            await interaction.response.send_message("No active quest. Use `!rpg` to start.", ephemeral=True)
+            await interaction.response.send_message("No active quest. Use `!rpg0` to start.", ephemeral=True)
             return
 
         scenario_data = state["scenario_data"]
@@ -5632,7 +5669,7 @@ async def _rpg_handle_choice(interaction: discord.Interaction, user_id: int, cho
     except Exception as e:
         log_error("rpg_handle_choice", e)
         try:
-            await interaction.followup.send("Something went wrong. Use `!rpg` to continue.", ephemeral=True)
+            await interaction.followup.send("Something went wrong. Use `!rpg0` to continue.", ephemeral=True)
         except Exception:
             pass
 
@@ -5644,7 +5681,7 @@ async def _rpg_send_scenario(channel, user_id: int, boss_index: int, round_num: 
 
     scenario = await _rpg_generate_scenario(user_name, boss, round_num, boss_points)
     if not scenario:
-        await channel.send("*The path ahead is unclear... try `!rpg` again.*")
+        await channel.send("*The path ahead is unclear... try `!rpg0` again.*")
         return
 
     await mem.save_rpg_state(user_id, scenario_data=scenario, current_round=round_num)
@@ -5726,10 +5763,14 @@ async def _rpg_boss_fight(channel, user_id: int, boss_index: int, boss_points: i
 
             await channel.send(embed=embed)
             await channel.send(f"🏅 {congrats}")
+            # Notify for partner bot to see and comment on
+            guild = channel.guild if hasattr(channel, "guild") else None
+            winner_name = guild.get_member(user_id).display_name if guild and guild.get_member(user_id) else "Someone"
+            await channel.send(f"*{winner_name} has conquered all 11 Fatui Harbingers in Wanderer's Harbinger Gauntlet!* 🏆")
             return
         else:
             next_h = _get_harbinger(next_boss)
-            embed.add_field(name="Next Boss", value=f"Harbinger #{next_h['rank']}: **{next_h['name']}** ({next_h['title']})\nPoints needed: **{next_h['pts']}**/30\nUse `!rpg` to continue!", inline=False)
+            embed.add_field(name="Next Boss", value=f"Harbinger #{next_h['rank']}: **{next_h['name']}** ({next_h['title']})\nPoints needed: **{next_h['pts']}**/30\nUse `!rpg0` to continue!", inline=False)
             await mem.save_rpg_state(user_id, bosses_beaten=beaten, total_points=total_points, active=True, current_boss=next_boss, boss_points=0, current_round=0, scenario_data={})
 
         await channel.send(embed=embed)
@@ -5749,13 +5790,13 @@ async def _rpg_boss_fight(channel, user_id: int, boss_index: int, boss_points: i
             color=0xE74C3C,
         )
         embed.add_field(name="Your Points", value=f"**{boss_points}** / {needed} needed", inline=True)
-        embed.add_field(name="Retry", value="Use `!rpg` to try this boss again!", inline=False)
+        embed.add_field(name="Retry", value="Use `!rpg0` to try this boss again!", inline=False)
         await mem.save_rpg_state(user_id, boss_points=0, current_round=0, scenario_data={}, active=True)
         await channel.send(embed=embed)
         await mem.record_game_result(user_id, "rpg", False, boss_points)
 
 
-@bot.command(name="rpg", aliases=["quest", "harbinger"])
+@bot.command(name="rpg0", aliases=["quest0", "harbinger0"])
 async def rpg_cmd(ctx):
     try:
         state = await mem.get_rpg_state(ctx.author.id)
@@ -5819,13 +5860,13 @@ async def rpg_cmd(ctx):
 
     except Exception as e: log_error("rpg_cmd", e)
 
-@bot.command(name="rpgstats", aliases=["queststats"])
+@bot.command(name="rpgstats0", aliases=["queststats0", "rpgstats"])
 async def rpgstats_cmd(ctx, member: discord.Member = None):
     try:
         target = member or ctx.author
         state = await mem.get_rpg_state(target.id)
         if not state:
-            await safe_reply(ctx, f"{'They haven' if member else 'You haven'}'t started the Harbinger Gauntlet yet. Use `!rpg` to begin."); return
+            await safe_reply(ctx, f"{'They haven' if member else 'You haven'}'t started the Harbinger Gauntlet yet. Use `!rpg0` to begin."); return
 
         beaten = state["bosses_beaten"]
         current = _get_harbinger(state["current_boss"]) if state["current_boss"] < len(HARBINGERS) else None
@@ -5849,14 +5890,14 @@ async def rpgstats_cmd(ctx, member: discord.Member = None):
         await ctx.send(embed=embed)
     except Exception as e: log_error("rpgstats_cmd", e)
 
-@bot.command(name="rpgreset")
+@bot.command(name="rpgreset0", aliases=["rpgreset"])
 async def rpgreset_cmd(ctx):
     try:
         state = await mem.get_rpg_state(ctx.author.id)
         if not state:
-            await safe_reply(ctx, "Nothing to reset. Use `!rpg` to start."); return
+            await safe_reply(ctx, "Nothing to reset. Use `!rpg0` to start."); return
         await mem.reset_rpg(ctx.author.id)
-        await safe_reply(ctx, "Your Harbinger Gauntlet progress has been reset. Use `!rpg` to start fresh.")
+        await safe_reply(ctx, "Your Harbinger Gauntlet progress has been reset. Use `!rpg0` to start fresh.")
     except Exception as e: log_error("rpgreset_cmd", e)
 
 @bot.command(name="gamerank", aliases=["rpgrank", "medals"])
@@ -5864,7 +5905,7 @@ async def gamerank_cmd(ctx):
     try:
         board = await mem.get_rpg_leaderboard(15)
         if not board:
-            await safe_reply(ctx, "No one has conquered the Harbinger Gauntlet yet. Use `!rpg` to start."); return
+            await safe_reply(ctx, "No one has conquered the Harbinger Gauntlet yet. Use `!rpg0` to start."); return
 
         lines = []
         for i, entry in enumerate(board):
@@ -7317,7 +7358,7 @@ async def help_cmd(ctx):
             ("🧩 `!riddle`", "A cryptic Genshin riddle"),
             ("🎮 `!scores [@user]`", "View game stats"),
             ("🏆 `!leaderboard [game]`", "Top players"),
-            ("🎮 `!rpg`", "Harbinger Gauntlet RPG — defeat all 11 bosses!"),
+            ("🎮 `!rpg0`", "Harbinger Gauntlet RPG — defeat all 11 bosses!"),
             ("📊 `!rpgstats`", "View your RPG progress"),
             ("🏆 `!gamerank`", "Hall of Champions — medal rankings"),
             ("🥠 `!fortune`", "A fortune in his voice"),
