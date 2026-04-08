@@ -5551,7 +5551,10 @@ async def _rpg_generate_scenario(user_name: str, boss: dict, round_num: int, bos
         f"B) <choice text under 60 chars> | PTS: <0 or 1 or 3> | RESULT: <1 sentence outcome>\n"
         f"C) <choice text under 60 chars> | PTS: <0 or 1 or 3> | RESULT: <1 sentence outcome>"
     )
-    raw = await qai(prompt, 400)
+    # Use raw AI call — qai() post-processing (self-edit, strip_narration, diversify)
+    # destroys the structured SCENARIO/A)/B)/C) format
+    loop = asyncio.get_event_loop()
+    raw = await loop.run_in_executor(None, _groq_quick_blocking, prompt, 400)
     if not raw:
         return None
     scenario_match = re.search(r"SCENARIO:\s*(.+?)(?=\s*\n\s*A[\)\.])", raw, re.DOTALL)
