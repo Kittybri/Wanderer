@@ -156,6 +156,17 @@ class Memory:
                     total_points INTEGER DEFAULT 0,
                     PRIMARY KEY (user_id, game_type)
                 );
+                CREATE TABLE IF NOT EXISTS rpg_state (
+                    user_id        INTEGER PRIMARY KEY,
+                    current_boss   INTEGER DEFAULT 0,
+                    current_round  INTEGER DEFAULT 0,
+                    boss_points    INTEGER DEFAULT 0,
+                    total_points   INTEGER DEFAULT 0,
+                    bosses_beaten  TEXT DEFAULT '[]',
+                    scenario_data  TEXT DEFAULT '{}',
+                    active         INTEGER DEFAULT 0,
+                    last_updated   REAL DEFAULT 0
+                );
                 CREATE TABLE IF NOT EXISTS phrase_cooldowns (
                     scope       TEXT,
                     phrase_key  TEXT,
@@ -2593,6 +2604,53 @@ class Memory:
                 ) as cur:
                     rows = await cur.fetchall()
         return [{"user_id": r[0], "wins": r[1], "losses": r[2], "draws": r[3], "points": r[4]} for r in rows]
+
+    # ── RPG System ─────────────────────────────────────────────────────────────
+    async def get_rpg_state(self, user_id: int) -> dict | None:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                "SELECT current_boss, current_round, boss_points, total_points, bosses_beaten, scenario_data, active "
+                "FROM rpg_state WHERE user_id=?", (user_id,)
+            ) as cur:
+                row = await cur.fetchone()
+        if not row:
+            return None
+        return {
+            "current_boss": row[0], "current_round": row[1], "boss_points": row[2],
+            "total_points": row[3], "bosses_beaten": json.loads(row[4] or "[]"),
+            "scenario_data": json.loads(row[5] or "{}"), "active": bool(row[6]),
+        }
+
+    async def save_rpg_state(self, user_id: int, **kwargs):
+        async with aiosqlite.connect(DB_PATH) as db:
+            existing = await self.get_rpg_state(user_id)
+            if not existing:
+                await db.execute(
+                    "INSERT INTO rpg_state (user_id, current_boss, current_round, boss_points, total_points, "
+                    "bosses_beaten, scenario_data, active, last_updated) VALUES (?,?,?,?,?,?,?,?,?)",
+                    (user_id, kwargs.get("current_boss", 0), kwargs.get("current_round", 0),
+                     kwargs.get("boss_points", 0), kwargs.get("total_points", 0),
+                     json.dumps(kwargs.get("bosses_beaten", [])), json.dumps(kwargs.get("scenario_data", {})),
+                     1 if kwargs.get("active", False) else 0, time.time()),
+                )
+            else:
+                sets, vals = [], []
+                for k, v in kwargs.items():
+                    if k in ("bosses_beaten", "scenario_data"):
+                        sets.append(f"{k}=?"); vals.append(json.dumps(v))
+                    elif k == "active":
+                        sets.append(f"{k}=?"); vals.append(1 if v else 0)
+                    else:
+                        sets.append(f"{k}=?"); vals.append(v)
+                sets.append("last_updated=?"); vals.append(time.time())
+                vals.append(user_id)
+                await db.execute(f"UPDATE rpg_state SET {','.join(sets)} WHERE user_id=?", vals)
+            await db.commit()
+
+    async def reset_rpg(self, user_id: int):
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("DELETE FROM rpg_state WHERE user_id=?", (user_id,))
+            await db.commit()
 
     async def list_inside_jokes(self, user_id: int, limit: int = 6) -> list[str]:
         async with aiosqlite.connect(DB_PATH) as db:

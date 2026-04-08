@@ -5489,6 +5489,343 @@ async def _do_teachvideo(ctx, attachment, topic, msg_id=None):
 
 # ── All other commands (same as Scaramouche but Wanderer-voiced) ──────────────
 
+# ══════════════════════════════════════════════════════════════════════════════
+# RPG SYSTEM — Post-Apocalyptic Genshin Fatui Harbinger Gauntlet
+# ══════════════════════════════════════════════════════════════════════════════
+
+HARBINGERS = [
+    {"rank": 11, "name": "Tartaglia",   "title": "Childe",       "pts": 12, "theme": "a flooded battlefield where Hydro energy corrupts everything it touches"},
+    {"rank": 10, "name": "Capitano's Shadow", "title": "The Unknown", "pts": 14, "theme": "a fog-shrouded wasteland between nations, where nothing is as it seems"},
+    {"rank": 9,  "name": "Pantalone",   "title": "Regrator",      "pts": 16, "theme": "the ruins of a once-wealthy merchant city, now a lawless scavenger's paradise"},
+    {"rank": 8,  "name": "La Signora",  "title": "Fair Lady",     "pts": 17, "theme": "fields of eternal cryo-fire, where her rage still burns after death"},
+    {"rank": 7,  "name": "Sandrone",    "title": "Marionette",    "pts": 18, "theme": "a mechanical graveyard of broken automatons and puppet armies"},
+    {"rank": 6,  "name": "The Wanderer's Echo", "title": "Balladeer", "pts": 20, "theme": "a shattered sky domain crackling with Anemo — a god's abandoned past"},
+    {"rank": 5,  "name": "Pulcinella",  "title": "Rooster",       "pts": 21, "theme": "the crumbling political halls of Snezhnaya, full of traps and betrayal"},
+    {"rank": 4,  "name": "Arlecchino",  "title": "The Knave",     "pts": 23, "theme": "the burnt ruins of the House of the Hearth, her orphans turned soldiers"},
+    {"rank": 3,  "name": "Columbina",   "title": "Damselette",    "pts": 25, "theme": "a dreamlike corrupted sanctuary where lullabies drive you insane"},
+    {"rank": 2,  "name": "Il Dottore",  "title": "The Doctor",    "pts": 27, "theme": "a twisted laboratory filled with failed experiments and clone armies"},
+    {"rank": 1,  "name": "Pierro",      "title": "The Jester",    "pts": 28, "theme": "the Tsaritsa's frozen throne room at the end of the world"},
+]
+
+def _get_harbinger(boss_index: int) -> dict:
+    if 0 <= boss_index < len(HARBINGERS):
+        return HARBINGERS[boss_index]
+    return HARBINGERS[-1]
+
+async def _rpg_generate_scenario(user_name: str, boss: dict, round_num: int, boss_points: int):
+    """Generate a scenario with 3 choices. Returns parsed dict or None."""
+    prompt = (
+        f"POST-APOCALYPTIC GENSHIN IMPACT RPG. The world has fallen. Teyvat is in ruins.\n"
+        f"Player: {user_name} | Approaching Harbinger #{boss['rank']}: {boss['name']} ({boss['title']})\n"
+        f"Round {round_num}/10 | Current skill points this boss: {boss_points}/30\n"
+        f"Setting: {boss['theme']}\n\n"
+        f"Generate a survival scenario. The player faces a dangerous situation.\n"
+        f"Give exactly 3 choices. One is the BEST tactical choice (3 pts), one is OKAY (1 pt), one is BAD (0 pts).\n"
+        f"Randomize which letter is best — don't always make A the best.\n"
+        f"Reply in EXACTLY this format:\n"
+        f"SCENARIO: <2-3 sentence vivid scenario>\n"
+        f"A) <choice text under 60 chars> | PTS: <0 or 1 or 3> | RESULT: <1 sentence outcome>\n"
+        f"B) <choice text under 60 chars> | PTS: <0 or 1 or 3> | RESULT: <1 sentence outcome>\n"
+        f"C) <choice text under 60 chars> | PTS: <0 or 1 or 3> | RESULT: <1 sentence outcome>"
+    )
+    raw = await qai(prompt, 400)
+    if not raw:
+        return None
+    scenario_match = re.search(r"SCENARIO:\s*(.+?)(?=\nA\))", raw, re.DOTALL)
+    choices = []
+    for letter in ("A", "B", "C"):
+        m = re.search(rf"{letter}\)\s*(.+?)\s*\|\s*PTS:\s*(\d+)\s*\|\s*RESULT:\s*(.+?)(?=\n[ABC]\)|\Z)", raw, re.DOTALL)
+        if m:
+            choices.append({"label": m.group(1).strip()[:80], "points": int(m.group(2)), "result": m.group(3).strip()})
+    if len(choices) < 3 or not scenario_match:
+        return None
+    return {"scenario": scenario_match.group(1).strip(), "choices": choices}
+
+class RPGChoiceView(discord.ui.View):
+    def __init__(self, user_id: int, scenario_data: dict):
+        super().__init__(timeout=300)
+        self.user_id = user_id
+        styles = [discord.ButtonStyle.primary, discord.ButtonStyle.secondary, discord.ButtonStyle.success]
+        labels = ["A", "B", "C"]
+        for i, choice in enumerate(scenario_data.get("choices", [])):
+            btn = discord.ui.Button(label=f"{labels[i]}) {choice['label'][:70]}", style=styles[i], custom_id=f"rpg_{user_id}_{i}", row=i)
+            btn.callback = self._make_callback(i)
+            self.add_item(btn)
+
+    def _make_callback(self, index: int):
+        async def callback(interaction: discord.Interaction):
+            if interaction.user.id != self.user_id:
+                await interaction.response.send_message("This isn't your quest.", ephemeral=True)
+                return
+            await _rpg_handle_choice(interaction, self.user_id, index)
+            self.stop()
+        return callback
+
+    async def on_timeout(self):
+        pass
+
+async def _rpg_handle_choice(interaction: discord.Interaction, user_id: int, choice_index: int):
+    """Process a player's RPG choice."""
+    try:
+        state = await mem.get_rpg_state(user_id)
+        if not state or not state["active"]:
+            await interaction.response.send_message("No active quest. Use `!rpg` to start.", ephemeral=True)
+            return
+
+        scenario_data = state["scenario_data"]
+        choices = scenario_data.get("choices", [])
+        if choice_index >= len(choices):
+            await interaction.response.send_message("Invalid choice.", ephemeral=True)
+            return
+
+        chosen = choices[choice_index]
+        points = chosen["points"]
+        result_text = chosen["result"]
+        new_boss_points = state["boss_points"] + points
+        new_total = state["total_points"] + points
+        new_round = state["current_round"] + 1
+        boss = _get_harbinger(state["current_boss"])
+
+        pt_emoji = "🟢 +3" if points == 3 else ("🟡 +1" if points == 1 else "🔴 +0")
+
+        # Disable buttons
+        disabled_view = discord.ui.View()
+        labels = ["A", "B", "C"]
+        for i, c in enumerate(choices):
+            btn = discord.ui.Button(
+                label=f"{labels[i]}) {c['label'][:70]}",
+                style=discord.ButtonStyle.danger if i == choice_index and points == 0 else (discord.ButtonStyle.success if i == choice_index else discord.ButtonStyle.secondary),
+                disabled=True, row=i,
+            )
+            disabled_view.add_item(btn)
+        await interaction.response.edit_message(view=disabled_view)
+
+        comment = await qai(
+            f"Player chose: '{chosen['label']}' in a post-apocalyptic Genshin RPG scenario. "
+            f"Result: {result_text}. They got {points}/3 points. "
+            f"Give a SHORT 1-sentence comment as the Wanderer judging their decision.",
+            60,
+        )
+        comment = strip_narration(comment) if comment else "...Noted."
+
+        result_embed = discord.Embed(
+            title=f"{'✅ Smart move.' if points == 3 else ('⚠️ Could be worse.' if points == 1 else '❌ Terrible choice.')}",
+            description=f"> {chosen['label']}\n\n{result_text}",
+            color=0x2ECC71 if points == 3 else (0xF39C12 if points == 1 else 0xE74C3C),
+        )
+        result_embed.add_field(name="Points", value=f"{pt_emoji} ({new_boss_points}/{boss['pts']} needed)", inline=True)
+        result_embed.add_field(name="Round", value=f"{state['current_round']}/10", inline=True)
+        result_embed.set_footer(text=comment)
+        channel = interaction.channel
+
+        if new_round > 10:
+            await mem.save_rpg_state(user_id, boss_points=new_boss_points, total_points=new_total, current_round=new_round, scenario_data={})
+            await channel.send(embed=result_embed)
+            await asyncio.sleep(1.5)
+            await _rpg_boss_fight(channel, user_id, state["current_boss"], new_boss_points, new_total)
+        else:
+            await mem.save_rpg_state(user_id, boss_points=new_boss_points, total_points=new_total, current_round=new_round, scenario_data={})
+            await channel.send(embed=result_embed)
+            await asyncio.sleep(1.5)
+            await _rpg_send_scenario(channel, user_id, state["current_boss"], new_round, new_boss_points)
+
+    except Exception as e:
+        log_error("rpg_handle_choice", e)
+        try:
+            await interaction.followup.send("Something went wrong. Use `!rpg` to continue.", ephemeral=True)
+        except Exception:
+            pass
+
+async def _rpg_send_scenario(channel, user_id: int, boss_index: int, round_num: int, boss_points: int):
+    """Generate and send a new scenario with buttons."""
+    boss = _get_harbinger(boss_index)
+    guild = channel.guild if hasattr(channel, "guild") else None
+    user_name = guild.get_member(user_id).display_name if guild and guild.get_member(user_id) else "Traveler"
+
+    scenario = await _rpg_generate_scenario(user_name, boss, round_num, boss_points)
+    if not scenario:
+        await channel.send("*The path ahead is unclear... try `!rpg` again.*")
+        return
+
+    await mem.save_rpg_state(user_id, scenario_data=scenario, current_round=round_num)
+
+    embed = discord.Embed(
+        title=f"⚔️ Harbinger #{boss['rank']}: {boss['name']} — Round {round_num}/10",
+        description=scenario["scenario"],
+        color=0x8B0000,
+    )
+    embed.add_field(name="Skill Points", value=f"**{boss_points}** / {boss['pts']} needed to beat boss", inline=True)
+    embed.add_field(name="Total Points", value=f"**{(await mem.get_rpg_state(user_id) or {}).get('total_points', 0)}**", inline=True)
+    embed.set_footer(text=f"Choose wisely. {boss['title']} is watching.")
+
+    view = RPGChoiceView(user_id, scenario)
+    await channel.send(embed=embed, view=view)
+
+async def _rpg_boss_fight(channel, user_id: int, boss_index: int, boss_points: int, total_points: int):
+    """Resolve boss fight based on accumulated points."""
+    boss = _get_harbinger(boss_index)
+    needed = boss["pts"]
+    won = boss_points >= needed
+    state = await mem.get_rpg_state(user_id)
+    beaten = state.get("bosses_beaten", []) if state else []
+
+    if won:
+        beaten.append(boss["rank"])
+        next_boss = boss_index + 1
+
+        fight_prompt = (
+            f"EPIC boss fight narration. The player faces Fatui Harbinger #{boss['rank']} {boss['name']} ({boss['title']}).\n"
+            f"The player had {boss_points} skill points (needed {needed}). They WIN.\n"
+            f"Narrate a dramatic 3-4 sentence battle where the player defeats {boss['name']}. "
+            f"Include a specific finishing move. Post-apocalyptic Genshin style."
+        )
+        narration = await qai(fight_prompt, 300)
+
+        embed = discord.Embed(
+            title=f"🏆 VICTORY — Harbinger #{boss['rank']} {boss['name']} DEFEATED!",
+            description=narration or "The Harbinger falls.",
+            color=0xFFD700,
+        )
+        embed.add_field(name="Your Points", value=f"**{boss_points}** / {needed} needed", inline=True)
+        embed.add_field(name="Harbingers Beaten", value=f"**{len(beaten)}** / 11", inline=True)
+
+        if next_boss >= len(HARBINGERS):
+            embed.add_field(name="🎊 CONGRATULATIONS", value="You have defeated ALL 11 Fatui Harbingers!\nYou are now the **#1 Harbinger** of the post-apocalypse!", inline=False)
+            await mem.save_rpg_state(user_id, bosses_beaten=beaten, total_points=total_points, active=False, current_boss=next_boss, boss_points=0, current_round=0, scenario_data={})
+            await mem.record_game_result(user_id, "rpg", True, total_points)
+        else:
+            next_h = _get_harbinger(next_boss)
+            embed.add_field(name="Next Boss", value=f"Harbinger #{next_h['rank']}: **{next_h['name']}** ({next_h['title']})\nPoints needed: **{next_h['pts']}**/30\nUse `!rpg` to continue!", inline=False)
+            await mem.save_rpg_state(user_id, bosses_beaten=beaten, total_points=total_points, active=True, current_boss=next_boss, boss_points=0, current_round=0, scenario_data={})
+
+        await channel.send(embed=embed)
+        await mem.record_game_result(user_id, "rpg", True, boss_points)
+    else:
+        fight_prompt = (
+            f"Boss fight narration. The player faces Fatui Harbinger #{boss['rank']} {boss['name']} ({boss['title']}).\n"
+            f"The player only had {boss_points} skill points (needed {needed}). They LOSE.\n"
+            f"Narrate a dramatic 2-3 sentence battle where {boss['name']} overpowers the player. "
+            f"The player survives but is forced to retreat. Post-apocalyptic Genshin style."
+        )
+        narration = await qai(fight_prompt, 250)
+
+        embed = discord.Embed(
+            title=f"💀 DEFEATED — Harbinger #{boss['rank']} {boss['name']} wins!",
+            description=narration or "You weren't ready.",
+            color=0xE74C3C,
+        )
+        embed.add_field(name="Your Points", value=f"**{boss_points}** / {needed} needed", inline=True)
+        embed.add_field(name="Retry", value="Use `!rpg` to try this boss again!", inline=False)
+        await mem.save_rpg_state(user_id, boss_points=0, current_round=0, scenario_data={}, active=True)
+        await channel.send(embed=embed)
+        await mem.record_game_result(user_id, "rpg", False, boss_points)
+
+
+@bot.command(name="rpg", aliases=["quest", "harbinger"])
+async def rpg_cmd(ctx):
+    try:
+        state = await mem.get_rpg_state(ctx.author.id)
+
+        if not state:
+            await mem.save_rpg_state(ctx.author.id, current_boss=0, current_round=0, boss_points=0,
+                                     total_points=0, bosses_beaten=[], scenario_data={}, active=True)
+            boss = _get_harbinger(0)
+            intro = await qai(
+                f"You're the narrator of a post-apocalyptic Genshin Impact RPG. Teyvat has fallen. "
+                f"The Fatui Harbingers rule the wasteland. {ctx.author.display_name} must defeat all 11, "
+                f"starting from the weakest (#11 Tartaglia) to the strongest (#1 Pierro). "
+                f"Give a dramatic 3-4 sentence opening. Set the tone: dark, dangerous, epic.",
+                250,
+            )
+            embed = discord.Embed(
+                title="⚔️ HARBINGER GAUNTLET — The Fall of Teyvat",
+                description=intro or "The world has ended. The Harbingers remain. You must rise.",
+                color=0x8B0000,
+            )
+            embed.add_field(name="Your Mission", value="Defeat all 11 Fatui Harbingers to become the new #1.", inline=False)
+            embed.add_field(name="How It Works", value=(
+                "• 10 rounds of choices per boss\n"
+                "• Each choice earns 0, 1, or 3 skill points\n"
+                "• Need enough points to beat each boss\n"
+                "• Bosses get harder as you climb the ranks"
+            ), inline=False)
+            embed.add_field(name="First Boss", value=f"Harbinger #{boss['rank']}: **{boss['name']}** ({boss['title']})\nPoints needed: **{boss['pts']}**/30", inline=False)
+            await ctx.send(embed=embed)
+            await asyncio.sleep(2)
+            await _rpg_send_scenario(ctx.channel, ctx.author.id, 0, 1, 0)
+            return
+
+        if not state["active"]:
+            if state["current_boss"] >= len(HARBINGERS):
+                await safe_reply(ctx, "You've already conquered all 11 Harbingers. Use `!rpgreset` to play again.")
+            else:
+                await safe_reply(ctx, "Your quest was interrupted. Use `!rpgreset` to start fresh.")
+            return
+
+        boss_index = state["current_boss"]
+        round_num = state["current_round"]
+        boss_points = state["boss_points"]
+
+        if round_num == 0 or round_num > 10:
+            round_num = 1
+            boss_points = 0
+            await mem.save_rpg_state(ctx.author.id, current_round=1, boss_points=0, scenario_data={})
+
+        boss = _get_harbinger(boss_index)
+        embed = discord.Embed(
+            title=f"⚔️ Continuing Quest — Harbinger #{boss['rank']}: {boss['name']}",
+            description=f"Round {round_num}/10 | Points: {boss_points}/{boss['pts']} needed",
+            color=0x8B0000,
+        )
+        embed.add_field(name="Bosses Beaten", value=f"**{len(state['bosses_beaten'])}** / 11", inline=True)
+        embed.add_field(name="Total Points", value=f"**{state['total_points']}**", inline=True)
+        await ctx.send(embed=embed)
+        await asyncio.sleep(1)
+        await _rpg_send_scenario(ctx.channel, ctx.author.id, boss_index, round_num, boss_points)
+
+    except Exception as e: log_error("rpg_cmd", e)
+
+@bot.command(name="rpgstats", aliases=["queststats"])
+async def rpgstats_cmd(ctx, member: discord.Member = None):
+    try:
+        target = member or ctx.author
+        state = await mem.get_rpg_state(target.id)
+        if not state:
+            await safe_reply(ctx, f"{'They haven' if member else 'You haven'}'t started the Harbinger Gauntlet yet. Use `!rpg` to begin."); return
+
+        beaten = state["bosses_beaten"]
+        current = _get_harbinger(state["current_boss"]) if state["current_boss"] < len(HARBINGERS) else None
+
+        embed = discord.Embed(title=f"📊 {target.display_name}'s Harbinger Gauntlet", color=0x8B0000)
+
+        if beaten:
+            beaten_str = "\n".join(f"✅ #{r} — {_get_harbinger(11-r)['name']}" for r in sorted(beaten, reverse=True))
+        else:
+            beaten_str = "None yet"
+        embed.add_field(name=f"Bosses Defeated ({len(beaten)}/11)", value=beaten_str[:1024], inline=False)
+
+        if current and state["active"]:
+            embed.add_field(name="Current Boss", value=f"#{current['rank']} {current['name']} ({current['title']})", inline=True)
+            embed.add_field(name="Progress", value=f"Round {state['current_round']}/10 | {state['boss_points']}/{current['pts']} pts", inline=True)
+
+        embed.add_field(name="Total Lifetime Points", value=f"**{state['total_points']}**", inline=True)
+
+        if state["current_boss"] >= len(HARBINGERS):
+            embed.set_footer(text="🏆 ALL HARBINGERS DEFEATED — You are the #1 Harbinger!")
+        await ctx.send(embed=embed)
+    except Exception as e: log_error("rpgstats_cmd", e)
+
+@bot.command(name="rpgreset")
+async def rpgreset_cmd(ctx):
+    try:
+        state = await mem.get_rpg_state(ctx.author.id)
+        if not state:
+            await safe_reply(ctx, "Nothing to reset. Use `!rpg` to start."); return
+        await mem.reset_rpg(ctx.author.id)
+        await safe_reply(ctx, "Your Harbinger Gauntlet progress has been reset. Use `!rpg` to start fresh.")
+    except Exception as e: log_error("rpgreset_cmd", e)
+
+
 @bot.command(name="dare")
 async def dare_cmd(ctx):
     try:
@@ -6914,6 +7251,8 @@ async def help_cmd(ctx):
             ("🧩 `!riddle`", "A cryptic Genshin riddle"),
             ("🎮 `!scores [@user]`", "View game stats"),
             ("🏆 `!leaderboard [game]`", "Top players"),
+            ("🎮 `!rpg`", "Harbinger Gauntlet RPG — defeat all 11 bosses!"),
+            ("📊 `!rpgstats`", "View your RPG progress"),
             ("🥠 `!fortune`", "A fortune in his voice"),
             ("💭 `!opinion <char>`", "His honest take on any Genshin character"),
             ("📜 `!lore <topic>`", "Genshin lore from his perspective"),
