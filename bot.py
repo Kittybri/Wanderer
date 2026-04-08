@@ -5620,10 +5620,13 @@ async def fire_cmd(ctx, *, roast_text: str = None):
         first_of_pair = battle["turn_user"] == ctx.author.id
         if first_of_pair:
             await mem.advance_roast_turn(battle["id"], opponent_id, new_round=False)
-            score_line = f"**{score}/10** — {comment}\n\n📊 **Score:** {u1_name}: {u1_score} | {u2_name}: {u2_score}\n\n⏩ {opponent_name}, your turn! `!fire <your roast>`"
-            await ctx.send(f"🔥 {ctx.author.display_name}'s roast:\n> {roast_text}\n\n{score_line}")
+            await ctx.send(f"🔥 {ctx.author.display_name}'s roast:\n> {roast_text}\n\n**{score}/10** — {comment}")
+            await ctx.send(f"📊 **Score:** {u1_name}: {u1_score} | {u2_name}: {u2_score}\n\n⏩ {opponent_name}, your turn! `!fire <your roast>`")
         else:
             current_round = battle["round"]
+            # Show the roast + score first
+            await ctx.send(f"🔥 {ctx.author.display_name}'s roast:\n> {roast_text}\n\n**{score}/10** — {comment}")
+
             if current_round >= 3:
                 await mem.end_roast_battle(battle["id"])
                 if u1_score > u2_score:
@@ -5652,17 +5655,12 @@ async def fire_cmd(ctx, *, roast_text: str = None):
                     await mem.record_game_result(battle["user1"], "roast", None, u1_score)
                     await mem.record_game_result(battle["user2"], "roast", None, u2_score)
 
-                await ctx.send(f"🔥 {ctx.author.display_name}'s roast:\n> {roast_text}\n\n**{score}/10** — {comment}")
                 await ctx.send(embed=embed)
                 await ctx.send(finale)
             else:
                 await mem.advance_roast_turn(battle["id"], battle["user1"], new_round=True)
-                score_line = (
-                    f"**{score}/10** — {comment}\n\n"
-                    f"📊 **Round {current_round} complete!** {u1_name}: {u1_score} | {u2_name}: {u2_score}\n\n"
-                    f"⏩ **Round {current_round + 1}** — {u1_name}, you're up! `!fire <your roast>`"
-                )
-                await ctx.send(f"🔥 {ctx.author.display_name}'s roast:\n> {roast_text}\n\n{score_line}")
+                await ctx.send(f"📊 **Round {current_round} complete!** {u1_name}: {u1_score} | {u2_name}: {u2_score}")
+                await ctx.send(f"⏩ **Round {current_round + 1}** — {u1_name}, you're up! `!fire <your roast>`")
     except Exception as e: log_error("fire_cmd", e)
 
 @bot.command(name="endroast", aliases=["cancelroast"])
