@@ -4072,6 +4072,24 @@ async def on_message(message):
             else:
                 return
 
+        # Suppress all responses if partner bot has an active RPG game in this channel
+        if PARTNER_BOT_ID and not message.author.bot:
+            try:
+                recent = [m async for m in message.channel.history(limit=8)]
+                if any(
+                    m.author.id == PARTNER_BOT_ID and m.embeds and any(
+                        e.title and ("HARBINGER" in (e.title or "") or "Round" in (e.title or "")
+                                     or "Dice Roll" in (e.title or "") or "DEFEATED" in (e.title or "")
+                                     or "VICTORY" in (e.title or "") or "Continuing Quest" in (e.title or "")
+                                     or "GAUNTLET" in (e.title or ""))
+                        for e in m.embeds
+                    )
+                    for m in recent
+                ):
+                    return
+            except Exception:
+                pass
+
         # Owner-only mode: ignore everyone except the owner
         if _owner_only_mode and OWNER_ID and message.author.id != OWNER_ID:
             return
