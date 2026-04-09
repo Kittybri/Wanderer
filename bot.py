@@ -6175,8 +6175,9 @@ async def _rpg_boss_fight(channel, user_id: int, boss_index: int, boss_points: i
             color=0xE74C3C,
         )
         embed.add_field(name="Your Points", value=f"**{boss_points}** / {needed} needed", inline=True)
-        embed.add_field(name="Retry", value="Use `!rpg0` to try this boss again!", inline=False)
-        await mem.save_rpg_state(user_id, boss_points=0, current_round=0, scenario_data={}, active=True)
+        embed.add_field(name="Try Again", value="Use `!rpg0` to start a new run from the beginning!", inline=False)
+        # Full reset on defeat — wipe everything so they start fresh
+        await mem.reset_rpg(user_id)
         await channel.send(embed=embed)
         await mem.record_game_result(user_id, "rpg", False, boss_points)
         # Taunt the loser
