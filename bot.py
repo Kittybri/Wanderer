@@ -6180,19 +6180,35 @@ async def _rpg_boss_fight(channel, user_id: int, boss_index: int, boss_points: i
         )
         embed.add_field(name="Your Points", value=f"**{boss_points}** / {needed} needed", inline=True)
         embed.add_field(name="Try Again", value="Use `!rpg0` to start a new run from the beginning!", inline=False)
+        # Check consecutive losses before resetting
+        prev_stats = await mem.get_game_stats(user_id)
+        prev_losses = 0
+        for s in prev_stats:
+            if s["game"] == "rpg":
+                prev_losses = s["losses"]
+                break
         # Full reset on defeat — wipe everything so they start fresh
         await mem.reset_rpg(user_id)
         await channel.send(embed=embed)
         await mem.record_game_result(user_id, "rpg", False, boss_points)
-        # Taunt the loser
+        # Taunt the loser — escalate mockery based on consecutive losses
         guild = channel.guild if hasattr(channel, "guild") else None
         loser_name = guild.get_member(user_id).display_name if guild and guild.get_member(user_id) else "you"
+        if prev_losses >= 4:
+            streak_note = f"This is their {prev_losses + 1}th loss IN A ROW. They keep dying over and over. This is beyond pathetic — it's comedic. Be absolutely BRUTAL and reference how many times they've failed."
+        elif prev_losses >= 2:
+            streak_note = f"This is their {prev_losses + 1}th loss. They got defeated AGAIN. Mock them for being a repeat failure who keeps coming back just to lose."
+        elif prev_losses >= 1:
+            streak_note = "They already lost once before. They came back and lost AGAIN. Say something about how embarrassing it is to lose twice."
+        else:
+            streak_note = "This is their first loss."
         taunt = await qai(
             f"A player named {loser_name} just LOST to Harbinger #{boss['rank']} {boss['name']} in the RPG. "
             f"They only had {boss_points} points out of {needed} needed. Pathetic. "
+            f"{streak_note} "
             f"As the Wanderer, mock them with cold disdain. Be dismissive, call them stupid/weak/pathetic. "
             f"Short and cutting — 1-2 sentences max. No encouragement.",
-            100,
+            120,
         )
         if taunt:
             await channel.send(taunt)
