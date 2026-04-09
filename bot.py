@@ -4046,8 +4046,11 @@ async def on_message(message):
             # Allow partner bot messages through for cross-bot interaction
             if PARTNER_BOT_ID and message.author.id == PARTNER_BOT_ID:
                 # Don't respond to partner's RPG game messages
+                _rpg_titles = ("HARBINGER", "ARENA BATTLE", "Round", "GAUNTLET", "Dice Roll",
+                               "DEFEATED", "VICTORY", "Smart move", "Could be worse", "Terrible choice",
+                               "Continuing Quest", "Vision Holder", "Transmigrated", "Horror World", "Takeover World")
                 if message.embeds and any(
-                    e.title and ("HARBINGER" in (e.title or "") or "ARENA BATTLE" in (e.title or "") or "Round" in (e.title or ""))
+                    e.title and any(kw in (e.title or "") for kw in _rpg_titles)
                     for e in message.embeds
                 ):
                     return
@@ -4075,13 +4078,12 @@ async def on_message(message):
         # Suppress all responses if partner bot has an active RPG game in this channel
         if PARTNER_BOT_ID and not message.author.bot:
             try:
+                _rpg_kw = ("HARBINGER", "Round", "Dice Roll", "DEFEATED", "VICTORY",
+                           "Continuing Quest", "GAUNTLET", "Smart move", "Could be worse", "Terrible choice")
                 recent = [m async for m in message.channel.history(limit=8)]
                 if any(
                     m.author.id == PARTNER_BOT_ID and m.embeds and any(
-                        e.title and ("HARBINGER" in (e.title or "") or "Round" in (e.title or "")
-                                     or "Dice Roll" in (e.title or "") or "DEFEATED" in (e.title or "")
-                                     or "VICTORY" in (e.title or "") or "Continuing Quest" in (e.title or "")
-                                     or "GAUNTLET" in (e.title or ""))
+                        e.title and any(kw in (e.title or "") for kw in _rpg_kw)
                         for e in m.embeds
                     )
                     for m in recent
@@ -6079,14 +6081,15 @@ async def _rpg_boss_fight(channel, user_id: int, boss_index: int, boss_points: i
         style = "Post-apocalyptic horror Genshin style."
         win_prompt = (f"Narrate a horrifying 3-4 sentence battle. Describe the corrupted Harbinger's monstrous form. "
                       f"The player {win_verb} them. " + ("The escape should be desperate and clever." if char_type == "transmigrated" else "The kill should be visceral — the corruption dies screaming."))
-        lose_prompt = (f"Narrate a terrifying 2-3 sentence battle. The corrupted Harbinger overwhelms them. "
-                       f"Describe something deeply unsettling. The player barely escapes alive, scarred.")
+        lose_prompt = (f"Narrate a horrifying 3-4 sentence DEATH scene. The corrupted Harbinger overwhelms the player completely. "
+                       f"Describe in visceral detail how the player DIES — their gruesome, terrible end. "
+                       f"Be dark, graphic, and final. This is a BAD END. The corruption consumes them.")
     else:
         style = "Post-apocalyptic military Genshin style."
         win_prompt = (f"Narrate a dramatic 3-4 sentence battle against the Harbinger's forces. "
                       f"The player {win_verb} them. " + ("The escape is desperate but brilliant." if char_type == "transmigrated" else "The victory is hard-won and decisive."))
-        lose_prompt = (f"Narrate a tense 2-3 sentence battle. The Harbinger's overwhelming power crushes the player. "
-                       f"They barely retreat alive.")
+        lose_prompt = (f"Narrate a dramatic 2-3 sentence defeat. The Harbinger's forces overwhelm the player. "
+                       f"They are captured and their fate is sealed — describe their grim ending under Harbinger rule.")
 
     if won:
         beaten.append(boss["rank"])
@@ -6169,10 +6172,11 @@ async def _rpg_boss_fight(channel, user_id: int, boss_index: int, boss_points: i
         )
         narration = await qai(fight_prompt, 250)
 
+        death_title = f"💀 BAD END — {boss['name']} claims another soul..." if world_type == "horror" else f"💀 DEFEATED — Harbinger #{boss['rank']} {boss['name']} wins!"
         embed = discord.Embed(
-            title=f"💀 DEFEATED — Harbinger #{boss['rank']} {boss['name']} wins!",
+            title=death_title,
             description=narration or "You weren't ready.",
-            color=0xE74C3C,
+            color=0x1a1a2e if world_type == "horror" else 0xE74C3C,
         )
         embed.add_field(name="Your Points", value=f"**{boss_points}** / {needed} needed", inline=True)
         embed.add_field(name="Try Again", value="Use `!rpg0` to start a new run from the beginning!", inline=False)
