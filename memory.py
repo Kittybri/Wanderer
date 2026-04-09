@@ -172,7 +172,10 @@ class Memory:
                     bosses_beaten  TEXT DEFAULT '[]',
                     scenario_data  TEXT DEFAULT '{}',
                     active         INTEGER DEFAULT 0,
-                    last_updated   REAL DEFAULT 0
+                    last_updated   REAL DEFAULT 0,
+                    world_type     TEXT DEFAULT '',
+                    char_type      TEXT DEFAULT '',
+                    element        TEXT DEFAULT ''
                 );
                 CREATE TABLE IF NOT EXISTS phrase_cooldowns (
                     scope       TEXT,
@@ -495,6 +498,9 @@ class Memory:
             for stmt in (
                 "ALTER TABLE roast_battles ADD COLUMN turn_user INTEGER DEFAULT 0",
                 "CREATE TABLE IF NOT EXISTS game_scores (user_id INTEGER, game_type TEXT, wins INTEGER DEFAULT 0, losses INTEGER DEFAULT 0, draws INTEGER DEFAULT 0, total_points INTEGER DEFAULT 0, PRIMARY KEY (user_id, game_type))",
+                "ALTER TABLE rpg_state ADD COLUMN world_type TEXT DEFAULT ''",
+                "ALTER TABLE rpg_state ADD COLUMN char_type TEXT DEFAULT ''",
+                "ALTER TABLE rpg_state ADD COLUMN element TEXT DEFAULT ''",
             ):
                 try:
                     await db.execute(stmt)
@@ -2616,7 +2622,8 @@ class Memory:
     async def get_rpg_state(self, user_id: int) -> dict | None:
         async with aiosqlite.connect(DB_PATH) as db:
             async with db.execute(
-                "SELECT current_boss, current_round, boss_points, total_points, bosses_beaten, scenario_data, active "
+                "SELECT current_boss, current_round, boss_points, total_points, bosses_beaten, scenario_data, active, "
+                "world_type, char_type, element "
                 "FROM rpg_state WHERE user_id=?", (user_id,)
             ) as cur:
                 row = await cur.fetchone()
@@ -2626,6 +2633,7 @@ class Memory:
             "current_boss": row[0], "current_round": row[1], "boss_points": row[2],
             "total_points": row[3], "bosses_beaten": json.loads(row[4] or "[]"),
             "scenario_data": json.loads(row[5] or "{}"), "active": bool(row[6]),
+            "world_type": row[7] or "", "char_type": row[8] or "", "element": row[9] or "",
         }
 
     async def save_rpg_state(self, user_id: int, **kwargs):
@@ -2634,11 +2642,13 @@ class Memory:
             if not existing:
                 await db.execute(
                     "INSERT INTO rpg_state (user_id, current_boss, current_round, boss_points, total_points, "
-                    "bosses_beaten, scenario_data, active, last_updated) VALUES (?,?,?,?,?,?,?,?,?)",
+                    "bosses_beaten, scenario_data, active, last_updated, world_type, char_type, element) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                     (user_id, kwargs.get("current_boss", 0), kwargs.get("current_round", 0),
                      kwargs.get("boss_points", 0), kwargs.get("total_points", 0),
                      json.dumps(kwargs.get("bosses_beaten", [])), json.dumps(kwargs.get("scenario_data", {})),
-                     1 if kwargs.get("active", False) else 0, time.time()),
+                     1 if kwargs.get("active", False) else 0, time.time(),
+                     kwargs.get("world_type", ""), kwargs.get("char_type", ""), kwargs.get("element", "")),
                 )
             else:
                 sets, vals = [], []
