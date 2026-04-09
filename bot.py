@@ -5555,6 +5555,115 @@ def _get_harbinger(boss_index: int, world_type: str = "horror") -> dict:
         return harbs[boss_index]
     return harbs[-1]
 
+# ── RPG Dice Roll Encounter (Round 10) ────────────────────────────────────────
+
+FIVE_STAR_CHARS = [
+    {"name": "Zhongli", "element": "Geo", "line": "Every journey has its final day. Don't rush... but don't hesitate either."},
+    {"name": "Raiden Shogun", "element": "Electro", "line": "Inazuma shines eternal. Take this strength — you will need it where you're going."},
+    {"name": "Nahida", "element": "Dendro", "line": "I've been watching your progress through the Irminsul. You're doing better than you think!"},
+    {"name": "Hu Tao", "element": "Pyro", "line": "Hehe~ You're not on my client list yet! Here, take some luck from the Wangsheng Funeral Parlor!"},
+    {"name": "Venti", "element": "Anemo", "line": "Ehe~ A bard's blessing for a brave soul! May the wind guide your steps, friend!"},
+    {"name": "Xiao", "element": "Anemo", "line": "...I don't do this for just anyone. Take this — and don't waste it."},
+    {"name": "Ayaka", "element": "Cryo", "line": "The Kamisato Clan stands with you. Please, take this as proof of our support."},
+    {"name": "Ganyu", "element": "Cryo", "line": "I've calculated a 73.6% increase in your survival odds with this blessing. Good luck!"},
+    {"name": "Neuvillette", "element": "Hydro", "line": "The waters of justice flow in your favor today. I shall lend you my authority."},
+    {"name": "Furina", "element": "Hydro", "line": "A star performance deserves a standing ovation! Take this gift from the Hydro Archon herself~"},
+    {"name": "Kazuha", "element": "Anemo", "line": "The maple leaves told me you'd be here. Walk forward — the wind is at your back."},
+    {"name": "Alhaitham", "element": "Dendro", "line": "Statistically, you'll need this. Don't bother thanking me — it's simply logical."},
+    {"name": "Yelan", "element": "Hydro", "line": "Consider this an investment. I expect a good return — survive, and we're even."},
+    {"name": "Cyno", "element": "Electro", "line": "As General Mahamatra, I decree: you shall not fall here. ...Was that intimidating enough?"},
+]
+
+FOUR_STAR_CHARS = [
+    {"name": "Bennett", "element": "Pyro", "line": "Adventure time! I know my luck is terrible, but maybe it'll rub off as GOOD luck for you!"},
+    {"name": "Xiangling", "element": "Pyro", "line": "Here, try this! It's my special energy-boosting dish! ...Don't ask what's in it."},
+    {"name": "Fischl", "element": "Electro", "line": "The Prinzessin der Verurteilung bestows upon thee the blessing of the Immernachtreich!"},
+    {"name": "Barbara", "element": "Hydro", "line": "Go, Barbara, go! Here's a healing song to keep you fighting! ♪"},
+    {"name": "Noelle", "element": "Geo", "line": "As a maid of the Knights of Favonius, it's my duty to help! Take this shield!"},
+    {"name": "Xingqiu", "element": "Hydro", "line": "A true hero always arrives in the nick of time. Shall I lend you a page from my book?"},
+    {"name": "Sucrose", "element": "Anemo", "line": "O-oh! My experiment worked! This should give you a 12.7% combat boost... probably!"},
+    {"name": "Beidou", "element": "Electro", "line": "Hah! You've got guts, kid. The Crux Fleet has your back — take this and hit 'em hard!"},
+    {"name": "Ningguang", "element": "Geo", "line": "Consider this a business arrangement. Survive, and you owe me a favor."},
+    {"name": "Rosaria", "element": "Cryo", "line": "...Don't read into this. I just happened to be passing by. Take it and go."},
+    {"name": "Thoma", "element": "Pyro", "line": "A friend in need, right? Here, I've got your back. That's what a housekeeper does!"},
+    {"name": "Collei", "element": "Dendro", "line": "I-I'm not that strong, but I want to help! Take this — Amber taught me to never give up!"},
+]
+
+MONSTERS = [
+    {"name": "Ruin Guard", "sound": "*WHIRRRR-CLANK-CLANK-CLANK*", "attack": "slams its massive fist into you, sending you flying into a wall"},
+    {"name": "Abyss Mage", "sound": "*Muhe~ AHAHAHA!*", "attack": "traps you in a bubble of dark energy that drains your strength"},
+    {"name": "Lawachurl", "sound": "*GRAAAAAAGH!*", "attack": "charges at you like a freight train and body-slams you into the dirt"},
+    {"name": "Riftwolf", "sound": "*AWOOOOO— krkrkrkr...*", "attack": "phases through your guard and bites into your essence, leaving a wound that won't heal right"},
+    {"name": "Bathysmal Vishap", "sound": "*SHREEEEEEK!*", "attack": "fires a beam of corrupted energy straight through your defenses"},
+    {"name": "Geovishap Hatchling", "sound": "*skreeee skree SKREE!*", "attack": "rolls into you at full speed like a spinning boulder of teeth and scales"},
+    {"name": "Mirror Maiden", "sound": "*You cannot escape...*", "attack": "locks you in a mirror prison and drains your resolve through the reflection"},
+    {"name": "Consecrated Beast", "sound": "*RRRRRRRGH— crack— CRACK*", "attack": "tears through reality itself to claw at you from an impossible angle"},
+]
+
+FORBIDDEN_ROLL = 13  # unlucky number
+
+async def _rpg_dice_roll(channel, user_id: int, boss_index: int, boss_points: int, total_points: int):
+    """Round 10 special: dice roll encounter before boss fight."""
+    state = await mem.get_rpg_state(user_id)
+    world_type = state.get("world_type", "horror") if state else "horror"
+    boss = _get_harbinger(boss_index, world_type)
+
+    roll = random.randint(1, 20)
+
+    if roll == FORBIDDEN_ROLL:
+        # MONSTER ENCOUNTER — lose 1 point
+        monster = random.choice(MONSTERS)
+        bonus = -1
+        new_boss_points = max(0, boss_points + bonus)
+        new_total = max(0, total_points + bonus)
+
+        embed = discord.Embed(
+            title=f"🎲 Dice Roll: **{roll}** — FORBIDDEN NUMBER!",
+            description=f"💀 A wild **{monster['name']}** ambushes you!\n\n{monster['sound']}\n\nIt {monster['attack']}!",
+            color=0x1a1a2e,
+        )
+        embed.add_field(name="Penalty", value="🔴 **-1 skill point**", inline=True)
+        embed.add_field(name="Points", value=f"**{new_boss_points}** / {boss['pts']} needed", inline=True)
+        embed.set_footer(text=f"The {monster['name']} vanishes into the dark... but the pain remains.")
+
+    elif roll >= 16:
+        # 5-STAR CHARACTER — +4 points
+        char = random.choice(FIVE_STAR_CHARS)
+        bonus = 4
+        new_boss_points = boss_points + bonus
+        new_total = total_points + bonus
+
+        embed = discord.Embed(
+            title=f"🎲 Dice Roll: **{roll}** — ⭐⭐⭐⭐⭐ ENCOUNTER!",
+            description=f"✨ You encounter **{char['name']}** ({char['element']})!\n\n> *\"{char['line']}\"*",
+            color=0xFFD700,
+        )
+        embed.add_field(name="Bonus", value="🌟 **+4 skill points!**", inline=True)
+        embed.add_field(name="Points", value=f"**{new_boss_points}** / {boss['pts']} needed", inline=True)
+        embed.set_footer(text=f"{char['name']} empowers you and disappears in a flash of {char['element']} energy.")
+
+    else:
+        # 4-STAR CHARACTER — +2 points
+        char = random.choice(FOUR_STAR_CHARS)
+        bonus = 2
+        new_boss_points = boss_points + bonus
+        new_total = total_points + bonus
+
+        embed = discord.Embed(
+            title=f"🎲 Dice Roll: **{roll}** — ⭐⭐⭐⭐ Encounter!",
+            description=f"💫 You encounter **{char['name']}** ({char['element']})!\n\n> *\"{char['line']}\"*",
+            color=0xC0C0C0,
+        )
+        embed.add_field(name="Bonus", value="✨ **+2 skill points!**", inline=True)
+        embed.add_field(name="Points", value=f"**{new_boss_points}** / {boss['pts']} needed", inline=True)
+        embed.set_footer(text=f"{char['name']} wishes you luck and heads off on their own journey.")
+
+    await mem.save_rpg_state(user_id, boss_points=new_boss_points, total_points=new_total, current_round=11, scenario_data={})
+    await channel.send(embed=embed)
+    await asyncio.sleep(2)
+    # Now proceed to boss fight
+    await _rpg_boss_fight(channel, user_id, boss_index, new_boss_points, new_total)
+
 async def _rpg_generate_scenario(user_name: str, boss: dict, round_num: int, boss_points: int,
                                   world_type: str = "horror", char_type: str = "teyvat", element: str = ""):
     """Generate a scenario with 3 choices. Returns parsed dict or None."""
@@ -5894,6 +6003,12 @@ async def _rpg_handle_choice(interaction: discord.Interaction, user_id: int, cho
 
 async def _rpg_send_scenario(channel, user_id: int, boss_index: int, round_num: int, boss_points: int):
     """Generate and send a new scenario with buttons."""
+    # Round 10 is the dice roll encounter — skip normal scenario
+    if round_num == 10:
+        state = await mem.get_rpg_state(user_id)
+        total_points = state.get("total_points", 0) if state else 0
+        await _rpg_dice_roll(channel, user_id, boss_index, boss_points, total_points)
+        return
     state = await mem.get_rpg_state(user_id)
     world_type = state.get("world_type", "horror") if state else "horror"
     char_type = state.get("char_type", "teyvat") if state else "teyvat"
