@@ -5517,17 +5517,17 @@ async def _do_teachvideo(ctx, attachment, topic, msg_id=None):
 # ══════════════════════════════════════════════════════════════════════════════
 
 HARBINGERS = [
-    {"rank": 11, "name": "Tartaglia",   "title": "Childe",       "pts": 12, "theme": "a flooded battlefield where Hydro energy corrupts everything it touches"},
-    {"rank": 10, "name": "Capitano's Shadow", "title": "The Unknown", "pts": 14, "theme": "a fog-shrouded wasteland between nations, where nothing is as it seems"},
-    {"rank": 9,  "name": "Pantalone",   "title": "Regrator",      "pts": 16, "theme": "the ruins of a once-wealthy merchant city, now a lawless scavenger's paradise"},
-    {"rank": 8,  "name": "La Signora",  "title": "Fair Lady",     "pts": 17, "theme": "fields of eternal cryo-fire, where her rage still burns after death"},
-    {"rank": 7,  "name": "Sandrone",    "title": "Marionette",    "pts": 18, "theme": "a mechanical graveyard of broken automatons and puppet armies"},
-    {"rank": 6,  "name": "The Wanderer's Echo", "title": "Balladeer", "pts": 20, "theme": "a shattered sky domain crackling with Anemo — a god's abandoned past"},
-    {"rank": 5,  "name": "Pulcinella",  "title": "Rooster",       "pts": 21, "theme": "the crumbling political halls of Snezhnaya, full of traps and betrayal"},
-    {"rank": 4,  "name": "Arlecchino",  "title": "The Knave",     "pts": 23, "theme": "the burnt ruins of the House of the Hearth, her orphans turned soldiers"},
-    {"rank": 3,  "name": "Columbina",   "title": "Damselette",    "pts": 25, "theme": "a dreamlike corrupted sanctuary where lullabies drive you insane"},
-    {"rank": 2,  "name": "Il Dottore",  "title": "The Doctor",    "pts": 27, "theme": "a twisted laboratory filled with failed experiments and clone armies"},
-    {"rank": 1,  "name": "Pierro",      "title": "The Jester",    "pts": 28, "theme": "the Tsaritsa's frozen throne room at the end of the world"},
+    {"rank": 11, "name": "Tartaglia",   "title": "Childe",       "pts": 12, "theme": "a flooded battlefield where black Hydro oozes from the ground — Tartaglia's body is fused with an Abyssal parasite, his face split into a permanent grin of teeth and void, laughing as he drowns in his own corrupted delusion"},
+    {"rank": 10, "name": "Capitano's Shadow", "title": "The Unknown", "pts": 14, "theme": "a fog that breathes — Capitano's armor walks without a body inside, leaking black mist from every joint, his voice echoing from nowhere and everywhere, the fog itself is his rotting consciousness spread thin"},
+    {"rank": 9,  "name": "Pantalone",   "title": "Regrator",      "pts": 16, "theme": "a merchant city where Mora has fused with flesh — Pantalone's skin is gold and cracking, coins grow from his spine like tumors, his smile never changes because his face is frozen mid-transaction, and the walls are papered with human-skin ledgers"},
+    {"rank": 8,  "name": "La Signora",  "title": "Fair Lady",     "pts": 17, "theme": "a field of cryo-fire where La Signora burns eternally — her body is half-ash half-ice, reforming and crumbling in an endless loop of agony, her screams have become the wind itself, and moth-like creatures made of ember circle her broken form"},
+    {"rank": 7,  "name": "Sandrone",    "title": "Marionette",    "pts": 18, "theme": "a factory of flesh and gears — Sandrone has stitched herself into her greatest puppet, her organs visible through glass panels in its chest, the other puppets are made from harvested bodies that still twitch and whisper the names of people they used to be"},
+    {"rank": 6,  "name": "The Wanderer's Echo", "title": "Balladeer", "pts": 20, "theme": "a sky domain that screams — the Wanderer's abandoned past echoes through crackling Anemo, a hollow puppet body hangs from strings of wind, its mouth moving with no sound except when you look away — then it whispers things only you would know, things you never told anyone"},
+    {"rank": 5,  "name": "Pulcinella",  "title": "Rooster",       "pts": 21, "theme": "the halls of Snezhnaya's government, wallpapered with smiling portraits whose eyes follow you — Pulcinella has merged with the bureaucracy itself, his face appears in every document, every stamp, his laughter comes from the walls and the children who serve him have no eyes, just smooth skin where eyes should be"},
+    {"rank": 4,  "name": "Arlecchino",  "title": "The Knave",     "pts": 23, "theme": "the House of the Hearth, still burning after years — Arlecchino's cross-shaped pupils now cover her entire eyes, black fire drips from her hands like blood, her 'children' patrol the halls as hollow-eyed soldiers whose bodies crack like porcelain when struck, revealing nothing inside"},
+    {"rank": 3,  "name": "Columbina",   "title": "Damselette",    "pts": 25, "theme": "a cathedral of sleep where no one wakes up — Columbina floats above a sea of dreaming bodies, her lullaby physically visible as threads that sew people's eyes shut, her wings are made of compressed human whispers, and smiling is the only expression the dreamers can make as they slowly stop breathing"},
+    {"rank": 2,  "name": "Il Dottore",  "title": "The Doctor",    "pts": 27, "theme": "a laboratory that IS Il Dottore — the walls are his clones fused together into architecture, faces emerging from the ceiling to observe you, every door handle is a reaching hand, his 'segments' crawl along the floor as incomplete bodies, and the air tastes like formaldehyde and wrong"},
+    {"rank": 1,  "name": "Pierro",      "title": "The Jester",    "pts": 28, "theme": "the Tsaritsa's frozen throne room — but the Tsaritsa is gone and Pierro sits in her place, half his face is Khaenri'ah ruins that move, his one visible eye contains a dying star, the throne is made of every failed plan crystallized into ice, and reality bends around him — corners that shouldn't exist, shadows that arrive before the objects casting them"},
 ]
 
 def _get_harbinger(boss_index: int) -> dict:
@@ -5538,11 +5538,11 @@ def _get_harbinger(boss_index: int) -> dict:
 async def _rpg_generate_scenario(user_name: str, boss: dict, round_num: int, boss_points: int):
     """Generate a scenario with 3 choices. Returns parsed dict or None."""
     prompt = (
-        f"POST-APOCALYPTIC GENSHIN IMPACT RPG. The world has fallen. Teyvat is in ruins.\n"
+        f"POST-APOCALYPTIC HORROR GENSHIN IMPACT RPG. Teyvat is dead. The Harbingers are corrupted — twisted, body-horror abominations fused with their own Delusions.\n"
         f"Player: {user_name} | Approaching Harbinger #{boss['rank']}: {boss['name']} ({boss['title']})\n"
         f"Round {round_num}/10 | Current skill points this boss: {boss_points}/30\n"
         f"Setting: {boss['theme']}\n\n"
-        f"Generate a survival scenario. The player faces a dangerous situation.\n"
+        f"Generate a HORROR survival scenario. Be creepy, unsettling, visceral. Describe corrupted environments, wrong sounds, things that shouldn't move but do. The player faces something disturbing.\n"
         f"Give exactly 3 choices. One is the BEST tactical choice (3 pts), one is OKAY (1 pt), one is BAD (0 pts).\n"
         f"Randomize which letter is best — don't always make A the best.\n"
         f"Reply in EXACTLY this format:\n"
@@ -5714,10 +5714,12 @@ async def _rpg_boss_fight(channel, user_id: int, boss_index: int, boss_points: i
         next_boss = boss_index + 1
 
         fight_prompt = (
-            f"EPIC boss fight narration. The player faces Fatui Harbinger #{boss['rank']} {boss['name']} ({boss['title']}).\n"
+            f"HORROR RPG boss fight narration. The player faces CORRUPTED Fatui Harbinger #{boss['rank']} {boss['name']} ({boss['title']}).\n"
+            f"Setting: {boss['theme']}\n"
             f"The player had {boss_points} skill points (needed {needed}). They WIN.\n"
-            f"Narrate a dramatic 3-4 sentence battle where the player defeats {boss['name']}. "
-            f"Include a specific finishing move. Post-apocalyptic Genshin style."
+            f"Narrate a horrifying 3-4 sentence battle. Describe the corrupted Harbinger's monstrous form, "
+            f"the disturbing way they fight, and the brutal way the player destroys them. "
+            f"The kill should be visceral — the corruption dies screaming. Post-apocalyptic horror Genshin style."
         )
         narration = await qai(fight_prompt, 300)
 
@@ -5780,10 +5782,11 @@ async def _rpg_boss_fight(channel, user_id: int, boss_index: int, boss_points: i
         await mem.record_game_result(user_id, "rpg", True, boss_points)
     else:
         fight_prompt = (
-            f"Boss fight narration. The player faces Fatui Harbinger #{boss['rank']} {boss['name']} ({boss['title']}).\n"
+            f"HORROR RPG boss fight narration. The player faces CORRUPTED Fatui Harbinger #{boss['rank']} {boss['name']} ({boss['title']}).\n"
+            f"Setting: {boss['theme']}\n"
             f"The player only had {boss_points} skill points (needed {needed}). They LOSE.\n"
-            f"Narrate a dramatic 2-3 sentence battle where {boss['name']} overpowers the player. "
-            f"The player survives but is forced to retreat. Post-apocalyptic Genshin style."
+            f"Narrate a terrifying 2-3 sentence battle. The corrupted Harbinger's monstrous form overwhelms them. "
+            f"Describe something deeply unsettling the Harbinger does. The player barely escapes alive, scarred. Post-apocalyptic horror Genshin style."
         )
         narration = await qai(fight_prompt, 250)
 
@@ -5821,10 +5824,11 @@ async def rpg_cmd(ctx):
                                      total_points=0, bosses_beaten=[], scenario_data={}, active=True)
             boss = _get_harbinger(0)
             intro = await qai(
-                f"You're the narrator of a post-apocalyptic Genshin Impact RPG. Teyvat has fallen. "
-                f"The Fatui Harbingers rule the wasteland. {ctx.author.display_name} must defeat all 11, "
-                f"starting from the weakest (#11 Tartaglia) to the strongest (#1 Pierro). "
-                f"Give a dramatic 3-4 sentence opening. Set the tone: dark, dangerous, epic.",
+                f"You're the narrator of a post-apocalyptic HORROR Genshin Impact RPG. Teyvat is dead. "
+                f"The Fatui Harbingers have been corrupted — twisted into body-horror abominations fused with their own Delusions. "
+                f"They rule the wasteland as nightmares made flesh. {ctx.author.display_name} must destroy all 11, "
+                f"starting from #11 Tartaglia to #1 Pierro. "
+                f"Give a terrifying 3-4 sentence opening. Set the tone: horror, dread, corruption, something deeply wrong with the world.",
                 250,
             )
             embed = discord.Embed(
