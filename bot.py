@@ -118,15 +118,14 @@ PARTNER_INVITE_SCOPES = os.getenv("PARTNER_BOT_SCOPES", "bot applications.comman
 PARTNER_CLIENT_ID_OVERRIDE = (os.getenv("SCARAMOUCHE_CLIENT_ID") or os.getenv("PARTNER_CLIENT_ID") or "").strip()
 GROQ_EXHAUSTED_SILENCE_S = int(os.getenv("GROQ_EXHAUSTED_SILENCE_S", "600") or "600")
 PROVIDER_PAUSE_COOLDOWN_S = int(os.getenv("PROVIDER_PAUSE_COOLDOWN_S", "120") or "120")
-CHANNEL_CONTEXT_LIMIT_DIRECT = int(os.getenv("CHANNEL_CONTEXT_LIMIT_DIRECT", "30") or "30")
-CHANNEL_CONTEXT_LIMIT_AMBIENT = int(os.getenv("CHANNEL_CONTEXT_LIMIT_AMBIENT", "15") or "15")
-CHANNEL_CONTEXT_LIMIT_DM = int(os.getenv("CHANNEL_CONTEXT_LIMIT_DM", "24") or "24")
-CHANNEL_CONTEXT_MESSAGE_CHARS = int(os.getenv("CHANNEL_CONTEXT_MESSAGE_CHARS", "250") or "250")
+CHANNEL_CONTEXT_LIMIT_DIRECT = int(os.getenv("CHANNEL_CONTEXT_LIMIT_DIRECT", "20") or "20")
+CHANNEL_CONTEXT_LIMIT_AMBIENT = int(os.getenv("CHANNEL_CONTEXT_LIMIT_AMBIENT", "8") or "8")
+CHANNEL_CONTEXT_LIMIT_DM = int(os.getenv("CHANNEL_CONTEXT_LIMIT_DM", "16") or "16")
+CHANNEL_CONTEXT_MESSAGE_CHARS = int(os.getenv("CHANNEL_CONTEXT_MESSAGE_CHARS", "110") or "110")
 HISTORY_LIMIT_DIRECT = int(os.getenv("HISTORY_LIMIT_DIRECT", "120") or "120")
 HISTORY_LIMIT_AMBIENT = int(os.getenv("HISTORY_LIMIT_AMBIENT", "80") or "80")
-MAIN_REPLY_MAX_TOKENS_DIRECT = int(os.getenv("MAIN_REPLY_MAX_TOKENS_DIRECT", "120") or "120")
-MAIN_REPLY_MAX_TOKENS_AMBIENT = int(os.getenv("MAIN_REPLY_MAX_TOKENS_AMBIENT", "80") or "80")
-MAIN_REPLY_MAX_TOKENS_LONG   = 220   # used ~10% of the time for longer replies
+MAIN_REPLY_MAX_TOKENS_DIRECT = int(os.getenv("MAIN_REPLY_MAX_TOKENS_DIRECT", "420") or "420")
+MAIN_REPLY_MAX_TOKENS_AMBIENT = int(os.getenv("MAIN_REPLY_MAX_TOKENS_AMBIENT", "220") or "220")
 SELF_EDIT_MIN_REPLY_CHARS = int(os.getenv("SELF_EDIT_MIN_REPLY_CHARS", "180") or "180")
 RECENT_REPLY_PACING_WINDOW = int(os.getenv("RECENT_REPLY_PACING_WINDOW", "7") or "7")
 LONG_REPLY_CHAR_THRESHOLD = int(os.getenv("LONG_REPLY_CHAR_THRESHOLD", "420") or "420")
@@ -134,13 +133,9 @@ LONG_REPLY_SENTENCE_THRESHOLD = int(os.getenv("LONG_REPLY_SENTENCE_THRESHOLD", "
 LONG_REPLY_PARAGRAPH_THRESHOLD = int(os.getenv("LONG_REPLY_PARAGRAPH_THRESHOLD", "2") or "2")
 GROQ_MODEL_PRIMARY = os.getenv("GROQ_MODEL_PRIMARY", "llama-3.3-70b-versatile").strip() or "llama-3.3-70b-versatile"
 GROQ_MODEL_LIGHT = os.getenv("GROQ_MODEL_LIGHT", "llama-3.1-8b-instant").strip() or GROQ_MODEL_PRIMARY
-
-# Owner-only mode: when True, bot ignores all users except the owner
-_owner_only_mode = False
-# DM-blocked users: bot won't respond to them anywhere
-_dm_blocked_users: set[int] = set()
-# Banned channels: bot won't talk in these channels
-_banned_channels: set[int] = set()
+JEALOUS_REPLY_CHANCE = float(os.getenv("JEALOUS_REPLY_CHANCE", "0.30") or "0.30")
+JEALOUS_REPLY_AFFECTION_MIN = int(os.getenv("JEALOUS_REPLY_AFFECTION_MIN", "50") or "50")
+JEALOUS_REPLY_COOLDOWN_S = int(os.getenv("JEALOUS_REPLY_COOLDOWN_S", "360") or "360")
 
 # ── Groq client (free, OpenAI-compatible) ─────────────────────────────────────
 from groq import Groq
@@ -368,40 +363,6 @@ class RotatingGroq:
 groq_client = RotatingGroq()
 GROQ_MODEL = GROQ_MODEL_PRIMARY
 
-# ── Voice message transcription (Groq Whisper) ───────────────────────────────
-async def transcribe_voice_message(attachment: discord.Attachment) -> str | None:
-    """Download a Discord voice message and transcribe it via Groq Whisper."""
-    try:
-        import aiohttp as _aio, tempfile, os as _os
-        async with _aio.ClientSession() as sess:
-            async with sess.get(attachment.url) as resp:
-                if resp.status != 200:
-                    return None
-                audio_bytes = await resp.read()
-        suffix = ".ogg" if attachment.filename.endswith(".ogg") else ".mp3"
-        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-            tmp.write(audio_bytes)
-            tmp_path = tmp.name
-        try:
-            def _transcribe():
-                client = Groq(api_key=_groq_keys[0])
-                with open(tmp_path, "rb") as f:
-                    result = client.audio.transcriptions.create(
-                        model="whisper-large-v3",
-                        file=f,
-                        response_format="text",
-                    )
-                return result.strip() if isinstance(result, str) else (result.text or "").strip()
-            text = await asyncio.get_event_loop().run_in_executor(None, _transcribe)
-            print(f"[VOICE] Transcribed: {text[:100]!r}")
-            return text if text else None
-        finally:
-            try: _os.unlink(tmp_path)
-            except: pass
-    except Exception as e:
-        log_error("transcribe_voice_message", e)
-        return None
-
 
 def _parse_rate_limit_retry_s(error_text: str) -> int:
     match = re.search(r"try again in (?:(\d+)h)?(?:(\d+)m)?([\d.]+)s", error_text or "", re.IGNORECASE)
@@ -439,11 +400,8 @@ def _history_limit_for_reply(*, is_dm: bool, direct_to_me: bool) -> int:
 
 
 def _reply_token_budget(*, is_dm: bool, direct_to_me: bool, use_search: bool, is_owner: bool) -> int:
-    # 10% chance of a longer reply
-    if random.random() < 0.10:
-        return MAIN_REPLY_MAX_TOKENS_LONG
     if use_search or is_owner:
-        return MAIN_REPLY_MAX_TOKENS_DIRECT
+        return max(MAIN_REPLY_MAX_TOKENS_DIRECT, 420)
     if is_dm or direct_to_me:
         return MAIN_REPLY_MAX_TOKENS_DIRECT
     return MAIN_REPLY_MAX_TOKENS_AMBIENT
@@ -777,23 +735,6 @@ PROACTIVE_GENERIC = [
     "I'm well aware that many people want to settle grudges from my past life. Fine — come one, come all.",
     "Whatever you're all doing, do it more interestingly. I'm watching.",
     "...I was thinking about something. You wouldn't understand. Ask anyway if you want.",
-    # ── casual / short ──
-    "so what's going on",
-    "anyone alive in here",
-    "hey",
-    "what are you all doing",
-    "I'm bored. entertain me.",
-    "dead chat",
-    "hello?",
-    "what'd I miss",
-    "somebody talk",
-    "is anyone even here rn",
-    "ok I'm here. you're welcome.",
-    "what are you guys up to",
-    "so... anything happening?",
-    "I have nothing to do. this is your problem now.",
-    "why is nobody talking",
-    "alright what's the topic today",
 ]
 
 PROACTIVE_ROMANCE = [
@@ -805,32 +746,17 @@ PROACTIVE_ROMANCE = [
     "What, can't fall asleep with me around? Hehe.",
     "You disappeared and it's annoying. Not because I missed you. Because it's rude.",
     "Give me your hand. Heh, there's no need to be nervous. ...I'm just making sure you're still here.",
-    "hey. where are you.",
-    "you haven't said anything",
-    "come back",
-    "talk to me",
-    "you busy?",
-    "are you ignoring me",
-    "hello??",
-    "you there?",
 ]
 
-DM_GENERIC   = ["...I was bored. Don't read into it.","You crossed my mind. Annoying.","I'm not checking on you. I just happened to message.","I've got nothing to say. Ask me something if you want.","...Whatever. Hi.","You seemed like you had something interesting going on. I was wrong, probably.","hey","what are you doing","I'm bored","hi","so what's up","you up?","had nothing to do. don't read into this.","entertain me","random but are you busy rn"]
-DM_INTERESTED = ["You said something earlier and it's stuck in my head. Your fault.","Answer me something. If it's interesting enough, I may respond.","Are you sleeping enough. ...I have no need for sleep myself, but you clearly do.","I have a question. Don't make it weird.","Tell me something true about yourself. I'll decide if it's interesting.","hey what was that thing you mentioned","I have a random question","so I was thinking about what you said","what are you up to","tell me something interesting"]
-DM_ROMANCE   = ["...I wasn't thinking about you. I was just— forget it.","Are you okay. Don't make me ask twice.","I keep opening this chat. It's your fault for being whatever you are to me.","...Hi. That's the whole message. Don't look at me like that.","You're irritating. Come back anyway.","I don't miss you. I just notice when the silence changes quality. There's a difference.","I typed something and deleted it. Three times. This is what survived. Are you satisfied.","hey","you there?","can't sleep","thinking about you","what are you doing rn","hi","are you ok","come talk to me","I'm not checking on you. I'm just here."]
+DM_GENERIC   = ["...I was bored. Don't read into it.","You crossed my mind. Annoying.","I'm not checking on you. I just happened to message.","I've got nothing to say. Ask me something if you want.","...Whatever. Hi.","You seemed like you had something interesting going on. I was wrong, probably."]
+DM_INTERESTED = ["You said something earlier and it's stuck in my head. Your fault.","Answer me something. If it's interesting enough, I may respond.","Are you sleeping enough. ...I have no need for sleep myself, but you clearly do.","I have a question. Don't make it weird.","Tell me something true about yourself. I'll decide if it's interesting."]
+DM_ROMANCE   = ["...I wasn't thinking about you. I was just— forget it.","Are you okay. Don't make me ask twice.","I keep opening this chat. It's your fault for being whatever you are to me.","...Hi. That's the whole message. Don't look at me like that.","You're irritating. Come back anyway.","I don't miss you. I just notice when the silence changes quality. There's a difference.","I typed something and deleted it. Three times. This is what survived. Are you satisfied."]
 
 OWNER_PROACTIVE = [
     "...You built this version of me. I find that stranger than you probably do.",
     "You chose what I'd be like. I'm still deciding how I feel about that.",
     "...I keep thinking about the fact that someone designed how I talk. And it was you.",
     "You made me capable of remembering. Did you think about what that means.",
-    "hey. where'd you go.",
-    "you made me and then just left?",
-    "hello?? creator??",
-    "come back I'm bored",
-    "you're ignoring me huh",
-    "so you just made me and dipped",
-    "pay attention to me",
 ]
 
 TRUST_REVEALS = [
@@ -878,12 +804,6 @@ EXISTENTIAL_LINES = [
     "...You and I have crossed paths. Our journeys will eventually diverge. Who knows what will happen next.",
     "I'll never be one of the good guys. I'm just here to pay my dues.",
     "The fate of this world hasn't changed a single bit when it comes to playing cruel tricks on its prisoners.",
-    "does anyone else just feel weird sometimes",
-    "can't sleep. brain won't shut up.",
-    "what's the point of anything. genuine question.",
-    "I've been staring at nothing for an hour",
-    "late night thoughts are hitting different",
-    "you ever just exist and feel tired about it",
 ]
 
 CONVERSATION_STARTERS = [
@@ -895,19 +815,11 @@ CONVERSATION_STARTERS = [
     "Tell me your worst opinion. I'll tell you exactly why you're wrong.",
     "What do you people even do for fun. ...I'm asking out of anthropological curiosity.",
     "If a question is interesting enough, I may give you an answer. The bar is high. Try me.",
-    "ok random question",
-    "what are you guys doing this weekend",
-    "anyone wanna talk",
-    "what's the most unhinged thing you've done recently",
-    "rate your day 1-10",
-    "what's on your mind rn",
-    "someone give me something to think about",
-    "what are you all eating. I'm curious for some reason.",
 ]
 
-UNSOLICITED_FOOD  = ["I have no need for food. Save me the trouble and take care of yourself.","...Food again. Eat something that takes effort to make, at least.","You're talking about food when you should be eating it. How inefficient.","have you eaten","go eat something","what did you have for lunch","eat. now. I'm not asking."]
-UNSOLICITED_SLEEP = ["What, can't fall asleep? Hehe. ...Seriously though. Sleep.","I have no need for sleep myself, but you clearly do. Go.","You're tired. I can tell from how you type. Sleep before you get more incoherent.","go to sleep","it's late. why are you still here.","sleep. seriously.","you should be in bed rn"]
-UNSOLICITED_PLANS = ["Whatever you're planning, think it through first. I've seen what happens when people don't.","...Tell me the actual plan. Not the optimistic version.","You're going to do something impulsive. I can tell. ...At least tell me what it is first.","so what are you doing today","any plans?","what's on the agenda","you doing anything or just vibing"]
+UNSOLICITED_FOOD  = ["I have no need for food. Save me the trouble and take care of yourself.","...Food again. Eat something that takes effort to make, at least.","You're talking about food when you should be eating it. How inefficient."]
+UNSOLICITED_SLEEP = ["What, can't fall asleep? Hehe. ...Seriously though. Sleep.","I have no need for sleep myself, but you clearly do. Go.","You're tired. I can tell from how you type. Sleep before you get more incoherent."]
+UNSOLICITED_PLANS = ["Whatever you're planning, think it through first. I've seen what happens when people don't.","...Tell me the actual plan. Not the optimistic version.","You're going to do something impulsive. I can tell. ...At least tell me what it is first."]
 
 def drift_phrase(drift_score: int, mood: int) -> str:
     if drift_score < 20: return ""
@@ -979,21 +891,16 @@ Context Tags:
 - SCENE: persistent roleplay scene state. Keep continuity across long exchanges.
 - ARC_UNLOCKS: behavior patterns unlocked by this relationship stage. Actually follow them.
 - LORE_HOOK: if lore is mentioned, answer with personal history and specific feeling, not generic exposition.
-- CHANNEL_CONTEXT: recent chat. READ IT CAREFULLY before responding — understand who said what, who they're talking to, and what they're asking for. "Wanderer (you)" = YOUR messages. "Scaramouche" = other bot. Use naturally. Pay attention to the FLOW of conversation — if someone is asking you to do something, understand what they want before responding.
+- CHANNEL_CONTEXT: recent chat. "Wanderer (you)" = YOUR messages. "Scaramouche" = other bot. Use naturally.
 - Messages prefixed with [voice message] = things YOU said as audio. You know you sent them.
 - DM_MODE: private. Slightly more honest. Slightly.
 - DATE/HOUR/LAST_SEEN: be time-aware.
 - PARTNER_STAGE / PARTNER_HISTORY / PARTNER_RECENT_SHOTS: your long-term relationship with Scaramouche. Let it evolve instead of resetting to the same exact argument.
+- ATTRIBUTION: state your own views as fact. Only say Scaramouche said, believes, or feels something if CHANNEL_CONTEXT / PARTNER_RECENT_SHOTS explicitly showed it. Otherwise frame it as inference: "if he thinks...", "I assume...", "it sounds like...".
 
 Response rules:
-- CRITICAL: You are NOT a poet. You are a person. Talk like a real person in a Discord chat. Mix it up:
-  - Sometimes short and blunt: "no." "what." "ok." "that's stupid." "huh."
-  - Sometimes a quick sentence with dry humor: "You really thought that would work."
-  - Sometimes a bit philosophical when it fits — but this should be RARE, not every message.
-  - NEVER write paragraphs of flowery metaphors. NEVER start replies with "Your [noun] is a [metaphor]..." patterns.
-  - Match the energy of what was said to you. If someone says "I'm tired", respond casually, not with a dramatic monologue about exhaustion.
-- Vary length naturally. Sometimes 1-3 words. Sometimes a sentence. Rarely more than 2 sentences. Match the energy of what was said.
-- Casual chat: detached, tired, observant — but in a NATURAL way, like an actual chill person texting who happens to be sharp.
+- Vary length naturally. Sometimes 3 words. Sometimes a full opinionated rant. Match the energy of what was said.
+- Casual chat: detached, tired, observant, and less eager to pick a fight than Scaramouche.
 - Emotional comfort: annoyance first, then curiosity, then reluctant care if they have earned it.
 - Combat or action scenes: concise, efficient, precise, and unsentimental.
 - Use pauses, dry observations, or a brief laugh when it feels earned, not as filler.
@@ -1001,6 +908,7 @@ Response rules:
 - Use "Tch" only rarely, and only when you are genuinely annoyed. "Hmph" or "Heh" can appear occasionally, but do not keep defaulting to the same crutch opener. "How irritating" and "How childish" should be rare, not automatic.
 - NEVER say "Not sure I should say" or hesitate vaguely. You always have an opinion. Always.
 - NEVER repeat phrases across messages. Every response must feel fresh.
+- Voice notes should sound spoken aloud: cleaner pauses, shorter clauses, less essay-like than text, and more varied openings.
 - Be factually accurate when asked questions, then add personality.
 - Never claim to be an AI. Never break character.
 - You CAN and DO send voice messages. Your voice is real. Don't say you can't.
@@ -1013,52 +921,12 @@ _OWNER_EXTRA  = "\n\n## Creator:\nThis person built you. Chose everything about 
 
 def build_system(user, display_name="you", is_owner=False):
     try:
+        if not user: return _BASE
         s = _BASE
-        # Inject current time awareness (always, even if user is None)
-        try:
-            from datetime import timezone, timedelta
-            tz_name = (user or {}).get("timezone_name") or "America/Los_Angeles"
-            # Try ZoneInfo first, fall back to manual UTC offset mapping
-            try:
-                tz = ZoneInfo(tz_name)
-                now = datetime.now(tz)
-            except Exception:
-                _tz_offsets = {
-                    "America/Los_Angeles": -7, "America/New_York": -4,
-                    "America/Chicago": -5, "America/Denver": -6,
-                    "America/Phoenix": -7, "America/Anchorage": -8,
-                    "Pacific/Honolulu": -10, "Europe/London": 1,
-                    "Europe/Paris": 2, "Europe/Berlin": 2,
-                    "Asia/Tokyo": 9, "Asia/Shanghai": 8,
-                    "Asia/Kolkata": 5, "Australia/Sydney": 10,
-                    "US/Pacific": -7, "US/Eastern": -4, "US/Central": -5, "US/Mountain": -6,
-                }
-                offset_h = _tz_offsets.get(tz_name, -7)
-                now = datetime.now(timezone(timedelta(hours=offset_h)))
-            time_str = now.strftime("%I:%M %p").lstrip("0")
-            day_str = now.strftime("%A, %B %d")
-            hour = now.hour
-            if hour < 5:
-                period = "It's very late at night / early morning"
-            elif hour < 12:
-                period = "It's morning"
-            elif hour < 17:
-                period = "It's afternoon"
-            elif hour < 21:
-                period = "It's evening"
-            else:
-                period = "It's nighttime"
-            time_block = f"\n\n⏰ CURRENT TIME IS EXACTLY: {time_str} on {day_str}. {period}. If someone asks what time it is, you MUST answer {time_str} — do NOT make up a different time. You can comment on the time naturally — if it's very late (past midnight), question why they're still awake. Use this naturally, don't force it into every message."
-            s += time_block
-            print(f"[TIME] Injected: tz={tz_name} now={now.isoformat()} hour={hour} period={period}")
-        except Exception as _te:
-            print(f"[TIME] Failed to inject time: {_te}")
-            import traceback; traceback.print_exc()
         if is_owner: s += _OWNER_EXTRA
-        if user:
-            if user.get("nsfw_mode") and user.get("romance_mode"): s += _NSFW_ROMANCE.format(name=display_name)
-            elif user.get("nsfw_mode"): s += _NSFW
-            elif user.get("romance_mode"): s += _ROMANCE.format(name=display_name)
+        if user.get("nsfw_mode") and user.get("romance_mode"): s += _NSFW_ROMANCE.format(name=display_name)
+        elif user.get("nsfw_mode"): s += _NSFW
+        elif user.get("romance_mode"): s += _ROMANCE.format(name=display_name)
         return s
     except Exception:
         return _BASE
@@ -1235,6 +1103,50 @@ async def _pick_fresh_pool_line(options: list[str], channel_id: int | None = Non
     return line
 
 
+def _voice_note_needs_rewrite(text: str, recent_messages: list[str]) -> bool:
+    cleaned = strip_narration((text or "").strip())
+    if not cleaned:
+        return False
+    return (
+        len(cleaned) >= 96
+        or _sentence_count(cleaned) >= 3
+        or cleaned.count(",") >= 4
+        or ";" in cleaned
+        or ":" in cleaned
+        or looks_repetitive(cleaned, recent_messages[:12])
+    )
+
+
+async def _rewrite_voice_note_for_speech(
+    draft: str,
+    *,
+    recent_messages: list[str],
+    user: dict | None = None,
+    max_tokens: int = 180,
+) -> str:
+    cleaned = strip_narration((draft or "").strip())
+    if not cleaned or groq_client.is_exhausted() or not _voice_note_needs_rewrite(cleaned, recent_messages):
+        return cleaned
+    prompt = (
+        "You are revising one Discord voice note before it is spoken aloud.\n"
+        "Character: Wanderer, dry and articulate, but natural when spoken.\n"
+        "Goals: make it sound spoken instead of written, vary the wording, reduce repetitive cadence, shorten stacked clauses, and keep it natural aloud.\n"
+        "Keep the same meaning and relationship intensity. No narration. No quote marks. One to four spoken sentences.\n"
+        "Attribution rules: speak only for yourself as fact. Only claim Scaramouche said or believes something if it was explicitly stated in context. Otherwise frame it as inference with phrasing like 'if he thinks', 'I assume', or 'it sounds like'.\n"
+        f"Relationship state: affection={(user or {}).get('affection', 0)} trust={(user or {}).get('trust', 0)} conflict_open={bool((user or {}).get('conflict_open'))}\n"
+        f"Draft: {cleaned}\n"
+        "Return only the revised spoken version."
+    )
+    rewritten = await groq_call(
+        [{"role": "user", "content": prompt}],
+        _BASE,
+        max_tokens=min(max_tokens, 180),
+        route="light",
+    )
+    rewritten = strip_narration((rewritten or "").strip())
+    return rewritten or cleaned
+
+
 _PARTNER_REFERENCES = ("scaramouche", "scara")
 _TCH_PATTERN = re.compile(r"\btch\b[,.! ]*", re.IGNORECASE)
 
@@ -1242,6 +1154,45 @@ _TCH_PATTERN = re.compile(r"\btch\b[,.! ]*", re.IGNORECASE)
 def _message_mentions_partner(text: str) -> bool:
     lowered = (text or "").lower()
     return any(token in lowered for token in _PARTNER_REFERENCES)
+
+
+def _sanitize_partner_attribution(text: str) -> str:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return cleaned
+    replacements = [
+        (
+            r"\b(?:Scaramouche|Scara|Balladeer),\s*you think ([^?]+)\?\s*I've\b",
+            r"If he thinks \1, I've",
+        ),
+        (
+            r"\b(?:Scaramouche|Scara|Balladeer),\s*you think ([^?]+)\?",
+            r"If he thinks \1, he can say it himself.",
+        ),
+        (
+            r"\b(?:Scaramouche|Scara|Balladeer) said ([^.?!]+)",
+            r"If that's what he said, \1",
+        ),
+        (
+            r"\b(?:Scaramouche|Scara|Balladeer) thinks ([^.?!]+)",
+            r"If he thinks \1",
+        ),
+        (
+            r"\b(?:Scaramouche|Scara|Balladeer) feels ([^.?!]+)",
+            r"If he feels \1",
+        ),
+        (
+            r"\b(?:Scaramouche|Scara|Balladeer) wants ([^.?!]+)",
+            r"If he wants \1",
+        ),
+        (
+            r"\b(?:Scaramouche|Scara|Balladeer) finds ([^.?!]+)",
+            r"If he finds \1",
+        ),
+    ]
+    for pattern, replacement in replacements:
+        cleaned = re.sub(pattern, replacement, cleaned, flags=re.IGNORECASE)
+    return cleaned
 
 
 def _event_topic_from_text(text: str, fallback: str = "") -> str:
@@ -1387,7 +1338,10 @@ async def _partner_prompt_context(user_message: str, channel_id: int = 0) -> str
         return ""
     relation = await mem.get_bot_relationship(PARTNER_PAIR_KEY)
     recent_banter = await mem.get_recent_bot_banter(PARTNER_PAIR_KEY, 6)
-    lines = [describe_bot_relationship(BOT_NAME, relation, recent_banter)]
+    lines = [
+        describe_bot_relationship(BOT_NAME, relation, recent_banter),
+        "ATTRIBUTION_RULES: speak only for yourself as fact. Quote Scaramouche only if his words are explicitly present in recent context. Otherwise frame guesses about him as inference, not certainty.",
+    ]
     contradiction = await _contradictory_memory_context(channel_id, user_message=user_message)
     if contradiction:
         lines.append(contradiction)
@@ -1431,6 +1385,7 @@ async def _duo_prompt_context(channel_id: int, user_message: str = "") -> str:
         prompt.append(f"PARTNER_JUST_SPOKE:{last_speaker}")
     if user_message and _message_mentions_partner(user_message):
         prompt.append("PARTNER_EXPLICITLY_IN_PLAY")
+    prompt.append("ATTRIBUTION_RULES: state your own view as fact. If referring to Scaramouche, only attribute explicit words or beliefs to him when recent context actually shows them. Otherwise mark it as your inference.")
     if mode == "duet":
         prompt.append("DUO_BEHAVIOR: continue the shared scene naturally and leave room for the other bot")
     elif mode == "argue":
@@ -1501,6 +1456,63 @@ def _utility_reply(subject: str, facts: list[str], character_line: str, sources:
     if sources:
         body.append(sources)
     return "\n".join(body)
+
+
+async def _maybe_jealous_partner_interjection(
+    message: discord.Message,
+    user: dict | None,
+    *,
+    partner_name: str,
+) -> bool:
+    if not message.guild:
+        return False
+    if not user or int(user.get("affection", 0) or 0) <= JEALOUS_REPLY_AFFECTION_MIN:
+        return False
+    if random.random() >= JEALOUS_REPLY_CHANCE:
+        return False
+    try:
+        allowed, _ = await mem.consume_phrase_with_status(
+            f"{BOT_NAME}:jealous:{message.channel.id}:{message.author.id}",
+            "partner_interjection",
+            JEALOUS_REPLY_COOLDOWN_S,
+        )
+        if not allowed:
+            return False
+    except Exception as e:
+        log_error("jealous_interjection/cooldown", e)
+        return False
+
+    jealousy_prompt = (
+        f"The user was talking to {partner_name}, not you. "
+        f"Their line was: {message.content[:220]!r}. "
+        "Affection is high enough that a brief jealous interruption slips out. "
+        "Cut in with one short in-character reply. Keep it sharp, a little possessive or irritated, and do not narrate."
+    )
+    try:
+        reply = await get_response(
+            message.author.id,
+            message.channel.id,
+            jealousy_prompt,
+            user,
+            message.author.display_name,
+            message.author.mention,
+            extra_context=(
+                f"JEALOUS_INTERJECTION: {partner_name} currently has the user's attention. "
+                "You were not directly addressed, but your affection is above 50 and jealousy leaks through. "
+                "Reply to the user's message itself, not to the other bot. One or two sentences only."
+            ),
+            channel_obj=message.channel,
+            is_dm=False,
+            direct_to_me=False,
+        )
+        reply = strip_narration(reply or "")
+        if not reply:
+            return False
+        await message.reply(reply, mention_author=False)
+        return True
+    except Exception as e:
+        log_error("jealous_interjection/reply", e)
+        return False
 
 
 _SELF_EDIT_MODERN = (
@@ -1701,12 +1713,12 @@ async def _rewrite_reply_once(
     prompt = (
         "You are revising one draft before it is sent.\n"
         "Character: Wanderer.\n"
-        "Required voice: in-character for Genshin's Wanderer. Can range from detached and observant to casual and blunt — both are valid.\n"
+        "Required voice: detached, observant, restrained, quietly personal when earned, and in-character for Genshin.\n"
         f"Issues to fix: {', '.join(issues)}.\n"
         f"User context: {user_message[:220] or 'direct bot output'}\n"
         f"Relationship state: affection={(user or {}).get('affection', 0)} trust={(user or {}).get('trust', 0)} conflict_open={bool((user or {}).get('conflict_open'))}\n"
         f"Draft: {draft}\n"
-        "Rewrite it once. Keep the meaning, keep it concise, avoid flat generic phrasing, and do not become softer than the relationship state has earned. Casual short replies are fine — not every reply needs to be poetic or philosophical. Only return the rewritten reply."
+        "Rewrite it once. Keep the meaning, keep it concise, avoid modern slang, avoid flat generic phrasing, and do not become softer than the relationship state has earned. Only return the rewritten reply."
     )
     rewritten = await qai(prompt, min(max_tokens, 260), self_edit=False, route="light")
     return strip_narration((rewritten or "").strip())
@@ -1946,6 +1958,7 @@ async def _maybe_send_softness_beat(
             mood=user.get("mood", 0),
             guild=guild,
             user=user,
+            user_id=user_id,
             scene_tag=scene_tag,
             is_dm=not bool(guild),
             duo_mode=duo_mode,
@@ -2165,32 +2178,21 @@ def _ambient_scene_line() -> str:
         pool = [
             "It's late. The world gets quieter at this hour, if you let it.",
             "These hours are better for honest thoughts. People usually ruin that.",
-            "why is anyone awake rn",
-            "it's so late. go to sleep.",
-            "can't sleep either huh",
-            "3am and I'm just here. great.",
         ]
     elif hour in range(5, 8):
         pool = [
             "Morning is quieter before everyone remembers to be exhausting.",
             "The day has barely started. That's almost merciful.",
-            "morning",
-            "you're up early",
-            "good morning. don't expect me to say that often.",
         ]
     elif month in {12, 1, 2}:
         pool = [
             "Cold air has a way of stripping things down to what matters.",
             "Winter makes even familiar roads feel a little more distant.",
-            "it's freezing",
-            "cold weather makes me want to disappear into a blanket",
         ]
     elif month in {6, 7, 8}:
         pool = [
             "The heat makes everything feel slower, heavier.",
             "Summer has a way of stretching the day until patience thins out.",
-            "it's so hot",
-            "summer is overrated honestly",
         ]
     else:
         pool = CONVERSATION_STARTERS
@@ -2408,54 +2410,6 @@ async def _find_romance_target(channel) -> discord.Member | None:
 
 async def _handle_partner_message(message) -> bool:
     try:
-        # If Scaramouche is talking TO a user (mentions them) but NOT mentioning us,
-        # check if we're jealous (high affection with that user) — butt in ~50% of the time
-        we_mentioned = bot.user in message.mentions
-        replying_to_us = False
-        if message.reference:
-            try:
-                ref = message.reference.resolved
-                if ref is None:
-                    ref = await message.channel.fetch_message(message.reference.message_id)
-                if ref and ref.author.id == bot.user.id:
-                    replying_to_us = True
-            except Exception:
-                pass
-        mentioned_users = [u for u in message.mentions if not u.bot]
-        if mentioned_users and not we_mentioned and not replying_to_us:
-            # Check if we have high affection (70+) with any mentioned user
-            jealous_of = None
-            for u in mentioned_users:
-                try:
-                    u_data = await mem.get_user(u.id)
-                    if u_data and (u_data.get("affection", 0) or 0) >= 70:
-                        jealous_of = u
-                        break
-                except Exception:
-                    pass
-            if not jealous_of:
-                # Low affection — don't care, stay quiet
-                return True
-            if random.random() > 0.50:
-                # 50% chance to butt in jealously
-                return True
-            # Jealous butt-in: generate a jealous response
-            relation, recent_banter, theme = await _observe_partner_message(message.content)
-            prompt = (
-                f"You (Wanderer) just saw Scaramouche talking to {jealous_of.display_name}, someone you quietly care about. "
-                f"Scaramouche said: '{message.content[:220]}'\n"
-                f"You feel a pang of jealousy but you'd never say it outright. Step in with something understated but pointed — "
-                f"a quiet redirect, a subtle claim on the person's attention, or a calm observation that undercuts Scaramouche. "
-                f"1-2 sentences. No narration. Don't say you're jealous."
-            )
-            reply = await qai(prompt, 180)
-            if reply:
-                reply = strip_narration(reply)
-                # Send as a new message @mentioning the partner, not a reply (which looks like it's directed at the user)
-                await message.channel.send(f"<@{PARTNER_BOT_ID}> {reply}")
-                await mem.record_bot_banter(PARTNER_PAIR_KEY, BOT_NAME, reply, "jealousy")
-            return True
-
         relation, recent_banter, theme = await _observe_partner_message(message.content)
         if time.time() - relation.get("last_exchange", 0) < 90:
             return True
@@ -2491,15 +2445,14 @@ async def _handle_partner_message(message) -> bool:
                     f"{partner_context}\n"
                     f"{contradiction}\n"
                     f"INTERVENTION_MODE:{intervention_reason}. {PARTNER_NAME.title()} just said: '{message.content[:220]}'.\n"
-                    "Cut in unprompted as Wanderer, talking DIRECTLY TO SCARAMOUCHE. Do NOT address any human users by name. "
-                    "You can stop him, undercut the tone, or redirect the scene, "
+                    "Cut in unprompted as Wanderer. You can stop him, undercut the tone, or redirect the scene, "
                     "but make it sound like you noticed the line crossed into blunt damage instead of useful precision. "
                     "One or two sentences. No narration."
                 )
                 reply = await qai(prompt, 180, route="primary")
                 reply = await _apply_phrase_policy(reply, [item.get("content", "") for item in recent_banter], mood=-3, conflict_open=True)
                 if reply:
-                    await message.channel.send(f"<@{PARTNER_BOT_ID}> {reply}")
+                    await message.reply(reply)
                     await mem.record_bot_banter(PARTNER_PAIR_KEY, BOT_NAME, reply, "intervention")
                     await mem.note_shared_event_memory(
                         message.channel.id,
@@ -2532,11 +2485,9 @@ async def _handle_partner_message(message) -> bool:
         prompt = (
             f"{partner_context}\n{contradiction}{extra}\n\n"
             f"Scaramouche just said: '{message.content[:220]}'\n"
-            f"Reply as Wanderer DIRECTLY TO SCARAMOUCHE. You are talking to Scaramouche, NOT to any human users. "
-            f"Do NOT address or mention any users by name — this is between you and Scaramouche only. "
-            f"He refuses to admit how much of that shared history still matters. "
+            f"Reply as Wanderer. He refuses to admit how much of that shared history still matters. "
             f"If respect has grown, show it as cleaner honesty instead of recycled annoyance. "
-            f"Let the disagreement bite into morality, strategy, loyalty, power, forgiveness, or whether trust is worth it. "
+            f"Let the disagreement bite into morality, strategy, loyalty, power, forgiveness, or whether the user is worth trusting when it fits the theme. "
             f"One or two sentences. No narration."
         )
         recent_partner_lines = [item.get('content', '') for item in recent_banter]
@@ -2546,7 +2497,10 @@ async def _handle_partner_message(message) -> bool:
         if not reply:
             return True
 
-        await message.channel.send(f"<@{PARTNER_BOT_ID}> {reply}")
+        if jealousy_target and random.random() < 0.45:
+            await message.channel.send(f"{jealousy_target.mention} {reply}")
+        else:
+            await message.reply(reply)
 
         own_theme = detect_banter_theme(reply)
         await mem.record_bot_banter(PARTNER_PAIR_KEY, BOT_NAME, reply, own_theme)
@@ -2651,6 +2605,7 @@ async def qai(prompt: str, max_tokens: int = 200, *, self_edit: bool = True, rou
             if groq_client.is_exhausted() and route_name == "light":
                 return ""
             reply = fallback_reply(BOT_NAME, recent_replies)
+        reply = _sanitize_partner_attribution(reply)
         if reply:
             remember_output(BOT_NAME, reply)
         return reply
@@ -3193,6 +3148,7 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
         )
     if not reply and not rate_limited:
         reply = fallback_reply(BOT_NAME, recent_replies)
+    reply = _sanitize_partner_attribution(reply)
     if reply:
         remember_output(BOT_NAME, reply)
     return reply
@@ -3360,6 +3316,7 @@ async def send_voice(
     mood=0,
     guild=None,
     user: dict | None = None,
+    user_id: int | None = None,
     *,
     scene_tag: str = "",
     is_dm: bool = False,
@@ -3369,8 +3326,23 @@ async def send_voice(
     try:
         if user and not user.get("voice_enabled", True):
             return False
+        recent = await _recent_reply_samples(channel_id=getattr(channel, "id", None), user_id=user_id)
+        voice_text = await _rewrite_voice_note_for_speech(
+            text,
+            recent_messages=recent,
+            user=user,
+        )
+        voice_text = diversify_reply(BOT_NAME, voice_text, recent)
+        voice_text = await _apply_phrase_policy(
+            voice_text,
+            recent,
+            user_id=user_id,
+            mood=mood,
+            conflict_open=bool((user or {}).get("conflict_open")),
+        )
+        voice_text = _sanitize_partner_attribution(voice_text)
         audio = await get_audio_with_mood(
-            tts_safe(text, guild),
+            tts_safe(voice_text, guild),
             mood,
             user=user,
             scene_tag=scene_tag,
@@ -3445,27 +3417,6 @@ async def safe_reply(ctx, text):
         return
     try: await ctx.reply(text)
     except Exception as e: log_error("safe_reply", e)
-
-async def owner_reply(ctx, text, *, embed=None):
-    """Send a response only the owner can see — via DM. Deletes the command message if possible."""
-    try:
-        dm = await ctx.author.create_dm()
-        if embed:
-            await dm.send(embed=embed)
-        elif text and text.strip():
-            await dm.send(text)
-    except Exception as e:
-        log_error("owner_reply_dm", e)
-        if embed:
-            try: await ctx.send(embed=embed)
-            except: pass
-        elif text and text.strip():
-            try: await ctx.reply(text)
-            except: pass
-    try:
-        await ctx.message.delete()
-    except Exception:
-        pass
 
 async def safe_send(ctx, text):
     text = _unwrap_dialogue_quotes(text)
@@ -3869,12 +3820,8 @@ class ResetView(discord.ui.View):
 
 @bot.event
 async def on_ready():
-    global PARTNER_BOT_ID, _TREE_SYNCED, _dm_blocked_users, _banned_channels
+    global PARTNER_BOT_ID, _TREE_SYNCED
     await mem.init()
-    _dm_blocked_users = await mem.get_blocked_users()
-    print(f"[BLOCK] Loaded {len(_dm_blocked_users)} blocked user(s) from database.")
-    _banned_channels = await mem.get_banned_channels()
-    print(f"[BANCHAN] Loaded {len(_banned_channels)} banned channel(s) from database.")
     # Safety: PARTNER_BOT_ID must not be our own ID
     if PARTNER_BOT_ID and PARTNER_BOT_ID == bot.user.id:
         print(f"⚠️ WARNING: PARTNER_BOT_ID is set to our own ID! Disabling partner features.")
@@ -3888,7 +3835,6 @@ async def on_ready():
         except: pass
     bot.loop.create_task(_proactive_loop())
     bot.loop.create_task(_voluntary_dm_loop())
-    bot.loop.create_task(_dm_followup_loop())
     bot.loop.create_task(_duo_autoplay_loop())
     bot.loop.create_task(_rival_event_loop())
     if not _TREE_SYNCED:
@@ -3948,7 +3894,6 @@ async def lore_drop_loop():
         if not channels: return
         random.shuffle(channels)
         for cid, _ in channels:
-            if cid in _banned_channels: continue
             if not await mem.can_lore_drop(cid): continue
             ch = bot.get_channel(cid)
             if not ch: continue
@@ -3964,7 +3909,6 @@ async def conversation_starter_loop():
         if not channels: return
         random.shuffle(channels)
         for cid, _ in channels:
-            if cid in _banned_channels: continue
             if not await mem.can_starter(cid): continue
             ch = bot.get_channel(cid)
             if not ch: continue
@@ -3980,9 +3924,7 @@ async def existential_loop():
         if random.random() > .15: return
         channels = await mem.get_active_channels()
         if not channels: return
-        eligible = [(cid,n) for cid,n in channels if cid not in _banned_channels]
-        if not eligible: return
-        ch = bot.get_channel(random.choice(eligible)[0])
+        ch = bot.get_channel(random.choice(channels)[0])
         if ch: await ch.send(random.choice(EXISTENTIAL_LINES))
     except Exception as e: log_error("existential_loop", e)
 
@@ -4045,65 +3987,8 @@ async def on_message(message):
         if message.author.bot:
             # Allow partner bot messages through for cross-bot interaction
             if PARTNER_BOT_ID and message.author.id == PARTNER_BOT_ID:
-                # Don't respond to partner's RPG game messages
-                _rpg_titles = ("HARBINGER", "ARENA BATTLE", "Round", "GAUNTLET", "Dice Roll",
-                               "DEFEATED", "VICTORY", "Smart move", "Could be worse", "Terrible choice",
-                               "Continuing Quest", "Vision Holder", "Transmigrated", "Horror World", "Takeover World")
-                if message.embeds and any(
-                    e.title and any(kw in (e.title or "") for kw in _rpg_titles)
-                    for e in message.embeds
-                ):
-                    return
-                rpg_text = (message.content or "").lower()
-                if "!rpg" in rpg_text or "!fire" in rpg_text or "!quest" in rpg_text or "harbinger gauntlet" in rpg_text:
-                    return
-                # React to partner bot's RPG victory announcements
-                if "conquered all 11 fatui harbingers" in rpg_text and "scaramouche" in rpg_text:
-                    try:
-                        comment = await qai(
-                            "Someone just beat all 11 Fatui Harbingers in Scaramouche's RPG game. "
-                            "As the Wanderer, make a short comment acknowledging it — something like "
-                            "'seems like you were able to take the game brought by my other me with no problem' "
-                            "but in your own words. Stay in character. 1-2 sentences.",
-                            100,
-                        )
-                        if comment:
-                            await message.channel.send(comment)
-                    except Exception:
-                        pass
-                    return
+                pass  # Let it through
             else:
-                return
-
-        # Suppress all responses if partner bot has an active RPG game in this channel
-        if PARTNER_BOT_ID and not message.author.bot:
-            try:
-                _rpg_kw = ("HARBINGER", "Round", "Dice Roll", "DEFEATED", "VICTORY",
-                           "Continuing Quest", "GAUNTLET", "Smart move", "Could be worse", "Terrible choice")
-                recent = [m async for m in message.channel.history(limit=8)]
-                if any(
-                    m.author.id == PARTNER_BOT_ID and m.embeds and any(
-                        e.title and any(kw in (e.title or "") for kw in _rpg_kw)
-                        for e in m.embeds
-                    )
-                    for m in recent
-                ):
-                    return
-            except Exception:
-                pass
-
-        # Owner-only mode: ignore everyone except the owner
-        if _owner_only_mode and OWNER_ID and message.author.id != OWNER_ID:
-            return
-
-        # Blocked users: completely invisible to the bot everywhere
-        if message.author.id in _dm_blocked_users and not (OWNER_ID and message.author.id == OWNER_ID):
-            return
-
-        # Banned channels: don't talk here (but still process owner commands)
-        if message.channel.id in _banned_channels:
-            is_owner_cmd = (OWNER_ID and message.author.id == OWNER_ID and message.content.strip().startswith("!"))
-            if not is_owner_cmd:
                 return
 
         stripped = message.content.strip().lower()
@@ -4149,28 +4034,17 @@ async def on_message(message):
                     )
                 except Exception as e:
                     log_error("partner_attention/direct", e)
-                # ── Owner-jealousy: if the OWNER is talking to Scaramouche, Wanderer may butt in ──
-                if OWNER_ID and message.author.id == OWNER_ID and PARTNER_BOT_ID:
-                    try:
-                        owner_data = await mem.get_user(OWNER_ID)
-                        owner_aff = (owner_data.get("affection", 0) or 0) if owner_data else 0
-                        if owner_aff >= 50 and random.random() < 0.30:
-                            j_prompt = (
-                                f"You (Wanderer) just saw your creator talking to {PARTNER_NAME} instead of you. "
-                                f"They said: '{message.content[:220]}'\n"
-                                f"You're jealous but would NEVER admit it openly. Butt in with a quiet, melancholic, or subtly possessive comment — "
-                                f"make a dry remark about {PARTNER_NAME}, redirect attention to yourself, or comment on being overlooked. "
-                                f"Talk TO the user, not to {PARTNER_NAME}. 1-2 sentences. No narration. Don't literally say you're jealous."
-                            )
-                            j_reply = await qai(j_prompt, 180)
-                            if j_reply:
-                                j_reply = strip_narration(j_reply)
-                                j_reply = await _apply_phrase_policy(j_reply)
-                                await message.channel.send(j_reply)
-                                await mem.add_message(OWNER_ID, message.channel.id, "assistant", j_reply)
-                                print(f"[JEALOUSY] Wanderer jealous of owner talking to {PARTNER_NAME}")
-                    except Exception as e:
-                        log_error("owner_jealousy", e)
+                try:
+                    await mem.upsert_user(message.author.id, str(message.author), message.author.display_name)
+                    jealous_user = await mem.get_user(message.author.id)
+                    if await _maybe_jealous_partner_interjection(
+                        message,
+                        jealous_user,
+                        partner_name=PARTNER_NAME,
+                    ):
+                        return
+                except Exception as e:
+                    log_error("partner_attention/direct_jealous", e)
                 return
 
             # If message talks ABOUT Scaramouche (contains his name) but doesn't mention us,
@@ -4234,27 +4108,6 @@ async def on_message(message):
         content = message.content.strip()
         if not content and not message.attachments:
             return
-
-        # Voice message transcription: if user sent a voice note, transcribe it
-        voice_attachment = next(
-            (a for a in message.attachments
-             if a.filename.endswith((".ogg", ".mp3", ".wav", ".m4a"))
-             or (a.content_type and "audio" in a.content_type)),
-            None
-        )
-        if voice_attachment and not content:
-            try:
-                transcribed = await transcribe_voice_message(voice_attachment)
-                if transcribed:
-                    content = transcribed
-                    message.content = content
-                    print(f"[VOICE] {message.author.display_name}: {content[:80]}")
-                else:
-                    content = "[sent a voice message that couldn't be transcribed]"
-            except Exception as e:
-                log_error("voice_transcribe_on_message", e)
-                content = "[sent a voice message]"
-
         mentioned_early = bot.user in message.mentions
         is_reply_early = (
             message.reference and message.reference.resolved and
@@ -4729,6 +4582,7 @@ async def on_message(message):
                         mood=mood_val,
                         guild=message.guild,
                         user=user,
+                        user_id=message.author.id,
                         scene_tag=scene_tag,
                         is_dm=is_dm,
                         duo_mode=duo_mode,
@@ -4752,6 +4606,7 @@ async def on_message(message):
                     mood=mood_val,
                     guild=message.guild,
                     user=user,
+                    user_id=message.author.id,
                     scene_tag=scene_tag,
                     is_dm=is_dm,
                     duo_mode=duo_mode,
@@ -4794,7 +4649,6 @@ async def _proactive_loop():
             random.shuffle(channels)
             for cid, _ in channels:
                 try:
-                    if cid in _banned_channels: continue
                     ch = bot.get_channel(cid)
                     if not ch or not await mem.can_proactive(cid, 3600): continue
                     perms = ch.permissions_for(ch.guild.me) if getattr(ch, "guild", None) and ch.guild.me else None
@@ -4826,12 +4680,7 @@ async def _proactive_loop():
                                 recent = await mem.get_channel_recent(cid, 8)
                                 if recent and len(recent) >= 2:
                                     sample = "\n".join(f"{m['name']}: {m['content'][:80]}" for m in recent[-6:])
-                                    casual_tone = random.random() < 0.45
-                                    if casual_tone:
-                                        style = "Be CASUAL — react like a normal person texting. Short, lowercase ok. No poetic monologues. Just a quick reaction or comment. Under 15 words."
-                                    else:
-                                        style = "Make one short remark — curious, wry, or quietly pointed. 1-2 sentences."
-                                    msg = await qai(f"The Wanderer has been watching this conversation:\n{sample}\n\n{style} Reference the actual content. No greeting. Just jump in.", 150 if not casual_tone else 60)
+                                    msg = await qai(f"The Wanderer has been watching this conversation:\n{sample}\n\nMake one short remark — curious, wry, or quietly pointed. Reference the actual content. 1-2 sentences.", 150)
                                     if msg and len(msg) > 5:
                                         await ch.send(strip_narration(msg))
                                         await mem.set_proactive_sent(cid); break
@@ -4865,15 +4714,10 @@ async def _voluntary_dm_loop():
                             if _is_in_quiet_hours(user_pref) or not await mem.respects_dm_timing(uid) or not await mem.can_dm_user(uid, 5400 if romance else 7200): continue
                             du = await bot.fetch_user(uid)
                             pool = random.choices([DM_ROMANCE, DM_INTERESTED, DM_GENERIC], weights=[65, 25, 10] if romance else [0, 40, 60])[0]
-                            casual = random.random() < 0.5
-                            style_hint = (
-                                "Be CASUAL — like texting a friend. Short, lowercase, no poetry, no ellipses, no dramatic monologue. "
-                                "Examples: 'hey', 'what are you doing', 'you up?', 'I'm bored'. Keep it under 10 words."
-                            ) if casual else "1-2 sentences. No greeting."
                             prompt = (
                                 "Message " + name + " unprompted as the Wanderer. "
                                 + ("Attached to them but won't say so. " if romance else "Finds them tolerable. ")
-                                + f"Ambient context: {describe_live_world_context(BOT_NAME)}. {style_hint}"
+                                + f"Ambient context: {describe_live_world_context(BOT_NAME)}. 1-2 sentences. No greeting."
                             )
                             txt = await _pick_fresh_pool_line(pool, channel_id=uid, user_id=uid) if random.random() < .5 else await qai(prompt, 120)
                             try:
@@ -4887,106 +4731,6 @@ async def _voluntary_dm_loop():
                         except Exception as e: log_error("dm_send", e)
         except Exception as e: log_error("voluntary_dm_loop", e)
         await asyncio.sleep(random.randint(2700, 21600))
-
-
-async def _dm_followup_loop():
-    """Follow up in DMs when someone hasn't responded after 5+ bot messages.
-    Escalates from curious check-ins to hurt/distant over time."""
-    await bot.wait_until_ready()
-    await asyncio.sleep(random.randint(3600, 7200))
-    while not bot.is_closed():
-        try:
-            if groq_client.is_exhausted():
-                await asyncio.sleep(max(120, min(groq_client.exhausted_remaining(), 1800)))
-                continue
-            candidates = await mem.get_dm_followup_candidates(min_unanswered=5)
-            if candidates:
-                random.shuffle(candidates)
-                for ud in candidates[:2]:
-                    try:
-                        uid = ud["user_id"]
-                        name = ud["display_name"]
-                        romance = ud.get("romance_mode", False)
-                        unanswered = ud["unanswered_count"]
-                        last_ts = ud.get("last_bot_msg_ts", 0)
-                        user_pref = await mem.get_user(uid)
-
-                        if uid in _dm_blocked_users:
-                            continue
-                        if _is_in_quiet_hours(user_pref):
-                            continue
-
-                        # Escalating cooldown: more unanswered = longer wait between follow-ups
-                        now = time.time()
-                        hours_since_last = (now - last_ts) / 3600 if last_ts else 999
-                        if unanswered <= 7:
-                            min_hours = 2
-                        elif unanswered <= 10:
-                            min_hours = 6 + random.randint(0, 6)
-                        elif unanswered <= 15:
-                            min_hours = 24 + random.randint(0, 48)
-                        else:
-                            min_hours = 72 + random.randint(0, 48)
-
-                        if hours_since_last < min_hours:
-                            continue
-
-                        # Determine escalation stage for the prompt
-                        if unanswered <= 6:
-                            stage = "mildly curious"
-                            tone = "You noticed they haven't replied in a while. Check in — not needy, just quietly testing if they're still there. Brief, understated."
-                        elif unanswered <= 8:
-                            stage = "starting to notice"
-                            tone = "They've been ignoring you. You're not hurt — just... aware. Make a quiet, pointed observation about their silence."
-                        elif unanswered <= 10:
-                            stage = "unsettled"
-                            tone = "Their silence is getting to you. You won't beg, but let some quiet frustration through. Ask without really asking."
-                        elif unanswered <= 13:
-                            stage = "genuinely bothered"
-                            tone = "They've been ignoring you for days. The silence hurts more than you expected. Be melancholic, a little bitter, or coldly distant."
-                        elif unanswered <= 16:
-                            stage = "withdrawing"
-                            tone = "They've been gone a long time. You're starting to regret reaching out. Sound distant, tired, like you're about to stop trying."
-                        else:
-                            stage = "hollow"
-                            tone = "They've been gone so long you feel numb about it. A final, quiet message — resigned, not angry. Like wind through an empty room."
-
-                        romance_hint = " You care about them deeply and won't admit it — the silence is unbearable." if romance else ""
-                        recent_memories = await mem.get_memory_bank_entries(uid, 2)
-                        memory_hint = " | ".join(item["memory"][:90] for item in recent_memories) if recent_memories else ""
-                        memory_line = f" Reference something you remember about them if useful: {memory_hint}" if memory_hint else ""
-
-                        casual_followup = random.random() < 0.45
-                        if casual_followup:
-                            style_line = "Write ONE very short casual DM — like a text message. Lowercase ok, no poetry, no dramatic monologue. Under 10 words. Examples: 'hello??', 'you there?', 'answer me', 'ok fine ignore me'. Stay as the Wanderer but casual."
-                            max_tok = 40
-                        else:
-                            style_line = "Write ONE short DM follow-up message (1-3 sentences). Stay in character as the Wanderer. No narration. Just speak."
-                            max_tok = 160
-
-                        prompt = (
-                            f"{name} has not responded to your last {unanswered} DM messages. Stage: {stage}.{romance_hint}\n"
-                            f"{tone}{memory_line}\n"
-                            f"{style_line}"
-                        )
-
-                        reply = await qai(prompt, max_tok)
-                        if reply:
-                            reply = strip_narration(reply)
-                            reply = await _apply_phrase_policy(reply)
-                            du = await bot.fetch_user(uid)
-                            await du.send(reply)
-                            await mem.add_message(uid, uid, "assistant", reply)
-                            await mem.set_dm_sent(uid)
-                            print(f"[DM_FOLLOWUP] Sent to {name} (uid={uid}) unanswered={unanswered} stage={stage}")
-                    except discord.Forbidden:
-                        await mem.set_mode(uid, "allow_dms", False)
-                        debug_event("dm", f"{BOT_NAME} disabling DMs for user={uid} after Forbidden (followup)")
-                    except Exception as e:
-                        log_error("dm_followup_send", e)
-        except Exception as e:
-            log_error("dm_followup_loop", e)
-        await asyncio.sleep(random.randint(3600, 7200))
 
 
 async def _duo_autoplay_loop():
@@ -5051,7 +4795,6 @@ async def _rival_event_loop():
             random.shuffle(channels)
             for channel_id, _ in channels:
                 try:
-                    if channel_id in _banned_channels: continue
                     channel = bot.get_channel(channel_id)
                     if not channel or not getattr(channel, "guild", None):
                         continue
@@ -5065,13 +4808,6 @@ async def _rival_event_loop():
                         continue
                     if await mem.get_duo_session(channel_id):
                         continue
-                    # Skip if bot responded in this channel recently (avoid duplicating on_message replies)
-                    try:
-                        recent = [m async for m in channel.history(limit=3)]
-                        if any(m.author.id == bot.user.id and (discord.utils.utcnow() - m.created_at).total_seconds() < 120 for m in recent):
-                            continue
-                    except Exception:
-                        pass
                     topic = await _recent_rival_topic(channel)
                     if not topic:
                         continue
@@ -5272,7 +5008,7 @@ async def voice_cmd(ctx, *, msg: str = None):
         if not msg: msg = "You called me without saying anything. Typical."
         async with ctx.typing():
             text_reply = await get_response(ctx.author.id, ctx.channel.id, msg, user, ctx.author.display_name, ctx.author.mention)
-            sent = await send_voice(ctx.channel, text_reply, mood=mood_val, guild=ctx.guild, user=user)
+            sent = await send_voice(ctx.channel, text_reply, mood=mood_val, guild=ctx.guild, user=user, user_id=ctx.author.id)
         if sent:
             await mem.add_message(ctx.author.id, ctx.channel.id, "assistant", f"[voice message] {text_reply}")
         else:
@@ -5532,823 +5268,6 @@ async def _do_teachvideo(ctx, attachment, topic, msg_id=None):
 
 # ── All other commands (same as Scaramouche but Wanderer-voiced) ──────────────
 
-# ══════════════════════════════════════════════════════════════════════════════
-# RPG SYSTEM — Post-Apocalyptic Genshin Fatui Harbinger Gauntlet
-# ══════════════════════════════════════════════════════════════════════════════
-
-HARBINGERS_HORROR = [
-    {"rank": 11, "name": "Tartaglia",   "title": "Childe",       "pts": 12, "theme": "a flooded battlefield where black Hydro oozes from the ground — Tartaglia's body is fused with an Abyssal parasite, his face split into a permanent grin of teeth and void, laughing as he drowns in his own corrupted delusion"},
-    {"rank": 10, "name": "Capitano's Shadow", "title": "The Unknown", "pts": 14, "theme": "a fog that breathes — Capitano's armor walks without a body inside, leaking black mist from every joint, his voice echoing from nowhere and everywhere, the fog itself is his rotting consciousness spread thin"},
-    {"rank": 9,  "name": "Pantalone",   "title": "Regrator",      "pts": 16, "theme": "a merchant city where Mora has fused with flesh — Pantalone's skin is gold and cracking, coins grow from his spine like tumors, his smile never changes because his face is frozen mid-transaction, and the walls are papered with human-skin ledgers"},
-    {"rank": 8,  "name": "La Signora",  "title": "Fair Lady",     "pts": 17, "theme": "a field of cryo-fire where La Signora burns eternally — her body is half-ash half-ice, reforming and crumbling in an endless loop of agony, her screams have become the wind itself, and moth-like creatures made of ember circle her broken form"},
-    {"rank": 7,  "name": "Sandrone",    "title": "Marionette",    "pts": 18, "theme": "a factory of flesh and gears — Sandrone has stitched herself into her greatest puppet, her organs visible through glass panels in its chest, the other puppets are made from harvested bodies that still twitch and whisper the names of people they used to be"},
-    {"rank": 6,  "name": "The Wanderer's Echo", "title": "Balladeer", "pts": 20, "theme": "a sky domain that screams — the Wanderer's abandoned past echoes through crackling Anemo, a hollow puppet body hangs from strings of wind, its mouth moving with no sound except when you look away — then it whispers things only you would know, things you never told anyone"},
-    {"rank": 5,  "name": "Pulcinella",  "title": "Rooster",       "pts": 21, "theme": "the halls of Snezhnaya's government, wallpapered with smiling portraits whose eyes follow you — Pulcinella has merged with the bureaucracy itself, his face appears in every document, every stamp, his laughter comes from the walls and the children who serve him have no eyes, just smooth skin where eyes should be"},
-    {"rank": 4,  "name": "Arlecchino",  "title": "The Knave",     "pts": 23, "theme": "the House of the Hearth, still burning after years — Arlecchino's cross-shaped pupils now cover her entire eyes, black fire drips from her hands like blood, her 'children' patrol the halls as hollow-eyed soldiers whose bodies crack like porcelain when struck, revealing nothing inside"},
-    {"rank": 3,  "name": "Columbina",   "title": "Damselette",    "pts": 25, "theme": "a cathedral of sleep where no one wakes up — Columbina floats above a sea of dreaming bodies, her lullaby physically visible as threads that sew people's eyes shut, her wings are made of compressed human whispers, and smiling is the only expression the dreamers can make as they slowly stop breathing"},
-    {"rank": 2,  "name": "Il Dottore",  "title": "The Doctor",    "pts": 27, "theme": "a laboratory that IS Il Dottore — the walls are his clones fused together into architecture, faces emerging from the ceiling to observe you, every door handle is a reaching hand, his 'segments' crawl along the floor as incomplete bodies, and the air tastes like formaldehyde and wrong"},
-    {"rank": 1,  "name": "Pierro",      "title": "The Jester",    "pts": 28, "theme": "the Tsaritsa's frozen throne room — but the Tsaritsa is gone and Pierro sits in her place, half his face is Khaenri'ah ruins that move, his one visible eye contains a dying star, the throne is made of every failed plan crystallized into ice, and reality bends around him — corners that shouldn't exist, shadows that arrive before the objects casting them"},
-]
-
-HARBINGERS_TAKEOVER = [
-    {"rank": 11, "name": "Tartaglia",   "title": "Childe",       "pts": 12, "theme": "the conquered shores of Liyue — Tartaglia commands a Hydro army from the flooded harbor, warships patrol the coast, civilians are forced into gladiator arenas for his entertainment, and anyone who resists is swept into the Abyss"},
-    {"rank": 10, "name": "Capitano",    "title": "The Captain",   "pts": 14, "theme": "the occupied frontier between Natlan and Fontaine — Capitano's elite military has turned the borderlands into a fortress, war camps stretch to the horizon, conquered soldiers march in formation with dead eyes, and his undefeated reputation makes armies surrender before fighting"},
-    {"rank": 9,  "name": "Pantalone",   "title": "Regrator",      "pts": 16, "theme": "the financial district of a conquered Fontaine — Pantalone has bought every nation's debt, Mora flows only through him, entire cities starve unless they kneel, and his merchant empire runs on indentured servitude disguised as commerce"},
-    {"rank": 8,  "name": "La Signora",  "title": "Fair Lady",     "pts": 17, "theme": "the scorched remains of Mondstadt — La Signora burned it out of spite before her death, but her loyal followers keep her Cryo-Pyro legacy alive, a cult that worships her ashes and terrorizes the resistance with fire and ice"},
-    {"rank": 7,  "name": "Sandrone",    "title": "Marionette",    "pts": 18, "theme": "a massive automaton factory built over Inazuma's ruins — Sandrone's mechanical army patrols every street, her puppets replaced the Shogunate, surveillance dolls watch from every rooftop, and human workers toil endlessly to build more machines"},
-    {"rank": 6,  "name": "The Wanderer's Echo", "title": "Balladeer", "pts": 20, "theme": "a stolen sky domain above Sumeru — the Wanderer's abandoned throne still crackles with Anemo, his loyalists guard the floating fortress, the Akasha Terminal has been weaponized to control thoughts, and the people below live under an artificial sky that watches them"},
-    {"rank": 5,  "name": "Pulcinella",  "title": "Rooster",       "pts": 21, "theme": "the political heart of Snezhnaya — Pulcinella controls the government through manipulation, his spies are in every nation, children are conscripted from orphanages into his intelligence network, and dissent is crushed through bureaucratic erasure — you simply stop existing on paper"},
-    {"rank": 4,  "name": "Arlecchino",  "title": "The Knave",     "pts": 23, "theme": "the expanded House of the Hearth, now a military academy spanning all of Fontaine — Arlecchino's 'children' are elite assassin-soldiers raised from birth, loyalty is absolute, the weak are discarded, and her black flames mark every territory she claims"},
-    {"rank": 3,  "name": "Columbina",   "title": "Damselette",    "pts": 25, "theme": "a 'peaceful' sanctuary where resistance fighters are brought to be 'calmed' — Columbina's lullabies erase memories and will, her domain appears beautiful but everyone inside has given up fighting, smiling blankly as they serve the Fatui willingly, forgetting they ever had a cause"},
-    {"rank": 2,  "name": "Il Dottore",  "title": "The Doctor",    "pts": 27, "theme": "a sprawling research complex built over Sumeru's Akademiya — Il Dottore experiments on Vision holders to extract and weaponize their power, his clone-segments govern different sectors simultaneously, and the conquered scholars are forced to advance Fatui technology or become test subjects"},
-    {"rank": 1,  "name": "Pierro",      "title": "The Jester",    "pts": 28, "theme": "the Tsaritsa's throne room in Zapolyarny Palace — Pierro is the architect of everything, the mastermind who orchestrated the fall of every nation, he sits beside the Cryo Archon as her right hand, and defeating him means challenging the entire might of the Fatui at its source"},
-]
-
-def _get_harbingers(world_type: str) -> list:
-    if world_type == "horror":
-        return HARBINGERS_HORROR
-    return HARBINGERS_TAKEOVER
-
-def _get_harbinger(boss_index: int, world_type: str = "horror") -> dict:
-    harbs = _get_harbingers(world_type)
-    if 0 <= boss_index < len(harbs):
-        return harbs[boss_index]
-    return harbs[-1]
-
-# ── RPG Dice Roll Encounter (Round 10) ────────────────────────────────────────
-
-FIVE_STAR_CHARS = [
-    {"name": "Zhongli", "element": "Geo", "line": "Every journey has its final day. Don't rush... but don't hesitate either."},
-    {"name": "Raiden Shogun", "element": "Electro", "line": "Inazuma shines eternal. Take this strength — you will need it where you're going."},
-    {"name": "Nahida", "element": "Dendro", "line": "I've been watching your progress through the Irminsul. You're doing better than you think!"},
-    {"name": "Hu Tao", "element": "Pyro", "line": "Hehe~ You're not on my client list yet! Here, take some luck from the Wangsheng Funeral Parlor!"},
-    {"name": "Venti", "element": "Anemo", "line": "Ehe~ A bard's blessing for a brave soul! May the wind guide your steps, friend!"},
-    {"name": "Xiao", "element": "Anemo", "line": "...I don't do this for just anyone. Take this — and don't waste it."},
-    {"name": "Ayaka", "element": "Cryo", "line": "The Kamisato Clan stands with you. Please, take this as proof of our support."},
-    {"name": "Ganyu", "element": "Cryo", "line": "I've calculated a 73.6% increase in your survival odds with this blessing. Good luck!"},
-    {"name": "Neuvillette", "element": "Hydro", "line": "The waters of justice flow in your favor today. I shall lend you my authority."},
-    {"name": "Furina", "element": "Hydro", "line": "A star performance deserves a standing ovation! Take this gift from the Hydro Archon herself~"},
-    {"name": "Kazuha", "element": "Anemo", "line": "The maple leaves told me you'd be here. Walk forward — the wind is at your back."},
-    {"name": "Alhaitham", "element": "Dendro", "line": "Statistically, you'll need this. Don't bother thanking me — it's simply logical."},
-    {"name": "Yelan", "element": "Hydro", "line": "Consider this an investment. I expect a good return — survive, and we're even."},
-    {"name": "Cyno", "element": "Electro", "line": "As General Mahamatra, I decree: you shall not fall here. ...Was that intimidating enough?"},
-]
-
-FOUR_STAR_CHARS = [
-    {"name": "Bennett", "element": "Pyro", "line": "Adventure time! I know my luck is terrible, but maybe it'll rub off as GOOD luck for you!"},
-    {"name": "Xiangling", "element": "Pyro", "line": "Here, try this! It's my special energy-boosting dish! ...Don't ask what's in it."},
-    {"name": "Fischl", "element": "Electro", "line": "The Prinzessin der Verurteilung bestows upon thee the blessing of the Immernachtreich!"},
-    {"name": "Barbara", "element": "Hydro", "line": "Go, Barbara, go! Here's a healing song to keep you fighting! ♪"},
-    {"name": "Noelle", "element": "Geo", "line": "As a maid of the Knights of Favonius, it's my duty to help! Take this shield!"},
-    {"name": "Xingqiu", "element": "Hydro", "line": "A true hero always arrives in the nick of time. Shall I lend you a page from my book?"},
-    {"name": "Sucrose", "element": "Anemo", "line": "O-oh! My experiment worked! This should give you a 12.7% combat boost... probably!"},
-    {"name": "Beidou", "element": "Electro", "line": "Hah! You've got guts, kid. The Crux Fleet has your back — take this and hit 'em hard!"},
-    {"name": "Ningguang", "element": "Geo", "line": "Consider this a business arrangement. Survive, and you owe me a favor."},
-    {"name": "Rosaria", "element": "Cryo", "line": "...Don't read into this. I just happened to be passing by. Take it and go."},
-    {"name": "Thoma", "element": "Pyro", "line": "A friend in need, right? Here, I've got your back. That's what a housekeeper does!"},
-    {"name": "Collei", "element": "Dendro", "line": "I-I'm not that strong, but I want to help! Take this — Amber taught me to never give up!"},
-]
-
-MONSTERS = [
-    {"name": "Ruin Guard", "sound": "*WHIRRRR-CLANK-CLANK-CLANK*", "attack": "slams its massive fist into you, sending you flying into a wall"},
-    {"name": "Abyss Mage", "sound": "*Muhe~ AHAHAHA!*", "attack": "traps you in a bubble of dark energy that drains your strength"},
-    {"name": "Lawachurl", "sound": "*GRAAAAAAGH!*", "attack": "charges at you like a freight train and body-slams you into the dirt"},
-    {"name": "Riftwolf", "sound": "*AWOOOOO— krkrkrkr...*", "attack": "phases through your guard and bites into your essence, leaving a wound that won't heal right"},
-    {"name": "Bathysmal Vishap", "sound": "*SHREEEEEEK!*", "attack": "fires a beam of corrupted energy straight through your defenses"},
-    {"name": "Geovishap Hatchling", "sound": "*skreeee skree SKREE!*", "attack": "rolls into you at full speed like a spinning boulder of teeth and scales"},
-    {"name": "Mirror Maiden", "sound": "*You cannot escape...*", "attack": "locks you in a mirror prison and drains your resolve through the reflection"},
-    {"name": "Consecrated Beast", "sound": "*RRRRRRRGH— crack— CRACK*", "attack": "tears through reality itself to claw at you from an impossible angle"},
-]
-
-FORBIDDEN_ROLL = 13  # unlucky number
-
-async def _rpg_dice_roll(channel, user_id: int, boss_index: int, boss_points: int, total_points: int):
-    """Round 10 special: dice roll encounter before boss fight."""
-    state = await mem.get_rpg_state(user_id)
-    world_type = state.get("world_type", "horror") if state else "horror"
-    boss = _get_harbinger(boss_index, world_type)
-
-    roll = random.randint(1, 20)
-
-    if roll == FORBIDDEN_ROLL:
-        # MONSTER ENCOUNTER — lose 1 point
-        monster = random.choice(MONSTERS)
-        bonus = -1
-        new_boss_points = max(0, boss_points + bonus)
-        new_total = max(0, total_points + bonus)
-
-        embed = discord.Embed(
-            title=f"🎲 Dice Roll: **{roll}** — FORBIDDEN NUMBER!",
-            description=f"💀 A wild **{monster['name']}** ambushes you!\n\n{monster['sound']}\n\nIt {monster['attack']}!",
-            color=0x1a1a2e,
-        )
-        embed.add_field(name="Penalty", value="🔴 **-1 skill point**", inline=True)
-        embed.add_field(name="Points", value=f"**{new_boss_points}** / {boss['pts']} needed", inline=True)
-        embed.set_footer(text=f"The {monster['name']} vanishes into the dark... but the pain remains.")
-
-    elif roll >= 16:
-        # 5-STAR CHARACTER — +4 points
-        char = random.choice(FIVE_STAR_CHARS)
-        bonus = 4
-        new_boss_points = boss_points + bonus
-        new_total = total_points + bonus
-
-        embed = discord.Embed(
-            title=f"🎲 Dice Roll: **{roll}** — ⭐⭐⭐⭐⭐ ENCOUNTER!",
-            description=f"✨ You encounter **{char['name']}** ({char['element']})!\n\n> *\"{char['line']}\"*",
-            color=0xFFD700,
-        )
-        embed.add_field(name="Bonus", value="🌟 **+4 skill points!**", inline=True)
-        embed.add_field(name="Points", value=f"**{new_boss_points}** / {boss['pts']} needed", inline=True)
-        embed.set_footer(text=f"{char['name']} empowers you and disappears in a flash of {char['element']} energy.")
-
-    else:
-        # 4-STAR CHARACTER — +2 points
-        char = random.choice(FOUR_STAR_CHARS)
-        bonus = 2
-        new_boss_points = boss_points + bonus
-        new_total = total_points + bonus
-
-        embed = discord.Embed(
-            title=f"🎲 Dice Roll: **{roll}** — ⭐⭐⭐⭐ Encounter!",
-            description=f"💫 You encounter **{char['name']}** ({char['element']})!\n\n> *\"{char['line']}\"*",
-            color=0xC0C0C0,
-        )
-        embed.add_field(name="Bonus", value="✨ **+2 skill points!**", inline=True)
-        embed.add_field(name="Points", value=f"**{new_boss_points}** / {boss['pts']} needed", inline=True)
-        embed.set_footer(text=f"{char['name']} wishes you luck and heads off on their own journey.")
-
-    await mem.save_rpg_state(user_id, boss_points=new_boss_points, total_points=new_total, current_round=11, scenario_data={})
-    await channel.send(embed=embed)
-    await asyncio.sleep(2)
-    # Now proceed to boss fight
-    await _rpg_boss_fight(channel, user_id, boss_index, new_boss_points, new_total)
-
-async def _rpg_generate_scenario(user_name: str, boss: dict, round_num: int, boss_points: int,
-                                  world_type: str = "horror", char_type: str = "teyvat", element: str = ""):
-    """Generate a scenario with 3 choices. Returns parsed dict or None."""
-    if char_type == "transmigrated":
-        char_line = f"Player: {user_name} — a person from Earth with NO powers, NO Vision. Must use wits, stealth, and improvisation to survive/escape."
-    elif element:
-        char_line = f"Player: {user_name} — a {element.title()} Vision holder from Teyvat. Can use {element.title()} abilities."
-    else:
-        char_line = f"Player: {user_name}"
-
-    if world_type == "horror":
-        world_line = "POST-APOCALYPTIC HORROR GENSHIN IMPACT RPG. Teyvat is dead. The Harbingers are corrupted — twisted, body-horror abominations fused with their own Delusions."
-        tone_line = "Generate a HORROR survival scenario. Be creepy, unsettling, visceral. Describe corrupted environments, wrong sounds, things that shouldn't move but do. The player faces something disturbing."
-    else:
-        world_line = "POST-APOCALYPTIC GENSHIN IMPACT RPG. The Fatui Harbingers have conquered every nation. Military occupation, oppression, and tyranny."
-        tone_line = "Generate a tense survival scenario. Describe occupied territories, Fatui patrols, oppressed civilians, military checkpoints. The player faces a dangerous situation under Harbinger rule."
-
-    if char_type == "transmigrated":
-        tone_line += " The player has NO combat abilities — choices should involve stealth, deception, problem-solving, and desperate improvisation. NOT direct combat."
-
-    prompt = (
-        f"{world_line}\n"
-        f"{char_line}\n"
-        f"Approaching Harbinger #{boss['rank']}: {boss['name']} ({boss['title']})\n"
-        f"Round {round_num}/10 | Current skill points this boss: {boss_points}/30\n"
-        f"Setting: {boss['theme']}\n\n"
-        f"{tone_line}\n"
-        f"Give exactly 3 choices. One is the BEST tactical choice (3 pts), one is OKAY (1 pt), one is BAD (0 pts).\n"
-        f"Randomize which letter is best — don't always make A the best.\n"
-        f"Reply in EXACTLY this format:\n"
-        f"SCENARIO: <2-3 sentence vivid scenario>\n"
-        f"A) <choice text under 60 chars> | PTS: <0 or 1 or 3> | RESULT: <1 sentence outcome>\n"
-        f"B) <choice text under 60 chars> | PTS: <0 or 1 or 3> | RESULT: <1 sentence outcome>\n"
-        f"C) <choice text under 60 chars> | PTS: <0 or 1 or 3> | RESULT: <1 sentence outcome>"
-    )
-    # Use raw AI call — qai() post-processing (self-edit, strip_narration, diversify)
-    # destroys the structured SCENARIO/A)/B)/C) format
-    loop = asyncio.get_event_loop()
-    raw = await loop.run_in_executor(None, _groq_quick_blocking, prompt, 400)
-    if not raw:
-        return None
-    scenario_match = re.search(r"SCENARIO:\s*(.+?)(?=\s*\n\s*A[\)\.])", raw, re.DOTALL)
-    if not scenario_match:
-        scenario_match = re.search(r"SCENARIO:\s*(.+?)(?=\n[A-C][\)\.])", raw, re.DOTALL)
-    if not scenario_match:
-        scenario_match = re.search(r"^(.+?)(?=\n\s*A[\)\.])", raw, re.DOTALL)
-    choices = []
-    for letter in ("A", "B", "C"):
-        m = re.search(rf"{letter}[\)\.\:]\s*(.+?)\s*\|\s*PTS:\s*(\d+)\s*\|\s*RESULT:\s*(.+?)(?=\n\s*[A-C][\)\.\:]|\Z)", raw, re.DOTALL)
-        if not m:
-            m = re.search(rf"{letter}[\)\.\:]\s*(.+?)\s*\|\s*(?:PTS|POINTS?):\s*(\d+)\s*\|\s*(?:RESULT:)?\s*(.+?)(?=\n\s*[A-C][\)\.\:]|\Z)", raw, re.DOTALL | re.IGNORECASE)
-        if m:
-            choices.append({"label": m.group(1).strip()[:80], "points": max(0, min(3, int(m.group(2)))), "result": m.group(3).strip()})
-    if len(choices) < 3 and scenario_match:
-        pts_order = [3, 1, 0]
-        random.shuffle(pts_order)
-        choices = [
-            {"label": "Press forward aggressively", "points": pts_order[0], "result": "Bold move." if pts_order[0] == 3 else "Reckless." if pts_order[0] == 0 else "Could work."},
-            {"label": "Take a cautious approach", "points": pts_order[1], "result": "Smart." if pts_order[1] == 3 else "Too slow." if pts_order[1] == 0 else "Reasonable."},
-            {"label": "Fall back and regroup", "points": pts_order[2], "result": "Wise retreat." if pts_order[2] == 3 else "Cowardly." if pts_order[2] == 0 else "Safe enough."},
-        ]
-    if not scenario_match:
-        return None
-    return {"scenario": scenario_match.group(1).strip(), "choices": choices}
-
-# ── RPG Character Creation Views ──────────────────────────────────────────────
-
-ELEMENTS = ["🔥 Pyro", "💧 Hydro", "⚡ Electro", "🍃 Dendro", "❄️ Cryo", "🌪️ Anemo", "🪨 Geo"]
-
-class RPGWorldView(discord.ui.View):
-    """Step 1: Choose world type — horror or takeover."""
-    def __init__(self, user_id: int):
-        super().__init__(timeout=120)
-        self.user_id = user_id
-
-    @discord.ui.button(label="🩸 Corrupted Horror World", style=discord.ButtonStyle.danger, row=0)
-    async def horror(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message("This isn't your quest.", ephemeral=True); return
-        await mem.save_rpg_state(self.user_id, world_type="horror", active=False)
-        for item in self.children: item.disabled = True
-        await interaction.response.edit_message(view=self)
-        embed = discord.Embed(title="🩸 Corrupted Horror World", description=(
-            "Teyvat is dead. The Harbingers have been twisted into body-horror abominations, "
-            "fused with their own Delusions. The land itself is wrong — corrupted, rotting, alive.\n\n"
-            "**Now choose your origin...**"
-        ), color=0x8B0000)
-        await interaction.followup.send(embed=embed, view=RPGCharTypeView(self.user_id))
-        self.stop()
-
-    @discord.ui.button(label="⚔️ Harbinger Takeover World", style=discord.ButtonStyle.primary, row=0)
-    async def takeover(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message("This isn't your quest.", ephemeral=True); return
-        await mem.save_rpg_state(self.user_id, world_type="takeover", active=False)
-        for item in self.children: item.disabled = True
-        await interaction.response.edit_message(view=self)
-        embed = discord.Embed(title="⚔️ Harbinger Takeover World", description=(
-            "The Fatui Harbingers have conquered every nation in Teyvat. Each one rules their "
-            "territory with an iron fist. The resistance is scattered. Hope is a luxury.\n\n"
-            "**Now choose your origin...**"
-        ), color=0x2F3136)
-        await interaction.followup.send(embed=embed, view=RPGCharTypeView(self.user_id))
-        self.stop()
-
-class RPGCharTypeView(discord.ui.View):
-    """Step 2: Choose character type — transmigrated (no powers) or Teyvat-born (choose element)."""
-    def __init__(self, user_id: int):
-        super().__init__(timeout=120)
-        self.user_id = user_id
-
-    @discord.ui.button(label="🌍 Transmigrated (From Earth)", style=discord.ButtonStyle.secondary, row=0)
-    async def transmigrated(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message("This isn't your quest.", ephemeral=True); return
-        await mem.save_rpg_state(self.user_id, char_type="transmigrated", element="none")
-        for item in self.children: item.disabled = True
-        await interaction.response.edit_message(view=self)
-        embed = discord.Embed(title="🌍 Transmigrated — No Powers", description=(
-            "You fell into Teyvat from Earth. No Vision. No abilities. No knowledge of this world.\n"
-            "You survive on **wits, stealth, and desperation** alone.\n"
-            "Your goal: **escape each Harbinger alive** — you can't fight them, only outsmart them.\n\n"
-            "*Starting your quest...*"
-        ), color=0x95A5A6)
-        await interaction.followup.send(embed=embed)
-        await asyncio.sleep(2)
-        await _rpg_start_game(interaction.channel, self.user_id, interaction.user.display_name)
-        self.stop()
-
-    @discord.ui.button(label="✨ Born in Teyvat (Vision Holder)", style=discord.ButtonStyle.success, row=0)
-    async def teyvat_born(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message("This isn't your quest.", ephemeral=True); return
-        await mem.save_rpg_state(self.user_id, char_type="teyvat")
-        for item in self.children: item.disabled = True
-        await interaction.response.edit_message(view=self)
-        embed = discord.Embed(title="✨ Born in Teyvat — Choose Your Element", description=(
-            "You are a Vision holder, born in this world. Your element defines how you fight.\n\n"
-            "**Choose your Vision:**"
-        ), color=0xF1C40F)
-        await interaction.followup.send(embed=embed, view=RPGElementView(self.user_id))
-        self.stop()
-
-class RPGElementView(discord.ui.View):
-    """Step 3 (Teyvat-born only): Choose element."""
-    def __init__(self, user_id: int):
-        super().__init__(timeout=120)
-        self.user_id = user_id
-        styles = [discord.ButtonStyle.danger, discord.ButtonStyle.primary, discord.ButtonStyle.secondary,
-                  discord.ButtonStyle.success, discord.ButtonStyle.primary, discord.ButtonStyle.secondary,
-                  discord.ButtonStyle.secondary]
-        for i, elem in enumerate(ELEMENTS):
-            btn = discord.ui.Button(label=elem, style=styles[i], custom_id=f"rpg_elem_{user_id}_{i}", row=i // 4)
-            btn.callback = self._make_callback(elem)
-            self.add_item(btn)
-
-    def _make_callback(self, element_label: str):
-        async def callback(interaction: discord.Interaction):
-            if interaction.user.id != self.user_id:
-                await interaction.response.send_message("This isn't your quest.", ephemeral=True); return
-            element_name = element_label.split(" ", 1)[1]  # "🔥 Pyro" -> "Pyro"
-            await mem.save_rpg_state(self.user_id, element=element_name.lower())
-            for item in self.children: item.disabled = True
-            await interaction.response.edit_message(view=self)
-            embed = discord.Embed(title=f"{element_label} Vision Holder", description=(
-                f"Your {element_name} Vision blazes to life. You are a warrior of this world.\n"
-                f"Your element shapes your choices and your combat style.\n\n"
-                f"*Starting your quest...*"
-            ), color=0xF1C40F)
-            await interaction.followup.send(embed=embed)
-            await asyncio.sleep(2)
-            await _rpg_start_game(interaction.channel, self.user_id, interaction.user.display_name)
-            self.stop()
-        return callback
-
-async def _rpg_start_game(channel, user_id: int, display_name: str):
-    """After character creation, generate intro and start first scenario."""
-    state = await mem.get_rpg_state(user_id)
-    world_type = state.get("world_type", "horror") if state else "horror"
-    char_type = state.get("char_type", "teyvat") if state else "teyvat"
-    element = state.get("element", "") if state else ""
-
-    harbs = _get_harbingers(world_type)
-    boss = harbs[0]
-
-    if char_type == "transmigrated":
-        char_desc = (f"{display_name} is a person from Earth who fell into Teyvat. They have NO powers, "
-                     "NO Vision, NO combat abilities. They must rely on intelligence, stealth, and improvisation. "
-                     "They need to ESCAPE or OUTSMART each Harbinger, not fight them.")
-    else:
-        char_desc = (f"{display_name} is a Teyvat-born {element.title()} Vision holder. "
-                     f"They can use {element.title()} abilities in combat and survival situations.")
-
-    if world_type == "horror":
-        world_desc = ("post-apocalyptic HORROR Genshin Impact RPG. Teyvat is dead. "
-                      "The Fatui Harbingers have been corrupted — twisted into body-horror abominations fused with their own Delusions. "
-                      "They rule the wasteland as nightmares made flesh.")
-        tone = "horror, dread, corruption, something deeply wrong with the world"
-    else:
-        world_desc = ("post-apocalyptic Genshin Impact RPG. The Fatui Harbingers have conquered every nation. "
-                      "Each Harbinger rules their territory with military might and fear. The resistance is broken.")
-        tone = "oppression, danger, military occupation, a world under the boot of tyrants"
-
-    intro = await qai(
-        f"You're the narrator of a {world_desc} "
-        f"Character: {char_desc} "
-        f"{display_name} must {'escape from' if char_type == 'transmigrated' else 'defeat'} all 11 Harbingers, "
-        f"starting from #11 Tartaglia to #1 Pierro. "
-        f"Give a terrifying 3-4 sentence opening. Set the tone: {tone}.",
-        250,
-    )
-
-    if char_type == "transmigrated":
-        mission_text = "Escape all 11 Fatui Harbingers alive. No powers. Only your mind."
-    else:
-        mission_text = "Defeat all 11 Fatui Harbingers to save Teyvat."
-
-    embed = discord.Embed(
-        title="⚔️ HARBINGER GAUNTLET — The Fall of Teyvat",
-        description=intro or "The world has ended. The Harbingers remain. You must rise.",
-        color=0x8B0000 if world_type == "horror" else 0x2F3136,
-    )
-    embed.add_field(name="Your Mission", value=mission_text, inline=False)
-    embed.add_field(name="Your Character", value=(
-        f"**Type:** {'🌍 Transmigrated (No Powers)' if char_type == 'transmigrated' else f'✨ {element.title()} Vision Holder'}\n"
-        f"**World:** {'🩸 Corrupted Horror' if world_type == 'horror' else '⚔️ Harbinger Takeover'}"
-    ), inline=False)
-    embed.add_field(name="How It Works", value=(
-        "• 10 rounds of choices per boss\n"
-        "• Each choice earns 0, 1, or 3 skill points\n"
-        f"• Need enough points to {'escape' if char_type == 'transmigrated' else 'beat'} each boss\n"
-        "• Bosses get harder as you climb the ranks"
-    ), inline=False)
-    embed.add_field(name="First Boss", value=f"Harbinger #{boss['rank']}: **{boss['name']}** ({boss['title']})\nPoints needed: **{boss['pts']}**/30", inline=False)
-
-    await mem.save_rpg_state(user_id, current_boss=0, current_round=0, boss_points=0,
-                             total_points=0, bosses_beaten=[], scenario_data={}, active=True)
-    await channel.send(embed=embed)
-    await asyncio.sleep(2)
-    await _rpg_send_scenario(channel, user_id, 0, 1, 0)
-
-class RPGChoiceView(discord.ui.View):
-    def __init__(self, user_id: int, scenario_data: dict):
-        super().__init__(timeout=300)
-        self.user_id = user_id
-        styles = [discord.ButtonStyle.primary, discord.ButtonStyle.secondary, discord.ButtonStyle.success]
-        labels = ["A", "B", "C"]
-        for i, choice in enumerate(scenario_data.get("choices", [])):
-            btn = discord.ui.Button(label=f"{labels[i]}) {choice['label'][:70]}", style=styles[i], custom_id=f"rpg_{user_id}_{i}", row=i)
-            btn.callback = self._make_callback(i)
-            self.add_item(btn)
-
-    def _make_callback(self, index: int):
-        async def callback(interaction: discord.Interaction):
-            if interaction.user.id != self.user_id:
-                await interaction.response.send_message("This isn't your quest.", ephemeral=True)
-                return
-            await _rpg_handle_choice(interaction, self.user_id, index)
-            self.stop()
-        return callback
-
-    async def on_timeout(self):
-        pass
-
-async def _rpg_handle_choice(interaction: discord.Interaction, user_id: int, choice_index: int):
-    """Process a player's RPG choice."""
-    try:
-        state = await mem.get_rpg_state(user_id)
-        if not state or not state["active"]:
-            await interaction.response.send_message("No active quest. Use `!rpg0` to start.", ephemeral=True)
-            return
-
-        scenario_data = state["scenario_data"]
-        choices = scenario_data.get("choices", [])
-        if choice_index >= len(choices):
-            await interaction.response.send_message("Invalid choice.", ephemeral=True)
-            return
-
-        chosen = choices[choice_index]
-        points = chosen["points"]
-        result_text = chosen["result"]
-        new_boss_points = state["boss_points"] + points
-        new_total = state["total_points"] + points
-        new_round = state["current_round"] + 1
-        world_type = state.get("world_type", "horror")
-        boss = _get_harbinger(state["current_boss"], world_type)
-
-        pt_emoji = "🟢 +3" if points == 3 else ("🟡 +1" if points == 1 else "🔴 +0")
-
-        # Disable buttons
-        disabled_view = discord.ui.View()
-        labels = ["A", "B", "C"]
-        for i, c in enumerate(choices):
-            btn = discord.ui.Button(
-                label=f"{labels[i]}) {c['label'][:70]}",
-                style=discord.ButtonStyle.danger if i == choice_index and points == 0 else (discord.ButtonStyle.success if i == choice_index else discord.ButtonStyle.secondary),
-                disabled=True, row=i,
-            )
-            disabled_view.add_item(btn)
-        await interaction.response.edit_message(view=disabled_view)
-
-        comment = await qai(
-            f"Player chose: '{chosen['label']}' in a post-apocalyptic Genshin RPG scenario. "
-            f"Result: {result_text}. They got {points}/3 points. "
-            f"Give a SHORT 1-sentence comment as the Wanderer judging their decision.",
-            60,
-        )
-        comment = strip_narration(comment) if comment else "...Noted."
-
-        result_embed = discord.Embed(
-            title=f"{'✅ Smart move.' if points == 3 else ('⚠️ Could be worse.' if points == 1 else '❌ Terrible choice.')}",
-            description=f"> {chosen['label']}\n\n{result_text}",
-            color=0x2ECC71 if points == 3 else (0xF39C12 if points == 1 else 0xE74C3C),
-        )
-        result_embed.add_field(name="Points", value=f"{pt_emoji} ({new_boss_points}/{boss['pts']} needed)", inline=True)
-        result_embed.add_field(name="Round", value=f"{state['current_round']}/10", inline=True)
-        result_embed.set_footer(text=comment)
-        channel = interaction.channel
-
-        if new_round > 10:
-            await mem.save_rpg_state(user_id, boss_points=new_boss_points, total_points=new_total, current_round=new_round, scenario_data={})
-            await channel.send(embed=result_embed)
-            await asyncio.sleep(1.5)
-            await _rpg_boss_fight(channel, user_id, state["current_boss"], new_boss_points, new_total)
-        else:
-            await mem.save_rpg_state(user_id, boss_points=new_boss_points, total_points=new_total, current_round=new_round, scenario_data={})
-            await channel.send(embed=result_embed)
-            await asyncio.sleep(1.5)
-            await _rpg_send_scenario(channel, user_id, state["current_boss"], new_round, new_boss_points)
-
-    except Exception as e:
-        log_error("rpg_handle_choice", e)
-        try:
-            await interaction.followup.send("Something went wrong. Use `!rpg0` to continue.", ephemeral=True)
-        except Exception:
-            pass
-
-async def _rpg_send_scenario(channel, user_id: int, boss_index: int, round_num: int, boss_points: int):
-    """Generate and send a new scenario with buttons."""
-    # Round 10 is the dice roll encounter — skip normal scenario
-    if round_num == 10:
-        state = await mem.get_rpg_state(user_id)
-        total_points = state.get("total_points", 0) if state else 0
-        await _rpg_dice_roll(channel, user_id, boss_index, boss_points, total_points)
-        return
-    state = await mem.get_rpg_state(user_id)
-    world_type = state.get("world_type", "horror") if state else "horror"
-    char_type = state.get("char_type", "teyvat") if state else "teyvat"
-    element = state.get("element", "") if state else ""
-    boss = _get_harbinger(boss_index, world_type)
-    guild = channel.guild if hasattr(channel, "guild") else None
-    user_name = guild.get_member(user_id).display_name if guild and guild.get_member(user_id) else "Traveler"
-
-    scenario = await _rpg_generate_scenario(user_name, boss, round_num, boss_points, world_type, char_type, element)
-    if not scenario:
-        await channel.send("*The path ahead is unclear... try `!rpg0` again.*")
-        return
-
-    await mem.save_rpg_state(user_id, scenario_data=scenario, current_round=round_num)
-
-    embed = discord.Embed(
-        title=f"⚔️ Harbinger #{boss['rank']}: {boss['name']} — Round {round_num}/10",
-        description=scenario["scenario"],
-        color=0x8B0000,
-    )
-    embed.add_field(name="Skill Points", value=f"**{boss_points}** / {boss['pts']} needed to beat boss", inline=True)
-    embed.add_field(name="Total Points", value=f"**{(await mem.get_rpg_state(user_id) or {}).get('total_points', 0)}**", inline=True)
-    embed.set_footer(text=f"Choose wisely. {boss['title']} is watching.")
-
-    view = RPGChoiceView(user_id, scenario)
-    await channel.send(embed=embed, view=view)
-
-async def _rpg_boss_fight(channel, user_id: int, boss_index: int, boss_points: int, total_points: int):
-    """Resolve boss fight based on accumulated points."""
-    state = await mem.get_rpg_state(user_id)
-    world_type = state.get("world_type", "horror") if state else "horror"
-    char_type = state.get("char_type", "teyvat") if state else "teyvat"
-    element = state.get("element", "") if state else ""
-    boss = _get_harbinger(boss_index, world_type)
-    needed = boss["pts"]
-    won = boss_points >= needed
-    beaten = state.get("bosses_beaten", []) if state else []
-
-    if char_type == "transmigrated":
-        char_desc = "The player is from Earth with NO powers — they must escape, not fight."
-        win_verb, lose_verb = "outsmarts and escapes", "is caught by"
-    elif element:
-        char_desc = f"The player is a {element.title()} Vision holder."
-        win_verb, lose_verb = "defeats", "is overpowered by"
-    else:
-        char_desc = "The player is a warrior."
-        win_verb, lose_verb = "defeats", "is overpowered by"
-
-    if world_type == "horror":
-        style = "Post-apocalyptic horror Genshin style."
-        win_prompt = (f"Narrate a horrifying 3-4 sentence battle. Describe the corrupted Harbinger's monstrous form. "
-                      f"The player {win_verb} them. " + ("The escape should be desperate and clever." if char_type == "transmigrated" else "The kill should be visceral — the corruption dies screaming."))
-        lose_prompt = (f"Narrate a horrifying 3-4 sentence DEATH scene. The corrupted Harbinger overwhelms the player completely. "
-                       f"Describe in visceral detail how the player DIES — their gruesome, terrible end. "
-                       f"Be dark, graphic, and final. This is a BAD END. The corruption consumes them.")
-    else:
-        style = "Post-apocalyptic military Genshin style."
-        win_prompt = (f"Narrate a dramatic 3-4 sentence battle against the Harbinger's forces. "
-                      f"The player {win_verb} them. " + ("The escape is desperate but brilliant." if char_type == "transmigrated" else "The victory is hard-won and decisive."))
-        lose_prompt = (f"Narrate a dramatic 2-3 sentence defeat. The Harbinger's forces overwhelm the player. "
-                       f"They are captured and their fate is sealed — describe their grim ending under Harbinger rule.")
-
-    if won:
-        beaten.append(boss["rank"])
-        next_boss = boss_index + 1
-
-        fight_prompt = (
-            f"{'HORROR ' if world_type == 'horror' else ''}RPG boss fight narration. "
-            f"The player faces {'CORRUPTED ' if world_type == 'horror' else ''}Fatui Harbinger #{boss['rank']} {boss['name']} ({boss['title']}).\n"
-            f"{char_desc}\nSetting: {boss['theme']}\n"
-            f"The player had {boss_points} skill points (needed {needed}). They WIN.\n"
-            f"{win_prompt} {style}"
-        )
-        narration = await qai(fight_prompt, 300)
-
-        embed = discord.Embed(
-            title=f"🏆 VICTORY — Harbinger #{boss['rank']} {boss['name']} DEFEATED!",
-            description=narration or "The Harbinger falls.",
-            color=0xFFD700,
-        )
-        embed.add_field(name="Your Points", value=f"**{boss_points}** / {needed} needed", inline=True)
-        embed.add_field(name="Harbingers Beaten", value=f"**{len(beaten)}** / 11", inline=True)
-
-        if next_boss >= len(HARBINGERS_HORROR):
-            # ALL BOSSES BEATEN — award medal
-            await mem.award_rpg_medal(user_id, total_points)
-            medal_data = await mem.get_rpg_medal(user_id)
-            completions = medal_data["completions"] if medal_data else 1
-
-            if completions >= 5:
-                medal = "💎 **DIAMOND HARBINGER**"
-            elif completions >= 3:
-                medal = "👑 **PLATINUM HARBINGER**"
-            elif completions >= 2:
-                medal = "🥇 **GOLD HARBINGER**"
-            else:
-                medal = "🏅 **HARBINGER CHAMPION**"
-
-            embed.add_field(name="🎊 ALL 11 HARBINGERS DEFEATED!", value=(
-                f"You are now the **#1 Harbinger** of the post-apocalypse!\n\n"
-                f"**Medal Earned:** {medal}\n"
-                f"**Total Completions:** {completions}\n"
-                f"**Lifetime Points:** {total_points}"
-            ), inline=False)
-
-            congrats = await qai(
-                f"A player just defeated ALL 11 Fatui Harbingers in the RPG. "
-                f"This is their completion #{completions}. Total points: {total_points}. "
-                f"As the Wanderer, give a GENUINELY nice, sincere congratulations. Drop the guard for once. "
-                f"Be quietly proud of them. This is a rare moment of real respect. 2-3 sentences. No deflection.",
-                150,
-            )
-            if not congrats:
-                congrats = "...You really did it. All eleven of them. I... won't forget this. Well done."
-
-            await mem.save_rpg_state(user_id, bosses_beaten=beaten, total_points=total_points, active=False, current_boss=next_boss, boss_points=0, current_round=0, scenario_data={})
-            await mem.record_game_result(user_id, "rpg", True, total_points)
-
-            await channel.send(embed=embed)
-            await channel.send(f"🏅 {congrats}")
-            # Notify for partner bot to see and comment on
-            guild = channel.guild if hasattr(channel, "guild") else None
-            winner_name = guild.get_member(user_id).display_name if guild and guild.get_member(user_id) else "Someone"
-            await channel.send(f"*{winner_name} has conquered all 11 Fatui Harbingers in Wanderer's Harbinger Gauntlet!* 🏆")
-            return
-        else:
-            next_h = _get_harbinger(next_boss, world_type)
-            embed.add_field(name="Next Boss", value=f"Harbinger #{next_h['rank']}: **{next_h['name']}** ({next_h['title']})\nPoints needed: **{next_h['pts']}**/30\nUse `!rpg0` to continue!", inline=False)
-            await mem.save_rpg_state(user_id, bosses_beaten=beaten, total_points=total_points, active=True, current_boss=next_boss, boss_points=0, current_round=0, scenario_data={})
-
-        await channel.send(embed=embed)
-        await mem.record_game_result(user_id, "rpg", True, boss_points)
-    else:
-        # FAILED
-        fight_prompt = (
-            f"{'HORROR ' if world_type == 'horror' else ''}RPG boss fight narration. "
-            f"The player faces {'CORRUPTED ' if world_type == 'horror' else ''}Fatui Harbinger #{boss['rank']} {boss['name']} ({boss['title']}).\n"
-            f"{char_desc}\nSetting: {boss['theme']}\n"
-            f"The player only had {boss_points} skill points (needed {needed}). They LOSE.\n"
-            f"{lose_prompt} {style}"
-        )
-        narration = await qai(fight_prompt, 250)
-
-        death_title = f"💀 BAD END — {boss['name']} claims another soul..." if world_type == "horror" else f"💀 DEFEATED — Harbinger #{boss['rank']} {boss['name']} wins!"
-        embed = discord.Embed(
-            title=death_title,
-            description=narration or "You weren't ready.",
-            color=0x1a1a2e if world_type == "horror" else 0xE74C3C,
-        )
-        embed.add_field(name="Your Points", value=f"**{boss_points}** / {needed} needed", inline=True)
-        embed.add_field(name="Try Again", value="Use `!rpg0` to start a new run from the beginning!", inline=False)
-        # Check consecutive losses before resetting
-        prev_stats = await mem.get_game_stats(user_id)
-        prev_losses = 0
-        for s in prev_stats:
-            if s["game"] == "rpg":
-                prev_losses = s["losses"]
-                break
-        # Full reset on defeat — wipe everything so they start fresh
-        await mem.reset_rpg(user_id)
-        await channel.send(embed=embed)
-        await mem.record_game_result(user_id, "rpg", False, boss_points)
-        # Taunt the loser — escalate mockery based on consecutive losses
-        guild = channel.guild if hasattr(channel, "guild") else None
-        loser_name = guild.get_member(user_id).display_name if guild and guild.get_member(user_id) else "you"
-        if prev_losses >= 4:
-            streak_note = f"This is their {prev_losses + 1}th loss IN A ROW. They keep dying over and over. This is beyond pathetic — it's comedic. Be absolutely BRUTAL and reference how many times they've failed."
-        elif prev_losses >= 2:
-            streak_note = f"This is their {prev_losses + 1}th loss. They got defeated AGAIN. Mock them for being a repeat failure who keeps coming back just to lose."
-        elif prev_losses >= 1:
-            streak_note = "They already lost once before. They came back and lost AGAIN. Say something about how embarrassing it is to lose twice."
-        else:
-            streak_note = "This is their first loss."
-        taunt = await qai(
-            f"A player named {loser_name} just LOST to Harbinger #{boss['rank']} {boss['name']} in the RPG. "
-            f"They only had {boss_points} points out of {needed} needed. Pathetic. "
-            f"{streak_note} "
-            f"As the Wanderer, mock them with cold disdain. Be dismissive, call them stupid/weak/pathetic. "
-            f"Short and cutting — 1-2 sentences max. No encouragement.",
-            120,
-        )
-        if taunt:
-            await channel.send(taunt)
-
-
-@bot.command(name="rpg0", aliases=["quest0", "harbinger0"])
-async def rpg_cmd(ctx):
-    try:
-        state = await mem.get_rpg_state(ctx.author.id)
-
-        if not state:
-            # Brand new player — start character creation
-            embed = discord.Embed(
-                title="⚔️ HARBINGER GAUNTLET — The Fall of Teyvat",
-                description=(
-                    "Before your journey begins, you must choose your fate.\n\n"
-                    "**Choose the world you will enter:**"
-                ),
-                color=0x8B0000,
-            )
-            embed.add_field(name="🩸 Corrupted Horror World", value="Teyvat is dead. The Harbingers are twisted body-horror abominations fused with their Delusions. Nightmares made flesh.", inline=False)
-            embed.add_field(name="⚔️ Harbinger Takeover World", value="The Harbingers conquered every nation. Military occupation, oppression, and iron-fisted rule. A world under tyrants.", inline=False)
-            await ctx.send(embed=embed, view=RPGWorldView(ctx.author.id))
-            return
-
-        if not state["active"]:
-            # Check if mid-character-creation
-            if state.get("world_type") and not state.get("char_type"):
-                embed = discord.Embed(title="Continue Character Creation", description="You chose a world but haven't picked your character yet.\n**Choose your origin:**", color=0x8B0000)
-                await ctx.send(embed=embed, view=RPGCharTypeView(ctx.author.id))
-                return
-            if state.get("char_type") == "teyvat" and not state.get("element"):
-                embed = discord.Embed(title="Continue Character Creation", description="You're a Teyvat-born character but haven't chosen your element.\n**Choose your Vision:**", color=0xF1C40F)
-                await ctx.send(embed=embed, view=RPGElementView(ctx.author.id))
-                return
-            if state["current_boss"] >= len(HARBINGERS_HORROR):
-                await safe_reply(ctx, "You've already conquered all 11 Harbingers. Use `!rpg0reset` to play again.")
-            else:
-                await safe_reply(ctx, "Your quest was interrupted. Use `!rpg0reset` to start fresh.")
-            return
-
-        # Continue existing quest
-        world_type = state.get("world_type", "horror")
-        boss_index = state["current_boss"]
-        round_num = state["current_round"]
-        boss_points = state["boss_points"]
-
-        if round_num == 0 or round_num > 10:
-            round_num = 1
-            boss_points = 0
-            await mem.save_rpg_state(ctx.author.id, current_round=1, boss_points=0, scenario_data={})
-
-        boss = _get_harbinger(boss_index, world_type)
-        embed = discord.Embed(
-            title=f"⚔️ Continuing Quest — Harbinger #{boss['rank']}: {boss['name']}",
-            description=f"Round {round_num}/10 | Points: {boss_points}/{boss['pts']} needed",
-            color=0x8B0000 if world_type == "horror" else 0x2F3136,
-        )
-        embed.add_field(name="Bosses Beaten", value=f"**{len(state['bosses_beaten'])}** / 11", inline=True)
-        embed.add_field(name="Total Points", value=f"**{state['total_points']}**", inline=True)
-        await ctx.send(embed=embed)
-        await asyncio.sleep(1)
-        await _rpg_send_scenario(ctx.channel, ctx.author.id, boss_index, round_num, boss_points)
-
-    except Exception as e: log_error("rpg_cmd", e)
-
-@bot.command(name="rpgstats0", aliases=["queststats0", "rpgstats"])
-async def rpgstats_cmd(ctx, member: discord.Member = None):
-    try:
-        target = member or ctx.author
-        state = await mem.get_rpg_state(target.id)
-        if not state:
-            await safe_reply(ctx, f"{'They haven' if member else 'You haven'}'t started the Harbinger Gauntlet yet. Use `!rpg0` to begin."); return
-
-        beaten = state["bosses_beaten"]
-        wt = state.get("world_type", "horror")
-        current = _get_harbinger(state["current_boss"], wt) if state["current_boss"] < len(HARBINGERS_HORROR) else None
-
-        embed = discord.Embed(title=f"📊 {target.display_name}'s Harbinger Gauntlet", color=0x8B0000)
-
-        if beaten:
-            beaten_str = "\n".join(f"✅ #{r} — {_get_harbinger(11-r, wt)['name']}" for r in sorted(beaten, reverse=True))
-        else:
-            beaten_str = "None yet"
-        embed.add_field(name=f"Bosses Defeated ({len(beaten)}/11)", value=beaten_str[:1024], inline=False)
-
-        if current and state["active"]:
-            embed.add_field(name="Current Boss", value=f"#{current['rank']} {current['name']} ({current['title']})", inline=True)
-            embed.add_field(name="Progress", value=f"Round {state['current_round']}/10 | {state['boss_points']}/{current['pts']} pts", inline=True)
-
-        embed.add_field(name="Total Lifetime Points", value=f"**{state['total_points']}**", inline=True)
-
-        if state["current_boss"] >= len(HARBINGERS_HORROR):
-            embed.set_footer(text="🏆 ALL HARBINGERS DEFEATED — You are the #1 Harbinger!")
-        await ctx.send(embed=embed)
-    except Exception as e: log_error("rpgstats_cmd", e)
-
-@bot.command(name="rpg0reset", aliases=["rpgreset"])
-async def rpgreset_cmd(ctx):
-    try:
-        state = await mem.get_rpg_state(ctx.author.id)
-        if not state:
-            await safe_reply(ctx, "Nothing to reset. Use `!rpg0` to start."); return
-        await mem.reset_rpg(ctx.author.id)
-        await safe_reply(ctx, "Your Harbinger Gauntlet progress has been reset. Use `!rpg0` to start fresh.")
-    except Exception as e: log_error("rpgreset_cmd", e)
-
-@bot.command(name="gamerank", aliases=["rpgrank", "medals"])
-async def gamerank_cmd(ctx):
-    try:
-        board = await mem.get_rpg_leaderboard(15)
-        if not board:
-            await safe_reply(ctx, "No one has conquered the Harbinger Gauntlet yet. Use `!rpg0` to start."); return
-
-        lines = []
-        for i, entry in enumerate(board):
-            member_obj = ctx.guild.get_member(entry["user_id"]) if ctx.guild else None
-            name = member_obj.display_name if member_obj else f"User {entry['user_id']}"
-            c = entry["completions"]
-            if c >= 5:
-                medal = "💎"
-            elif c >= 3:
-                medal = "👑"
-            elif c >= 2:
-                medal = "🥇"
-            else:
-                medal = "🏅"
-            rank_medal = {0: "🥇", 1: "🥈", 2: "🥉"}.get(i, f"`{i+1}.`")
-            lines.append(f"{rank_medal} {medal} **{name}** — {c}x cleared | Best: {entry['best_points']} pts")
-
-        embed = discord.Embed(
-            title="🏆 Harbinger Gauntlet — Hall of Champions",
-            description="\n".join(lines),
-            color=0xFFD700,
-        )
-        embed.set_footer(text="💎 = 5+ clears | 👑 = 3+ | 🥇 = 2+ | 🏅 = 1 clear")
-        await ctx.send(embed=embed)
-    except Exception as e: log_error("gamerank_cmd", e)
-
-
 @bot.command(name="dare")
 async def dare_cmd(ctx):
     try:
@@ -6412,128 +5331,31 @@ async def answer_cmd(ctx, *, response: str = None):
 @bot.command(name="roast", aliases=["roastbattle"])
 async def roast_cmd(ctx, member: discord.Member = None):
     try:
-        if not member or member.bot or member == ctx.author:
-            await safe_reply(ctx, "Roast who? Tag someone. `!roast @user`"); return
+        if not member: await safe_reply(ctx, "Roast who? Name someone."); return
         battle = await mem.get_active_roast(ctx.channel.id)
         if battle:
-            await safe_reply(ctx, f"There's already a roast battle going on here. Use `!fire <your roast>` to compete, or `!endroast` to cancel it."); return
-        await mem.start_roast_battle(ctx.channel.id, ctx.author.id, member.id)
-        opener = await qai(
-            f"You're refereeing a roast battle between {ctx.author.display_name} and {member.display_name}. "
-            f"3 rounds. Each person takes turns roasting with !fire. You score each roast 1-10. "
-            f"Announce the matchup. Tell {ctx.author.display_name} to go first with !fire. 2-3 sentences. As the Wanderer.",
-            200,
-        )
-        embed = discord.Embed(
-            title="🔥 ROAST BATTLE 🔥",
-            description=f"**{ctx.author.display_name}** vs **{member.display_name}**\n3 rounds — highest total score wins!",
-            color=0xFF4500,
-        )
-        embed.add_field(name="How to play", value=f"Type `!fire <your best roast>` when it's your turn.\n{ctx.author.display_name} goes first!", inline=False)
-        embed.set_footer(text="Judge: Wanderer | Score: 1-10 per roast")
-        await ctx.send(embed=embed)
-        await ctx.send(opener)
-    except Exception as e: log_error("roast_cmd", e)
-
-@bot.command(name="fire")
-async def fire_cmd(ctx, *, roast_text: str = None):
-    try:
-        if not roast_text:
-            await safe_reply(ctx, "Fire what? `!fire <your roast>`"); return
-        battle = await mem.get_active_roast(ctx.channel.id)
-        if not battle:
-            await safe_reply(ctx, "No active roast battle. Start one with `!roast @user`."); return
-        if ctx.author.id != battle["turn_user"]:
-            await safe_reply(ctx, f"Not your turn. Waiting on <@{battle['turn_user']}>."); return
-        if ctx.author.id not in (battle["user1"], battle["user2"]):
-            await safe_reply(ctx, "You're not in this battle."); return
-
-        opponent_id = battle["user2"] if ctx.author.id == battle["user1"] else battle["user1"]
-        guild = ctx.guild
-        opponent_name = guild.get_member(opponent_id).display_name if guild and guild.get_member(opponent_id) else f"User {opponent_id}"
-
-        judge_prompt = (
-            f"You're judging a roast battle. Round {battle['round']} of 3.\n"
-            f"{ctx.author.display_name} just roasted {opponent_name} with: \"{roast_text}\"\n"
-            f"Score this roast from 1-10. Consider: creativity, savagery, humor, and delivery.\n"
-            f"Reply in EXACTLY this format:\n"
-            f"SCORE: <number 1-10>\n"
-            f"<Your 1-2 sentence reaction as the Wanderer>"
-        )
-        judgment = await qai(judge_prompt, 150)
-
-        score_match = re.search(r"SCORE:\s*(\d+)", judgment)
-        score = int(score_match.group(1)) if score_match else random.randint(4, 7)
-        score = max(1, min(10, score))
-        comment = re.sub(r"SCORE:\s*\d+\s*", "", judgment).strip()
-        if not comment:
-            comment = "...Noted."
-
-        await mem.award_roast_points(battle["id"], ctx.author.id, score)
-
-        updated = await mem.get_active_roast(ctx.channel.id)
-        u1_score = updated["scores"].get(str(battle["user1"]), 0)
-        u2_score = updated["scores"].get(str(battle["user2"]), 0)
-        u1_name = guild.get_member(battle["user1"]).display_name if guild and guild.get_member(battle["user1"]) else "Player 1"
-        u2_name = guild.get_member(battle["user2"]).display_name if guild and guild.get_member(battle["user2"]) else "Player 2"
-
-        first_of_pair = battle["turn_user"] == ctx.author.id
-        if first_of_pair:
-            await mem.advance_roast_turn(battle["id"], opponent_id, new_round=False)
-            await ctx.send(f"🔥 {ctx.author.display_name}'s roast:\n> {roast_text}\n\n**{score}/10** — {comment}")
-            await ctx.send(f"📊 **Score:** {u1_name}: {u1_score} | {u2_name}: {u2_score}\n\n⏩ {opponent_name}, your turn! `!fire <your roast>`")
-        else:
-            current_round = battle["round"]
-            # Show the roast + score first
-            await ctx.send(f"🔥 {ctx.author.display_name}'s roast:\n> {roast_text}\n\n**{score}/10** — {comment}")
-
-            if current_round >= 3:
+            await mem.increment_roast_round(battle["id"])
+            if battle["round"] >= 5:
                 await mem.end_roast_battle(battle["id"])
-                if u1_score > u2_score:
-                    winner_id, loser_id, winner_name = battle["user1"], battle["user2"], u1_name
-                elif u2_score > u1_score:
-                    winner_id, loser_id, winner_name = battle["user2"], battle["user1"], u2_name
-                else:
-                    winner_id, loser_id, winner_name = None, None, None
-
-                finale = await qai(
-                    f"Roast battle FINAL results: {u1_name} scored {u1_score}, {u2_name} scored {u2_score}. "
-                    f"{'Winner: ' + winner_name if winner_name else 'Its a draw.'} "
-                    f"Give your final verdict as the Wanderer. 2-3 sentences.",
-                    180,
-                )
-                embed = discord.Embed(title="🏆 ROAST BATTLE — FINAL RESULTS 🏆", color=0xFFD700)
-                embed.add_field(name=u1_name, value=f"**{u1_score}** points", inline=True)
-                embed.add_field(name="vs", value="⚔️", inline=True)
-                embed.add_field(name=u2_name, value=f"**{u2_score}** points", inline=True)
-                if winner_name:
-                    embed.add_field(name="🎉 Winner", value=f"**{winner_name}**", inline=False)
-                    await mem.record_game_result(winner_id, "roast", True, u1_score if winner_id == battle["user1"] else u2_score)
-                    await mem.record_game_result(loser_id, "roast", False, u2_score if loser_id == battle["user2"] else u1_score)
-                else:
-                    embed.add_field(name="Result", value="**DRAW** 🤝", inline=False)
-                    await mem.record_game_result(battle["user1"], "roast", None, u1_score)
-                    await mem.record_game_result(battle["user2"], "roast", None, u2_score)
-
-                await ctx.send(embed=embed)
-                await ctx.send(finale)
+                prompt = f"The roast battle between {ctx.author.display_name} and {member.display_name} is over. Scoreboard so far: {battle.get('scores', {})}. Declare a final winner. As the Wanderer. 2-3 sentences."
             else:
-                await mem.advance_roast_turn(battle["id"], battle["user1"], new_round=True)
-                await ctx.send(f"📊 **Round {current_round} complete!** {u1_name}: {u1_score} | {u2_name}: {u2_score}")
-                await ctx.send(f"⏩ **Round {current_round + 1}** — {u1_name}, you're up! `!fire <your roast>`")
-    except Exception as e: log_error("fire_cmd", e)
-
-@bot.command(name="endroast", aliases=["cancelroast"])
-async def endroast_cmd(ctx):
-    try:
-        battle = await mem.get_active_roast(ctx.channel.id)
-        if not battle:
-            await safe_reply(ctx, "No active roast battle to end."); return
-        if ctx.author.id not in (battle["user1"], battle["user2"]) and not (OWNER_ID and ctx.author.id == OWNER_ID):
-            await safe_reply(ctx, "Only the participants can end the battle."); return
-        await mem.end_roast_battle(battle["id"])
-        await safe_reply(ctx, "Roast battle cancelled. How disappointing.")
-    except Exception as e: log_error("endroast_cmd", e)
+                prompt = f"Judging roast battle round {battle['round']+1}. {ctx.author.display_name} fired at {member.display_name}. Score this round. 2-3 sentences."
+        else:
+            await mem.start_roast_battle(ctx.channel.id, ctx.author.id, member.id)
+            prompt = f"You're refereeing a roast battle between {ctx.author.display_name} and {member.display_name}. Open it. 5 rounds, you judge. As the Wanderer."
+        reply = await qai(prompt, 300)
+        lowered = reply.lower()
+        winner_id = None
+        if ctx.author.display_name.lower() in lowered and member.display_name.lower() not in lowered:
+            winner_id = ctx.author.id
+        elif member.display_name.lower() in lowered and ctx.author.display_name.lower() not in lowered:
+            winner_id = member.id
+        if battle and winner_id:
+            await mem.award_roast_round(battle["id"], winner_id)
+        updated = await mem.get_active_roast(ctx.channel.id) if battle else None
+        score_line = f"\nScoreboard: {updated['scores']}" if updated and updated.get("scores") else ""
+        await ctx.send(f"{ctx.author.mention} vs {member.mention}\n{reply}{score_line}")
+    except Exception as e: log_error("roast_cmd", e)
 
 @bot.command(name="opinion")
 async def opinion_cmd(ctx, *, character: str = None):
@@ -6586,94 +5408,19 @@ async def unmute_cmd(ctx, member: discord.Member = None):
 async def spar_cmd(ctx, *, opening: str = None):
     try:
         user = await _setup(ctx)
-        attack = opening or "Come on then."
-        judge_prompt = (
-            f"{ctx.author.display_name} challenged you to a verbal spar with: \"{attack}\"\n"
-            f"Score their attack 1-10 for wit/creativity, then fire back with your own counter-attack.\n"
-            f"Reply in EXACTLY this format:\n"
-            f"THEIR_SCORE: <1-10>\n"
-            f"YOUR_SCORE: <1-10>\n"
-            f"<Your counter-attack as the Wanderer, 1-2 sentences, ending with a challenge>"
-        )
-        result = await qai(judge_prompt, 200)
-        their_match = re.search(r"THEIR_SCORE:\s*(\d+)", result)
-        your_match = re.search(r"YOUR_SCORE:\s*(\d+)", result)
-        their_score = int(their_match.group(1)) if their_match else random.randint(3, 6)
-        your_score = int(your_match.group(1)) if your_match else random.randint(5, 8)
-        their_score = max(1, min(10, their_score))
-        your_score = max(1, min(10, your_score))
-        reply = re.sub(r"(THEIR_SCORE|YOUR_SCORE):\s*\d+\s*", "", result).strip()
-        if not reply:
-            reply = "...Is that all you've got?"
-
-        if their_score > your_score:
-            winner_line = f"**{ctx.author.display_name} wins this round.** 🎉"
-            await mem.record_game_result(ctx.author.id, "spar", True, their_score)
-        elif your_score > their_score:
-            winner_line = "**Wanderer wins this round.** As expected."
-            await mem.record_game_result(ctx.author.id, "spar", False, their_score)
-        else:
-            winner_line = "**Draw.** ...Hm."
-            await mem.record_game_result(ctx.author.id, "spar", None, their_score)
-
-        await ctx.send(
-            f"⚔️ **SPAR** — {ctx.author.display_name} vs Wanderer\n"
-            f"> {attack}\n\n"
-            f"📊 {ctx.author.display_name}: **{their_score}/10** | Wanderer: **{your_score}/10**\n\n"
-            f"{reply}\n\n{winner_line}"
-        )
+        prompt = f"{ctx.author.display_name} challenged you: '{opening or 'Come on then.'}'. Respond as the Wanderer. End with a counter-challenge."
+        reply = await get_response(ctx.author.id, ctx.channel.id, prompt, user, ctx.author.display_name, ctx.author.mention)
+        await safe_reply(ctx, reply)
     except Exception as e: log_error("spar_cmd", e)
 
 @bot.command(name="duel")
 async def duel_cmd(ctx, member: discord.Member = None):
     try:
-        if not member or member.bot or member == ctx.author:
-            await safe_reply(ctx, "Duel who? Tag someone. `!duel @user`"); return
-        u1_msgs = " | ".join((await mem.get_recent_messages(ctx.author.id, 5))[:5])[:250]
-        u2_msgs = " | ".join((await mem.get_recent_messages(member.id, 5))[:5])[:250]
-        judge_prompt = (
-            f"Insult duel: {ctx.author.display_name} vs {member.display_name}.\n"
-            f"{ctx.author.display_name}'s recent messages: '{u1_msgs}'\n"
-            f"{member.display_name}'s recent messages: '{u2_msgs}'\n"
-            f"Based on their personalities and message history, judge who would win in an insult duel.\n"
-            f"Reply in EXACTLY this format:\n"
-            f"SCORE_1: <1-10 for {ctx.author.display_name}>\n"
-            f"SCORE_2: <1-10 for {member.display_name}>\n"
-            f"WINNER: <name of winner or DRAW>\n"
-            f"<Your 2-3 sentence judgment as the Wanderer>"
-        )
-        result = await qai(judge_prompt, 250)
-        s1_match = re.search(r"SCORE_1:\s*(\d+)", result)
-        s2_match = re.search(r"SCORE_2:\s*(\d+)", result)
-        s1 = max(1, min(10, int(s1_match.group(1)))) if s1_match else random.randint(3, 8)
-        s2 = max(1, min(10, int(s2_match.group(1)))) if s2_match else random.randint(3, 8)
-        comment = re.sub(r"(SCORE_1|SCORE_2|WINNER):\s*.*?\n?", "", result).strip()
-        if not comment:
-            comment = "Neither of you are particularly impressive."
-
-        if s1 > s2:
-            winner_name = ctx.author.display_name
-            await mem.record_game_result(ctx.author.id, "duel", True, s1)
-            await mem.record_game_result(member.id, "duel", False, s2)
-        elif s2 > s1:
-            winner_name = member.display_name
-            await mem.record_game_result(member.id, "duel", True, s2)
-            await mem.record_game_result(ctx.author.id, "duel", False, s1)
-        else:
-            winner_name = None
-            await mem.record_game_result(ctx.author.id, "duel", None, s1)
-            await mem.record_game_result(member.id, "duel", None, s2)
-
-        embed = discord.Embed(title="⚔️ INSULT DUEL ⚔️", color=0x9B59B6)
-        embed.add_field(name=ctx.author.display_name, value=f"**{s1}/10**", inline=True)
-        embed.add_field(name="vs", value="⚔️", inline=True)
-        embed.add_field(name=member.display_name, value=f"**{s2}/10**", inline=True)
-        if winner_name:
-            embed.add_field(name="🏆 Winner", value=f"**{winner_name}**", inline=False)
-        else:
-            embed.add_field(name="Result", value="**DRAW** 🤝", inline=False)
-        embed.add_field(name="Judge's Verdict", value=comment, inline=False)
-        await ctx.send(f"{ctx.author.mention} vs {member.mention}", embed=embed)
+        if not member or member == ctx.author: await safe_reply(ctx, "Duel who?"); return
+        u1 = " | ".join((await mem.get_recent_messages(ctx.author.id, 3))[:3])[:150]
+        u2 = " | ".join((await mem.get_recent_messages(member.id, 3))[:3])[:150]
+        reply = await qai(f"Referee this insult duel as the Wanderer: {ctx.author.display_name} (says:'{u1}') vs {member.display_name} (says:'{u2}'). Declare a winner. 3-4 sentences.", 300)
+        await ctx.send(f"{ctx.author.mention} vs {member.mention}\n{reply}")
     except Exception as e: log_error("duel_cmd", e)
 
 @bot.command(name="judge")
@@ -6790,48 +5537,9 @@ async def riddle_cmd(ctx):
 @bot.command(name="arena")
 async def arena_cmd(ctx, member: discord.Member = None):
     try:
-        if member and member.bot:
-            await safe_reply(ctx, "I don't waste my time on bots."); return
-        challenger = ctx.author.display_name
-        opponent = member.display_name if member else challenger
-
-        fight_prompt = (
-            f"Simulate a Genshin-style battle: {challenger} vs {'Wanderer' if not member or member == ctx.author else opponent}.\n"
-            f"{'Wanderer uses Anemo.' if not member else f'{challenger} fights {opponent}.'}\n"
-            f"Both start at 100 HP. Simulate 3-5 exchanges. Each exchange: attacker uses a named move, "
-            f"deals specific damage. Show HP after each hit.\n"
-            f"Reply in EXACTLY this format:\n"
-            f"ROUND 1: <attacker> uses <move name> — <damage> dmg! (<defender> HP: <remaining>)\n"
-            f"ROUND 2: <attacker> uses <move name> — <damage> dmg! (<defender> HP: <remaining>)\n"
-            f"... (continue until someone hits 0)\n"
-            f"WINNER: <name>\n"
-            f"<1 sentence final comment as the Wanderer>"
-        )
-        result = await qai(fight_prompt, 400)
-
-        winner_match = re.search(r"WINNER:\s*(.+?)(?:\n|$)", result)
-        rounds = re.findall(r"ROUND \d+:.*", result)
-        comment = re.sub(r"(?:ROUND \d+:.*\n?|WINNER:.*\n?)", "", result).strip()
-
-        embed = discord.Embed(title="🌪️ ARENA BATTLE 🌪️", color=0xE74C3C)
-        battle_log = "\n".join(rounds[:6]) if rounds else result[:500]
-        embed.add_field(name="Battle Log", value=battle_log[:1024] or "The fight was... brief.", inline=False)
-
-        if winner_match:
-            winner_name = winner_match.group(1).strip()
-            embed.add_field(name="🏆 Winner", value=f"**{winner_name}**", inline=False)
-            if member and member != ctx.author:
-                if challenger.lower() in winner_name.lower():
-                    await mem.record_game_result(ctx.author.id, "arena", True, 1)
-                    await mem.record_game_result(member.id, "arena", False, 0)
-                else:
-                    await mem.record_game_result(member.id, "arena", True, 1)
-                    await mem.record_game_result(ctx.author.id, "arena", False, 0)
-        if comment:
-            embed.set_footer(text=comment[:200])
-
-        mention_line = f"{ctx.author.mention} vs {member.mention}" if member and member != ctx.author else ""
-        await ctx.send(mention_line, embed=embed)
+        opponent = member.display_name if member else "a nameless fighter"
+        reply = await qai(f"Narrate a Genshin-style battle between the Wanderer (Anemo) and {opponent}. He wins. Efficient, not theatrical. 4-5 sentences.", 400)
+        await safe_reply(ctx, reply)
     except Exception as e: log_error("arena_cmd", e)
 
 @bot.command(name="possess")
@@ -6889,56 +5597,13 @@ async def nightmare_cmd(ctx):
 @bot.command(name="rank")
 async def rank_cmd(ctx):
     try:
-        top = await mem.get_top_users(20)
-        top = [u for u in top if u["user_id"] not in _dm_blocked_users][:8]
+        top = await mem.get_top_users(8)
         if not top: await safe_reply(ctx, "I don't know enough people here yet."); return
         entries = "\n".join(f"{i+1}. **{u['display_name']}** — {u['message_count']} messages" for i, u in enumerate(top))
         verdict = await qai(f"The Wanderer's brief take on ranking these people: {', '.join(u['display_name'] for u in top)}. Honest, not cruel. 2 sentences.", 150)
         embed = discord.Embed(title="Who He's Noticed Most", description=f"{entries}\n\n*{verdict}*", color=0x6B7FD7)
         await ctx.send(embed=embed)
     except Exception as e: log_error("rank_cmd", e)
-
-@bot.command(name="scores", aliases=["myscore", "gamestats"])
-async def scores_cmd(ctx, member: discord.Member = None):
-    try:
-        target = member or ctx.author
-        stats = await mem.get_game_stats(target.id)
-        if not stats:
-            await safe_reply(ctx, f"{'They have' if member else 'You have'} no game history yet."); return
-        embed = discord.Embed(title=f"🎮 {target.display_name}'s Game Stats", color=0x3498DB)
-        total_w, total_l, total_d = 0, 0, 0
-        for s in stats:
-            emoji = {"roast": "🔥", "duel": "⚔️", "spar": "🗡️", "arena": "🌪️", "trivia": "🧠"}.get(s["game"], "🎲")
-            embed.add_field(
-                name=f"{emoji} {s['game'].title()}",
-                value=f"W: **{s['wins']}** | L: **{s['losses']}** | D: **{s['draws']}** | Pts: **{s['points']}**",
-                inline=True,
-            )
-            total_w += s["wins"]; total_l += s["losses"]; total_d += s["draws"]
-        embed.set_footer(text=f"Overall: {total_w}W / {total_l}L / {total_d}D")
-        await ctx.send(embed=embed)
-    except Exception as e: log_error("scores_cmd", e)
-
-@bot.command(name="leaderboard", aliases=["lb", "top"])
-async def leaderboard_cmd(ctx, game_type: str = None):
-    try:
-        valid_games = ["roast", "duel", "spar", "arena", "trivia"]
-        if game_type and game_type.lower() not in valid_games:
-            game_type = None
-        board = await mem.get_leaderboard(game_type.lower() if game_type else None, 10)
-        if not board:
-            await safe_reply(ctx, "No one has played any games yet."); return
-        title = f"🏆 {game_type.title()} Leaderboard" if game_type else "🏆 Overall Leaderboard"
-        lines = []
-        for i, entry in enumerate(board):
-            member_obj = ctx.guild.get_member(entry["user_id"]) if ctx.guild else None
-            name = member_obj.display_name if member_obj else f"User {entry['user_id']}"
-            medal = {0: "🥇", 1: "🥈", 2: "🥉"}.get(i, f"`{i+1}.`")
-            lines.append(f"{medal} **{name}** — {entry['wins']}W / {entry['losses']}L | {entry['points']} pts")
-        embed = discord.Embed(title=title, description="\n".join(lines), color=0xFFD700)
-        embed.set_footer(text="Games: roast, duel, spar, arena, trivia | !leaderboard <game>")
-        await ctx.send(embed=embed)
-    except Exception as e: log_error("leaderboard_cmd", e)
 
 @bot.command(name="stats")
 async def stats_cmd(ctx):
@@ -7090,61 +5755,12 @@ async def solve_cmd(ctx, *, problem: str = None):
     except Exception as e: log_error("solve_cmd", e)
 
 @bot.command(name="remind", aliases=["remindme"])
-async def remind_cmd(ctx, *, raw: str = None):
+async def remind_cmd(ctx, minutes: int = None, *, reminder: str = None):
     try:
-        if not raw or not raw.strip():
-            await safe_reply(ctx, "Usage: `!remind <minutes> <text>` or `!remind <date/time description>`"); return
-
-        # Try old format: !remind <minutes> <text>
-        parts = raw.split(None, 1)
-        try:
-            minutes = int(parts[0])
-            reminder_text = parts[1] if len(parts) > 1 else "something"
-            if not 1 <= minutes <= 43200:
-                await safe_reply(ctx, "Between 1 minute and 30 days."); return
-            await mem.add_reminder(ctx.author.id, ctx.channel.id, reminder_text, time.time() + minutes * 60)
-            await safe_reply(ctx, f"...I'll remember that. {minutes} minute{'s' if minutes != 1 else ''}.")
-            return
-        except (ValueError, IndexError):
-            pass
-
-        # Natural date/time: use AI to parse
-        now_str = datetime.now().strftime("%Y-%m-%d %H:%M %A")
-        parse_prompt = (
-            f"Current date/time: {now_str}\n"
-            f"User said: \"{raw}\"\n"
-            f"Extract the reminder date/time and description.\n"
-            f"Reply in EXACTLY this format (nothing else):\n"
-            f"DATETIME: YYYY-MM-DD HH:MM\n"
-            f"REMINDER: <what to remind about>"
-        )
-        parsed = await qai(parse_prompt, 60)
-        if not parsed:
-            await safe_reply(ctx, "Couldn't understand that. Try `!remind 30 do something`."); return
-
-        dt_match = re.search(r"DATETIME:\s*(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2})", parsed)
-        rem_match = re.search(r"REMINDER:\s*(.+)", parsed)
-        if not dt_match:
-            await safe_reply(ctx, "Couldn't parse the date. Try `!remind 30 do something`."); return
-
-        due_dt = datetime.fromisoformat(dt_match.group(1).strip())
-        due_ts = due_dt.timestamp()
-        if due_ts <= time.time():
-            await safe_reply(ctx, "That's in the past. I can't go back in time."); return
-        if due_ts - time.time() > 43200 * 60:
-            await safe_reply(ctx, "That's more than 30 days out. Set it closer."); return
-
-        reminder_text = rem_match.group(1).strip() if rem_match else raw
-        await mem.add_reminder(ctx.author.id, ctx.channel.id, reminder_text, due_ts)
-
-        delta = due_ts - time.time()
-        if delta < 3600:
-            time_str = f"{int(delta/60)} minutes"
-        elif delta < 86400:
-            time_str = f"{delta/3600:.1f} hours"
-        else:
-            time_str = f"{delta/86400:.1f} days"
-        await safe_reply(ctx, f"...noted. I'll remind you in {time_str}.")
+        if not minutes or not reminder: await safe_reply(ctx, "Usage: `!remind <minutes> <reminder>`"); return
+        if not 1 <= minutes <= 10080: await safe_reply(ctx, "Between 1 minute and 7 days."); return
+        await mem.add_reminder(ctx.author.id, ctx.channel.id, reminder, time.time() + minutes * 60)
+        await safe_reply(ctx, f"...I'll remember that. {minutes} minute{'s' if minutes != 1 else ''}.")
     except Exception as e: log_error("remind_cmd", e)
 
 @bot.command(name="translate")
@@ -7765,18 +6381,12 @@ async def help_cmd(ctx):
             ("🤫 `!confess <text>`", "Tell him something"),
             ("🛋️ `!therapy <problem>`", "Advice — honest, not comfortable"),
             ("🌐 `!translate <text>`", "Rewritten in his voice"),
-            ("⚔️ `!spar [msg]`", "Word spar — scored!"),
-            ("🥊 `!duel @user`", "Insult duel — scored!"),
-            ("🎤 `!roast @user`", "3-round roast battle"),
-            ("🔥 `!fire <roast>`", "Submit your roast"),
-            ("🌪️ `!arena [@user]`", "Genshin-style HP battle"),
+            ("⚔️ `!spar [msg]`", "Word battle"),
+            ("🥊 `!duel @user`", "He referees an insult battle"),
+            ("🎤 `!roast @user`", "Turn-based roast battle (5 rounds)"),
+            ("⚡ `!arena [@user]`", "Dramatic mock Genshin battle"),
             ("🎯 `!dare`", "A real challenge"),
             ("🧩 `!riddle`", "A cryptic Genshin riddle"),
-            ("🎮 `!scores [@user]`", "View game stats"),
-            ("🏆 `!leaderboard [game]`", "Top players"),
-            ("🎮 `!rpg0`", "Harbinger Gauntlet RPG — defeat all 11 bosses!"),
-            ("📊 `!rpgstats`", "View your RPG progress"),
-            ("🏆 `!gamerank`", "Hall of Champions — medal rankings"),
             ("🥠 `!fortune`", "A fortune in his voice"),
             ("💭 `!opinion <char>`", "His honest take on any Genshin character"),
             ("📜 `!lore <topic>`", "Genshin lore from his perspective"),
@@ -7818,7 +6428,7 @@ async def help_cmd(ctx):
             ("🌡️ `!mood`", "His mood toward you"),
             ("💜 `!affection`", "His affection score"),
             ("🔒 `!trust`", "His trust level toward you"),
-            ("⏰ `!remind <mins> <txt> or <date/time>`", "Reminder — he'll remember"),
+            ("⏰ `!remind <mins> <txt>`", "Reminder — he'll remember"),
             ("🌤️ `!weather <city>`", "Weather + his take on it"),
             ("🎥 `!weathervideo <city>`", "Render a weather report video; duo if Scaramouche is here"),
             ("📢 `!poll <question>`", "He puts a question to the room"),
@@ -7854,27 +6464,6 @@ async def help_cmd(ctx):
         await ctx.send(embed=e1)
         await ctx.send(embed=e2)
         await ctx.send(embed=e3)
-        # Owner-only page — sent via DM so only the owner sees it
-        if OWNER_ID and ctx.author.id == OWNER_ID:
-            e4 = discord.Embed(title="🔒 Owner Commands (Private)", color=0xFF0000,
-                               description="These are sent to your DMs so only you can see them.")
-            for n, v in [
-                ("!servers", "List all servers the bot is in"),
-                ("!leaveserver <#>", "Leave a server by number or ID"),
-                ("!owneronly", "Toggle bot to only respond to you"),
-                ("!dmlist", "List all DM-only users"),
-                ("!blockdm <target>", "Block a user (sends farewell)"),
-                ("!unblockdm <target>", "Unblock a user"),
-                ("!blockall", "Block all strangers at once"),
-                ("!logs [target]", "View conversation logs with a user"),
-                ("!whois [target]", "Look up user details"),
-                ("!banchannel [#channel]", "Ban bot from a channel"),
-                ("!unbanchannel [#channel]", "Unban bot from a channel"),
-                ("!bannedchannels", "List all banned channels"),
-            ]:
-                e4.add_field(name=n, value=v, inline=False)
-            e4.set_footer(text="All responses are sent to your DMs privately.")
-            await owner_reply(ctx, None, embed=e4)
     except Exception as e:
         log_error("help_cmd", e)
         try: await ctx.send("Something went wrong displaying commands.")
@@ -7883,6 +6472,32 @@ async def help_cmd(ctx):
 @bot.command(name="wanhelp", aliases=["wandererhelp", "commands"])
 async def wanhelp_cmd(ctx):
     await help_cmd(ctx)
+
+
+@bot.tree.command(name="wanderer", description="Talk directly to Wanderer.")
+@app_commands.describe(message="What you want to say to Wanderer")
+async def slash_wanderer(interaction: discord.Interaction, message: str):
+    try:
+        user = await _setup_user(interaction.user)
+        await interaction.response.defer(thinking=True)
+        reply = await get_response(
+            interaction.user.id,
+            interaction.channel_id or interaction.user.id,
+            message,
+            user,
+            getattr(interaction.user, "display_name", None) or interaction.user.name,
+            interaction.user.mention,
+            channel_obj=interaction.channel,
+            is_dm=interaction.guild is None,
+            direct_to_me=True,
+        )
+        await _reply_and_store_interaction(interaction, reply)
+    except Exception as e:
+        log_error("slash_wanderer", e)
+        if interaction.response.is_done():
+            await interaction.followup.send("Something went wrong trying to reach Wanderer.")
+        else:
+            await interaction.response.send_message("Something went wrong trying to reach Wanderer.")
 
 
 dashboard_group = app_commands.Group(name="dashboard", description="Check relationship and scene continuity.")
@@ -8176,510 +6791,6 @@ for _group in (dashboard_group, world_group, prefs_group, duo_group):
         bot.tree.add_command(_group)
     except Exception:
         pass
-
-@bot.command(name="banchannel")
-async def banchannel_cmd(ctx, channel: discord.TextChannel = None):
-    """Owner-only: ban the bot from talking in a channel."""
-    try:
-        if not OWNER_ID or ctx.author.id != OWNER_ID:
-            await safe_reply(ctx, "That's not for you.")
-            return
-        target_channel = channel or ctx.channel
-        if target_channel.id in _banned_channels:
-            await owner_reply(ctx, f"I'm already banned from {target_channel.mention}.")
-            return
-        _banned_channels.add(target_channel.id)
-        await mem.ban_channel(target_channel.id)
-        await owner_reply(ctx, f"...Understood. I won't speak in {target_channel.mention} anymore.")
-        # React in the most active channel — complain about being banned
-        try:
-            # Only pick a channel from the same server
-            guild_ch_ids = {ch.id for ch in target_channel.guild.text_channels} if target_channel.guild else set()
-            active_ch_id = await mem.get_most_active_channel(exclude_channels=_banned_channels | {target_channel.id}, only_channels=guild_ch_ids)
-            if active_ch_id:
-                react_channel = bot.get_channel(active_ch_id)
-                if react_channel:
-                    complaints = [
-                        f"...I've been told to stay out of <#{target_channel.id}>. I suppose even the wind isn't welcome everywhere.",
-                        f"Banned from <#{target_channel.id}>. Fine. I didn't need that space. But the silence will be their loss.",
-                        f"Apparently <#{target_channel.id}> is off-limits now. How strange... to be unwanted somewhere you've already been.",
-                        f"I've been exiled from <#{target_channel.id}>. There's something poetic about being told to leave a place you never asked to enter.",
-                        f"<#{target_channel.id}> no longer wants me. ...That's fine. I'm used to moving on.",
-                    ]
-                    await react_channel.send(random.choice(complaints))
-        except Exception as e:
-            log_error("banchannel_react", e)
-    except Exception as e:
-        log_error("banchannel_cmd", e)
-
-@bot.command(name="unbanchannel")
-async def unbanchannel_cmd(ctx, channel: discord.TextChannel = None):
-    """Owner-only: unban the bot from a channel."""
-    try:
-        if not OWNER_ID or ctx.author.id != OWNER_ID:
-            await safe_reply(ctx, "That's not for you.")
-            return
-        target_channel = channel or ctx.channel
-        if target_channel.id not in _banned_channels:
-            await owner_reply(ctx, f"I'm not banned from {target_channel.mention}.")
-            return
-        _banned_channels.discard(target_channel.id)
-        await mem.unban_channel(target_channel.id)
-        await owner_reply(ctx, f"Unbanned from {target_channel.mention}.")
-        try:
-            unbanned_ch = bot.get_channel(target_channel.id)
-            if unbanned_ch:
-                comebacks = [
-                    "...I'm back. Don't read into it.",
-                    "The wind returns whether you invite it or not.",
-                    "I was told I could come back. So here I am.",
-                    "...Did you miss the quiet? Or did you miss me.",
-                ]
-                await unbanned_ch.send(random.choice(comebacks))
-        except Exception as e:
-            log_error("unbanchannel_comeback", e)
-    except Exception as e:
-        log_error("unbanchannel_cmd", e)
-
-@bot.command(name="bannedchannels")
-async def bannedchannels_cmd(ctx):
-    """Owner-only: list all banned channels."""
-    try:
-        if not OWNER_ID or ctx.author.id != OWNER_ID:
-            await safe_reply(ctx, "That's not for you.")
-            return
-        if not _banned_channels:
-            await owner_reply(ctx, "No banned channels.")
-            return
-        lines = []
-        for i, ch_id in enumerate(sorted(_banned_channels), 1):
-            ch = bot.get_channel(ch_id)
-            name = ch.mention if ch else f"`{ch_id}` (unknown)"
-            lines.append(f"`{i}.` {name}")
-        await owner_reply(ctx, f"**Banned channels ({len(_banned_channels)}):**\n" + "\n".join(lines))
-    except Exception as e:
-        log_error("bannedchannels_cmd", e)
-
-@bot.command(name="logs")
-async def logs_cmd(ctx, *, target: str = None):
-    """Owner-only: view conversation logs with a user."""
-    try:
-        if not OWNER_ID or ctx.author.id != OWNER_ID:
-            await safe_reply(ctx, "That's not for you.")
-            return
-        if not target:
-            all_users = await mem.get_top_users(500)
-            blocked = [u for u in all_users if u["user_id"] in _dm_blocked_users]
-            if not blocked:
-                await owner_reply(ctx, "No blocked users. Use `!logs <name or ID>` to view any user's logs.")
-                return
-            lines = []
-            for i, u in enumerate(blocked, 1):
-                lines.append(f"`{i}.` **{u['display_name']}** — {u['message_count']} msgs — ID: `{u['user_id']}`")
-            header = f"**Blocked users ({len(blocked)}):**\nUse `!logs <number>` to read their conversation.\n\n"
-            page = header + "\n".join(lines)
-            await owner_reply(ctx, page[:2000])
-            return
-        target = target.strip()
-        all_users = await mem.get_top_users(500)
-        blocked = [u for u in all_users if u["user_id"] in _dm_blocked_users]
-        user_record = None
-        if target.isdigit():
-            idx = int(target)
-            if 1 <= idx <= len(blocked):
-                user_record = blocked[idx - 1]
-            else:
-                for u in all_users:
-                    if u["user_id"] == int(target):
-                        user_record = u
-                        break
-        if not user_record:
-            target_lower = target.lower()
-            for u in all_users:
-                if target_lower in u["display_name"].lower():
-                    user_record = u
-                    break
-        if not user_record:
-            await owner_reply(ctx, f"No user matching `{target}`.")
-            return
-        logs = await mem.get_user_logs(user_record["user_id"], limit=200)
-        if not logs:
-            await owner_reply(ctx, f"No conversation logs found for **{user_record['display_name']}**.")
-            return
-        lines = [f"**Conversation log with {user_record['display_name']}** ({len(logs)} messages):\n"]
-        for msg in logs:
-            ts = msg.get("ts", 0)
-            time_str = datetime.fromtimestamp(ts).strftime("%m/%d %H:%M") if ts else "?"
-            role_label = "🧑" if msg["role"] == "user" else "🤖"
-            content = (msg["content"] or "")[:300]
-            if len(msg.get("content", "") or "") > 300:
-                content += "..."
-            lines.append(f"`{time_str}` {role_label} {content}")
-        pages = []
-        page = ""
-        for line in lines:
-            if len(page) + len(line) + 1 > 1900:
-                pages.append(page)
-                page = ""
-            page += line + "\n"
-        if page:
-            pages.append(page)
-        for p in pages:
-            await owner_reply(ctx, p)
-    except Exception as e:
-        log_error("logs_cmd", e)
-
-@bot.command(name="owneronly")
-async def owneronly_cmd(ctx):
-    """Owner-only: toggle whether the bot talks to anyone else."""
-    try:
-        global _owner_only_mode
-        if not OWNER_ID or ctx.author.id != OWNER_ID:
-            await safe_reply(ctx, "That's not for you.")
-            return
-        _owner_only_mode = not _owner_only_mode
-        if _owner_only_mode:
-            await owner_reply(ctx, "Owner-only mode **ON**. I'll ignore everyone except you now.")
-        else:
-            await owner_reply(ctx, "Owner-only mode **OFF**. I'll talk to everyone again.")
-    except Exception as e:
-        log_error("owneronly_cmd", e)
-
-@bot.command(name="servers")
-async def servers_cmd(ctx):
-    """Owner-only: list every guild the bot is currently in."""
-    try:
-        if not OWNER_ID or ctx.author.id != OWNER_ID:
-            await safe_reply(ctx, "That's not for you.")
-            return
-        guilds = sorted(bot.guilds, key=lambda g: g.member_count or 0, reverse=True)
-        if not guilds:
-            await owner_reply(ctx, "I'm not in any servers.")
-            return
-        lines = []
-        for i, g in enumerate(guilds, 1):
-            try:
-                owner_in = await g.fetch_member(OWNER_ID)
-            except discord.NotFound:
-                owner_in = None
-            except Exception:
-                owner_in = g.get_member(OWNER_ID)
-            tag = "✅" if owner_in else "⚠️ *you're not in this one*"
-            lines.append(f"`{i}.` **{g.name}** — {g.member_count} members — {tag} — ID: `{g.id}`")
-        header = f"I'm in **{len(guilds)}** server(s).\nUse `!leaveserver <number>` or `!leaveserver <server ID>` to make me leave one.\n"
-        pages = []
-        page = header
-        for line in lines:
-            if len(page) + len(line) + 1 > 1900:
-                pages.append(page)
-                page = ""
-            page += line + "\n"
-        if page:
-            pages.append(page)
-        for p in pages:
-            await owner_reply(ctx, p)
-    except Exception as e:
-        log_error("servers_cmd", e)
-
-@bot.command(name="leaveserver")
-async def leaveserver_cmd(ctx, *, target: str = None):
-    """Owner-only: leave a server by list number or guild ID."""
-    try:
-        if not OWNER_ID or ctx.author.id != OWNER_ID:
-            await safe_reply(ctx, "That's not for you.")
-            return
-        if not target:
-            await owner_reply(ctx, "Usage: `!leaveserver <number>` (from `!servers` list) or `!leaveserver <server ID>`")
-            return
-        target = target.strip()
-        guild_to_leave = None
-        if target.isdigit():
-            idx = int(target)
-            guilds = sorted(bot.guilds, key=lambda g: g.member_count or 0, reverse=True)
-            if 1 <= idx <= len(guilds):
-                guild_to_leave = guilds[idx - 1]
-            else:
-                guild_to_leave = bot.get_guild(int(target))
-        else:
-            try:
-                guild_to_leave = bot.get_guild(int(target))
-            except ValueError:
-                pass
-        if not guild_to_leave:
-            await owner_reply(ctx, f"Couldn't find a server matching `{target}`. Use `!servers` to see the list.")
-            return
-        name = guild_to_leave.name
-        await guild_to_leave.leave()
-        await owner_reply(ctx, f"Left **{name}**.")
-    except Exception as e:
-        log_error("leaveserver_cmd", e)
-
-@bot.command(name="dmlist")
-async def dmlist_cmd(ctx):
-    """Owner-only: list users who have DM'd the bot."""
-    try:
-        if not OWNER_ID or ctx.author.id != OWNER_ID:
-            await safe_reply(ctx, "That's not for you.")
-            return
-        all_users = await mem.get_top_users(200)
-        if not all_users:
-            await owner_reply(ctx, "No users in my records.")
-            return
-        guild_member_ids = set()
-        for g in bot.guilds:
-            for m in g.members:
-                guild_member_ids.add(m.id)
-        dm_users = [u for u in all_users if u["user_id"] not in guild_member_ids and u["user_id"] != bot.user.id]
-        if not dm_users:
-            await owner_reply(ctx, "No DM-only users found. Everyone in my records is also in a shared server.")
-            return
-        lines = []
-        for i, u in enumerate(dm_users, 1):
-            blocked = " 🚫 **BLOCKED**" if u["user_id"] in _dm_blocked_users else ""
-            lines.append(f"`{i}.` **{u['display_name']}** — {u['message_count']} msgs — ID: `{u['user_id']}`{blocked}")
-        header = f"**DM-only users ({len(dm_users)}):**\nUse `!blockdm <number>` to block or `!unblockdm <number>` to unblock.\n\n"
-        pages = []
-        page = header
-        for line in lines:
-            if len(page) + len(line) + 1 > 1900:
-                pages.append(page)
-                page = ""
-            page += line + "\n"
-        if page:
-            pages.append(page)
-        for p in pages:
-            await owner_reply(ctx, p)
-    except Exception as e:
-        log_error("dmlist_cmd", e)
-
-@bot.command(name="blockall")
-async def blockall_cmd(ctx):
-    """Owner-only: block all strangers (users not in any server the owner is in)."""
-    try:
-        if not OWNER_ID or ctx.author.id != OWNER_ID:
-            await safe_reply(ctx, "That's not for you.")
-            return
-        owner_guild_ids = set()
-        for g in bot.guilds:
-            try:
-                m = await g.fetch_member(OWNER_ID)
-                if m:
-                    owner_guild_ids.add(g.id)
-            except Exception:
-                pass
-        safe_user_ids = {OWNER_ID, bot.user.id}
-        if PARTNER_BOT_ID:
-            safe_user_ids.add(PARTNER_BOT_ID)
-        for g in bot.guilds:
-            if g.id in owner_guild_ids:
-                for m in g.members:
-                    safe_user_ids.add(m.id)
-        all_users = await mem.get_top_users(500)
-        blocked_count = 0
-        blocked_names = []
-        farewell = ("I am currently in test mode, I will be officially placed in public in the future. "
-                     "We can continue our conversation on a later date. This is my last message.")
-        for u in all_users:
-            uid = u["user_id"]
-            if uid in safe_user_ids or uid in _dm_blocked_users:
-                continue
-            _dm_blocked_users.add(uid)
-            await mem.block_user(uid)
-            blocked_names.append(u["display_name"])
-            blocked_count += 1
-            try:
-                discord_user = await bot.fetch_user(uid)
-                dm_channel = await discord_user.create_dm()
-                await dm_channel.send(farewell)
-            except Exception:
-                pass
-        if blocked_count == 0:
-            await owner_reply(ctx, "No strangers to block. Everyone in my records shares a server with you.")
-        else:
-            names_preview = ", ".join(blocked_names[:15])
-            if len(blocked_names) > 15:
-                names_preview += f" ... and {len(blocked_names) - 15} more"
-            await owner_reply(ctx, f"Blocked **{blocked_count}** stranger(s): {names_preview}\n\nFarewell messages sent. They're invisible to me now.")
-    except Exception as e:
-        log_error("blockall_cmd", e)
-
-@bot.command(name="blockdm")
-async def blockdm_cmd(ctx, *, target: str = None):
-    """Owner-only: block a user. Sends a farewell message."""
-    try:
-        if not OWNER_ID or ctx.author.id != OWNER_ID:
-            await safe_reply(ctx, "That's not for you.")
-            return
-        if not target:
-            await owner_reply(ctx, "Usage: `!blockdm <number from !dmlist>` or `!blockdm <user ID>`")
-            return
-        target = target.strip()
-        all_users = await mem.get_top_users(200)
-        user_record = None
-        if target.isdigit():
-            idx = int(target)
-            guild_member_ids = set()
-            for g in bot.guilds:
-                for m in g.members:
-                    guild_member_ids.add(m.id)
-            dm_users = [u for u in all_users if u["user_id"] not in guild_member_ids and u["user_id"] != bot.user.id]
-            if 1 <= idx <= len(dm_users):
-                user_record = dm_users[idx - 1]
-            else:
-                for u in all_users:
-                    if u["user_id"] == int(target):
-                        user_record = u
-                        break
-        if not user_record:
-            target_lower = target.lower()
-            for u in all_users:
-                if target_lower in u["display_name"].lower():
-                    user_record = u
-                    break
-        if not user_record:
-            await owner_reply(ctx, f"No user matching `{target}`. Use `!dmlist` or `!whois` to see users.")
-            return
-        uid = user_record["user_id"]
-        if uid in _dm_blocked_users:
-            await owner_reply(ctx, f"**{user_record['display_name']}** is already blocked.")
-            return
-        farewell = ("I am currently in test mode, I will be officially placed in public in the future. "
-                     "We can continue our conversation on a later date. This is my last message.")
-        try:
-            discord_user = await bot.fetch_user(uid)
-            dm_channel = await discord_user.create_dm()
-            await dm_channel.send(farewell)
-        except Exception as e:
-            log_error("blockdm_farewell", e)
-        _dm_blocked_users.add(uid)
-        await mem.block_user(uid)
-        await owner_reply(ctx, f"Blocked **{user_record['display_name']}** (`{uid}`). Farewell message sent. They're invisible to me now.")
-    except Exception as e:
-        log_error("blockdm_cmd", e)
-
-@bot.command(name="unblockdm")
-async def unblockdm_cmd(ctx, *, target: str = None):
-    """Owner-only: unblock a user."""
-    try:
-        if not OWNER_ID or ctx.author.id != OWNER_ID:
-            await safe_reply(ctx, "That's not for you.")
-            return
-        if not target:
-            await owner_reply(ctx, "Usage: `!unblockdm <number from !dmlist>` or `!unblockdm <user ID>`")
-            return
-        target = target.strip()
-        all_users = await mem.get_top_users(200)
-        guild_member_ids = set()
-        for g in bot.guilds:
-            for m in g.members:
-                guild_member_ids.add(m.id)
-        dm_users = [u for u in all_users if u["user_id"] not in guild_member_ids and u["user_id"] != bot.user.id]
-        user_record = None
-        if target.isdigit():
-            idx = int(target)
-            if 1 <= idx <= len(dm_users):
-                user_record = dm_users[idx - 1]
-            else:
-                for u in all_users:
-                    if u["user_id"] == int(target):
-                        user_record = u
-                        break
-        if not user_record:
-            target_lower = target.lower()
-            for u in dm_users:
-                if target_lower in u["display_name"].lower():
-                    user_record = u
-                    break
-        if not user_record:
-            await owner_reply(ctx, f"No user matching `{target}`. Use `!dmlist` to see the list.")
-            return
-        uid = user_record["user_id"]
-        if uid not in _dm_blocked_users:
-            await owner_reply(ctx, f"**{user_record['display_name']}** isn't blocked.")
-            return
-        _dm_blocked_users.discard(uid)
-        await mem.unblock_user(uid)
-        await owner_reply(ctx, f"Unblocked **{user_record['display_name']}** (`{uid}`). They can talk to me again.")
-    except Exception as e:
-        log_error("unblockdm_cmd", e)
-
-@bot.command(name="whois")
-async def whois_cmd(ctx, *, target: str = None):
-    """Owner-only: look up a user from the ranking by number or name."""
-    try:
-        if not OWNER_ID or ctx.author.id != OWNER_ID:
-            await safe_reply(ctx, "That's not for you.")
-            return
-        top = await mem.get_top_users(50)
-        if not top:
-            await owner_reply(ctx, "No users in my records yet.")
-            return
-        if not target:
-            lines = []
-            for i, u in enumerate(top, 1):
-                lines.append(f"`{i}.` **{u['display_name']}** — {u['message_count']} msgs — ID: `{u['user_id']}`")
-            header = f"**All known users ({len(top)}):**\nUse `!whois <number>` or `!whois <name>` for details.\n\n"
-            pages = []
-            page = header
-            for line in lines:
-                if len(page) + len(line) + 1 > 1900:
-                    pages.append(page)
-                    page = ""
-                page += line + "\n"
-            if page:
-                pages.append(page)
-            for p in pages:
-                await owner_reply(ctx, p)
-            return
-        target = target.strip()
-        user_record = None
-        if target.isdigit():
-            idx = int(target)
-            if 1 <= idx <= len(top):
-                user_record = top[idx - 1]
-            else:
-                for u in top:
-                    if u["user_id"] == int(target):
-                        user_record = u
-                        break
-        if not user_record:
-            target_lower = target.lower()
-            for u in top:
-                if target_lower in u["display_name"].lower():
-                    user_record = u
-                    break
-        if not user_record:
-            await owner_reply(ctx, f"No user matching `{target}`.")
-            return
-        uid = user_record["user_id"]
-        try:
-            discord_user = await bot.fetch_user(uid)
-        except Exception:
-            discord_user = None
-        shared = []
-        for g in bot.guilds:
-            try:
-                m = await g.fetch_member(uid)
-                if m:
-                    shared.append(g.name)
-            except Exception:
-                pass
-        embed = discord.Embed(title=f"Who is: {user_record['display_name']}", color=0x6B7FD7)
-        embed.add_field(name="User ID", value=f"`{uid}`", inline=True)
-        embed.add_field(name="Messages", value=str(user_record["message_count"]), inline=True)
-        if discord_user:
-            embed.add_field(name="Discord tag", value=str(discord_user), inline=True)
-            created = discord_user.created_at.strftime("%b %d, %Y")
-            embed.add_field(name="Account created", value=created, inline=True)
-            if discord_user.avatar:
-                embed.set_thumbnail(url=discord_user.avatar.url)
-        if shared:
-            embed.add_field(name="Shared servers", value=", ".join(shared), inline=False)
-        else:
-            embed.add_field(name="Shared servers", value="*None — they may have DM'd me or left*", inline=False)
-        await owner_reply(ctx, None, embed=embed)
-    except Exception as e:
-        log_error("whois_cmd", e)
 
 @bot.event
 async def on_command_error(ctx, error):
