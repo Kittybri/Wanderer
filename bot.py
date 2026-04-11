@@ -1417,6 +1417,16 @@ def _user_local_hour(user: dict | None) -> int:
         return datetime.now().hour
 
 
+def _time_period_label(hour: int) -> str:
+    if 5 <= hour < 12:
+        return "morning"
+    if 12 <= hour < 17:
+        return "afternoon"
+    if 17 <= hour < 21:
+        return "evening"
+    return "night"
+
+
 def _voice_style_for(
     user: dict | None,
     mood: int = 0,
@@ -2736,9 +2746,15 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
             else:         hint = "Longer, thoughtful."
         hint = _tighten_length_hint(hint, text_pressure, allow_long_text)
 
-        now      = datetime.now()
+        # Time and date context — use user's timezone when available
+        try:
+            _tz = ZoneInfo((user or {}).get("timezone_name") or "America/Los_Angeles")
+        except Exception:
+            _tz = None
+        now      = datetime.now(_tz) if _tz else datetime.now()
         days_ago = round((time.time() - (user.get("last_active", 0) if user else 0)) / 86400, 1) if user and user.get("last_active", 0) else 0
-        date_ctx = f"DATE:{now.strftime('%A %b %d %Y')}|HOUR:{now.hour}|LAST_SEEN:{days_ago}d_ago"
+        _tod = _time_period_label(now.hour)
+        date_ctx = f"DATE:{now.strftime('%A %b %d %Y')}|HOUR:{now.hour}|TIME_OF_DAY:{_tod}|LAST_SEEN:{days_ago}d_ago"
 
         parts = [
             f"mention:{author_mention}", f"name:{display_name}",
