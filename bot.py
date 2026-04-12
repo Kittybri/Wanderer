@@ -4670,6 +4670,9 @@ async def _proactive_loop():
                     perms = ch.permissions_for(ch.guild.me) if getattr(ch, "guild", None) and ch.guild.me else None
                     if perms and (not perms.view_channel or not perms.send_messages):
                         continue
+                    speaker_mode = await mem.get_channel_speaker_mode(cid)
+                    if speaker_mode not in {"auto", "both", BOT_NAME}:
+                        continue
                     if OWNER_ID and random.random() < .15:
                         try:
                             m = ch.guild.get_member(OWNER_ID) if hasattr(ch, "guild") else None
