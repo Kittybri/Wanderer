@@ -4670,10 +4670,13 @@ async def _proactive_loop():
                     perms = ch.permissions_for(ch.guild.me) if getattr(ch, "guild", None) and ch.guild.me else None
                     if perms and (not perms.view_channel or not perms.send_messages):
                         continue
-                    if OWNER_ID and random.random() < .3:
+                    if OWNER_ID and random.random() < .15:
                         try:
                             m = ch.guild.get_member(OWNER_ID) if hasattr(ch, "guild") else None
                             if m:
+                                owner_user = await mem.get_user(OWNER_ID)
+                                if _is_in_quiet_hours(owner_user):
+                                    continue
                                 msg = await _pick_fresh_pool_line(OWNER_PROACTIVE, channel_id=cid, user_id=OWNER_ID)
                                 await ch.send(f"{m.mention} {msg}")
                                 await mem.add_message(OWNER_ID, cid, "assistant", msg)
@@ -4708,7 +4711,7 @@ async def _proactive_loop():
                     continue
                 except Exception as e: log_error("proactive_channel", e)
         except Exception as e: log_error("proactive_loop", e)
-        await asyncio.sleep(random.randint(5400, 14400))
+        await asyncio.sleep(random.randint(14400, 28800))
 
 
 async def _voluntary_dm_loop():
@@ -4746,7 +4749,7 @@ async def _voluntary_dm_loop():
                             debug_event("dm", f"{BOT_NAME} disabling DMs for user={uid} after Forbidden")
                         except Exception as e: log_error("dm_send", e)
         except Exception as e: log_error("voluntary_dm_loop", e)
-        await asyncio.sleep(random.randint(2700, 21600))
+        await asyncio.sleep(random.randint(14400, 36000))
 
 
 async def _duo_autoplay_loop():
@@ -4858,7 +4861,7 @@ async def _rival_event_loop():
                     log_error("rival_event_channel", e)
         except Exception as e:
             log_error("rival_event_loop", e)
-        await asyncio.sleep(random.randint(2400, 5400))
+        await asyncio.sleep(random.randint(7200, 18000))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
