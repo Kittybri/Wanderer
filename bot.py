@@ -4257,15 +4257,28 @@ async def on_message(message):
                                 "type": "image_url",
                                 "image_url": {"url": f"data:{mt};base64,{base64.b64encode(fb).decode()}"}
                             })
+                        _vid_prompt = (
+                            f"{message.author.display_name} sent you a video. These are {len(frames)} frames from it."
+                        )
+                        if content:
+                            _vid_prompt += (
+                                f"\n\nThey said: '{content}'\n"
+                                f"IMPORTANT: Answer their question or respond to what they said about the video. "
+                                f"Their message is the priority — don't just describe the video generically, "
+                                f"react to what THEY asked or said about it."
+                            )
+                        _vid_prompt += (
+                            f"\n\nYou are the Wanderer. React with your personality — cold, observant, quietly judgmental. "
+                            f"Give your honest opinion on what you see. If there are people in the video, "
+                            f"judge them with detached precision. If someone asks you to rate something, actually rate it. "
+                            f"Be specific about what's in the video. Don't be generic. "
+                            f"{_attachment_vision_note(vid.filename, content)} "
+                            f"MOOD:{mood}. NO asterisk actions. 2-4 sentences. "
+                            + _face_prompt_note(face_match, requested=face_check_now)
+                        )
                         vision_content.append({
                             "type": "text",
-                            "text": (
-                                f"{message.author.display_name} sent you a video. These are {len(frames)} frames from it."
-                                + (f" Their message: '{content}'" if content else "")
-                                + f" Describe what's happening and react as the Wanderer. "
-                                f"Be specific. {_attachment_vision_note(vid.filename, content)} MOOD:{mood}. NO asterisk actions. 2-4 sentences. "
-                                + _face_prompt_note(face_match, requested=face_check_now)
-                            )
+                            "text": _vid_prompt,
                         })
                         def _vision_call():
                             r = groq_client.call_with_retry(
@@ -4278,9 +4291,9 @@ async def on_message(message):
                         if reply:
                             reply = strip_narration(reply)
                             await mem.add_message(message.author.id, dm_channel_id,
-                                                  "user", f"[video]{' — '+content if content else ''}")
+                                                  "user", f"[sent a video]{' — '+content if content else ''}")
                             await mem.add_message(message.author.id, dm_channel_id,
-                                                  "assistant", reply)
+                                                  "assistant", f"[watched their video] {reply}")
                             await message.reply(reply)
                             await maybe_react(message, romance)
                             _video_processing.discard(message.author.id)
@@ -4330,14 +4343,24 @@ async def on_message(message):
                         face_match = match_face(img_bytes, owner_face_profile)
                         if face_match.get("ok"):
                             debug_event("face", f"{BOT_NAME} owner_image_match status={face_match.get('status')} dist={face_match.get('distance', 0):.4f}")
+                    _img_prompt = f"{message.author.display_name} sent you this image."
+                    if content:
+                        _img_prompt += (
+                            f"\n\nThey said: '{content}'\n"
+                            f"IMPORTANT: Answer their question or respond to what they said about the image. "
+                            f"Their message is the priority — don't just describe the image generically, "
+                            f"react to what THEY asked or said about it."
+                        )
+                    _img_prompt += (
+                        f"\n\nYou are the Wanderer. React with your personality — cold, observant, quietly judgmental. "
+                        f"Give your honest opinion on what you see. If there are people, judge them with detached precision. "
+                        f"If someone asks you to rate something, actually rate it. Be specific. "
+                        f"{_attachment_vision_note(img.filename, content)} "
+                        f"MOOD:{mood}. NO asterisk actions. 1-3 sentences. "
+                        + _face_prompt_note(face_match, requested=face_check_now)
+                    )
                     reply = await _vision_image_reply(
-                        prompt=(
-                            f"{message.author.display_name} sent you this image"
-                            + (f" with the message: '{content}'" if content else "")
-                            + f". React as the Wanderer. Describe what you see and react in character. "
-                            f"{_attachment_vision_note(img.filename, content)} MOOD:{mood}. NO asterisk actions. 1-3 sentences. "
-                            + _face_prompt_note(face_match, requested=face_check_now)
-                        ),
+                        prompt=_img_prompt,
                         system=system,
                         image_bytes=img_bytes,
                         mime_type=media_type,
