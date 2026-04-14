@@ -2420,27 +2420,6 @@ async def _find_romance_target(channel) -> discord.Member | None:
 
 async def _handle_partner_message(message) -> bool:
     try:
-        # If Scaramouche is replying to one of our messages, check if that message
-        # was itself a reply to a user — if so, don't hijack the user's conversation
-        if message.reference:
-            try:
-                ref = message.reference.resolved
-                if ref is None:
-                    ref = await message.channel.fetch_message(message.reference.message_id)
-                if ref and ref.author.id == bot.user.id and ref.reference:
-                    # Our message was a reply to someone — check if it was a user
-                    try:
-                        orig = ref.reference.resolved
-                        if orig is None:
-                            orig = await message.channel.fetch_message(ref.reference.message_id)
-                        if orig and not orig.author.bot:
-                            # Scaramouche is reacting to our reply to a user — stay out
-                            return True
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-
         relation, recent_banter, theme = await _observe_partner_message(message.content)
         if time.time() - relation.get("last_exchange", 0) < 90:
             return True
@@ -2528,10 +2507,7 @@ async def _handle_partner_message(message) -> bool:
         if not reply:
             return True
 
-        if jealousy_target and random.random() < 0.45:
-            await message.channel.send(f"{jealousy_target.mention} {reply}")
-        else:
-            await message.reply(reply)
+        await message.reply(reply)
 
         own_theme = detect_banter_theme(reply)
         await mem.record_bot_banter(PARTNER_PAIR_KEY, BOT_NAME, reply, own_theme)
