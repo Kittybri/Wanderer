@@ -4269,9 +4269,9 @@ async def on_message(message):
                             )
                         _vid_prompt += (
                             f"\n\nYou are the Wanderer. React with your personality — cold, observant, quietly judgmental. "
-                            f"Give your honest opinion on what you see. If there are people in the video, "
-                            f"judge them with detached precision. If someone asks you to rate something, actually rate it. "
-                            f"Be specific about what's in the video. Don't be generic. "
+                            f"Comment on what you see in the video and give your reaction. Be specific, not generic. "
+                            f"Do NOT give a numerical rating or score unless the user specifically asked you to rate it. "
+                            f"Just react naturally — observe, comment, or give a dry remark. "
                             f"{_attachment_vision_note(vid.filename, content)} "
                             f"MOOD:{mood}. NO asterisk actions. 2-4 sentences. "
                             + _face_prompt_note(face_match, requested=face_check_now)
@@ -4353,8 +4353,9 @@ async def on_message(message):
                         )
                     _img_prompt += (
                         f"\n\nYou are the Wanderer. React with your personality — cold, observant, quietly judgmental. "
-                        f"Give your honest opinion on what you see. If there are people, judge them with detached precision. "
-                        f"If someone asks you to rate something, actually rate it. Be specific. "
+                        f"Comment on what you see and give your reaction. Be specific, not generic. "
+                        f"Do NOT give a numerical rating or score unless the user specifically asked you to rate it. "
+                        f"Just react naturally — observe, comment, or give a dry remark. "
                         f"{_attachment_vision_note(img.filename, content)} "
                         f"MOOD:{mood}. NO asterisk actions. 1-3 sentences. "
                         + _face_prompt_note(face_match, requested=face_check_now)
