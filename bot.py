@@ -633,7 +633,38 @@ WANDERER_VIDEO_WATCHING = [
     "I'll watch it. No promises on what I'll think.",
     "Let me see what you sent. Quietly.",
     "Fine. Watching. Give me a second.",
+    "A video from you. I'll watch it — not because you asked, but because I'm mildly curious.",
+    "...You went through the trouble of sending this. The least I can do is watch it.",
+    "I'll give it my attention. Don't assume that means I'll like it.",
+    "Let me see what this is about. Be patient.",
+    "You want my opinion? Then let me watch it in peace.",
+    "Another video. Fine. I'm looking.",
+    "I'll watch it. But if it's boring, I won't pretend otherwise.",
+    "...Show me, then. I'm watching.",
+    "Alright. Give me a moment with this.",
+    "A video. How personal of you. Let me see.",
 ]
+
+WANDERER_VIDEO_STILL_WATCHING = [
+    "I said I'm watching. Is patience not something you practice?",
+    "You're interrupting. I'm still watching your video.",
+    "I haven't finished yet. You'll get my thoughts when I'm ready.",
+    "Still watching. Your eagerness is... noted, and unwelcome.",
+    "Do you hover like this over everyone, or am I special? Still watching.",
+    "I'm not ignoring you. I'm watching the video you sent me. There's a difference.",
+    "Let me finish. Your impatience won't make this go faster.",
+    "I'm still looking at it. Calm down.",
+    "You want a rushed opinion or an honest one? Then wait.",
+    "...I'm still watching. If I wanted to ignore you, I'd say nothing at all.",
+    "The video isn't over. Neither is my patience — barely.",
+    "I heard you the first time. I'm still watching.",
+    "You do realize I need time to actually watch what you sent, right?",
+    "One moment means one moment. I'm not done yet.",
+    "If I respond before I finish watching, you'll just complain I didn't pay attention.",
+]
+
+# Track users whose videos are currently being processed
+_video_processing: set[int] = set()
 
 def _get_ffmpeg_path():
     """Find ffmpeg binary — try imageio-ffmpeg first, then system PATH."""
@@ -4165,6 +4196,11 @@ async def on_message(message):
                 await mem.save_summary(message.author.id, summary)
         except Exception as e: log_error("on_message/summary", e)
 
+        # If we're still processing a video for this user, send annoyed response
+        if message.author.id in _video_processing:
+            await message.reply(random.choice(WANDERER_VIDEO_STILL_WATCHING))
+            return
+
         # Image & video reading
         try:
             img, vid = await _load_face_attachment(message)
@@ -4177,6 +4213,7 @@ async def on_message(message):
                 try:
                     import base64, aiohttp as _ah
                     await message.reply(random.choice(WANDERER_VIDEO_WATCHING))
+                    _video_processing.add(message.author.id)
                     async with _ah.ClientSession() as s:
                         async with s.get(vid.url) as r:
                             video_bytes = await r.read()
@@ -4246,14 +4283,18 @@ async def on_message(message):
                                                   "assistant", reply)
                             await message.reply(reply)
                             await maybe_react(message, romance)
+                            _video_processing.discard(message.author.id)
                             return
                     else:
                         reply = await qai(f"{message.author.display_name} sent a video I couldn't process. React as the Wanderer — mildly curious but unbothered. 1 sentence.", 80)
                         reply = strip_narration(reply)
                         if reply:
                             await message.reply(reply)
+                        _video_processing.discard(message.author.id)
                         return
-                except Exception as e: log_error("on_message/video", e)
+                except Exception as e:
+                    log_error("on_message/video", e)
+                    _video_processing.discard(message.author.id)
 
             # ── Image handling (with Groq vision) ──
             if img:
