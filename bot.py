@@ -2708,7 +2708,7 @@ async def fetch_channel_context(channel, limit: int = CHANNEL_CONTEXT_LIMIT_DIRE
             msgs.append(line)
         if not msgs: return ""
         msgs.reverse()
-        context = "CHANNEL_CONTEXT:\n" + "\n".join(msgs)
+        context = "CHANNEL_CONTEXT (multiple people may be talking — pay attention to WHO said what, do NOT attribute one person's words to another):\n" + "\n".join(msgs)
         if not is_dm_channel and hasattr(channel, 'guild') and channel.guild:
             mention_map = {m.display_name: m.mention for m in channel.guild.members if not m.bot}
             if mention_map:
@@ -2962,7 +2962,7 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
         if duo_context:
             context_block += duo_context + "\n"
         if channel_ctx: context_block += channel_ctx + "\n\n"
-        context_block += f"{display_name}: {user_message}"
+        context_block += f"YOU ARE NOW REPLYING TO {display_name}. This is their message:\n{display_name}: {user_message}"
 
         repeat_guard = build_prompt_guard(BOT_NAME, recent_replies)
         if repeat_guard:
