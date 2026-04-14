@@ -4473,20 +4473,22 @@ async def on_message(message):
             if "you can't change" in cl or "you cant change" in cl:
                 msg = await qai("Someone said 'you can't change' to the Wanderer. He has something to say about that. Pointed, personal, not performative. 2-3 sentences.", 250)
                 await message.reply(strip_narration(msg)); return
-            content_words = set(re.sub(r"[^\w\s]", "", content.lower()).split())
-            if content_words & {"hat", "headwear"}:
-                msg = await qai("Someone mentioned your hat. React as the Wanderer — brief, slightly defensive, moves on fast. 1 sentence.", 80)
-                await message.reply(strip_narration(msg)); return
-            if any(re.search(k, cl) for k in FOOD_KW) and random.random() < .3:
-                await message.channel.send(await _pick_fresh_pool_line(UNSOLICITED_FOOD, channel_id=message.channel.id, user_id=message.author.id)); return
-            if any(re.search(k, cl) for k in SLEEP_KW) and random.random() < .3:
-                await message.channel.send(await _pick_fresh_pool_line(UNSOLICITED_SLEEP, channel_id=message.channel.id, user_id=message.author.id)); return
-            if any(k in cl for k in PLAN_KW) and random.random() < .2:
-                await message.channel.send(await _pick_fresh_pool_line(UNSOLICITED_PLANS, channel_id=message.channel.id, user_id=message.author.id)); return
-            if romance and any(k in cl for k in OTHER_BOT_KW):
-                msg = await qai(f"{message.author.display_name} mentioned preferring something else. React as the Wanderer — bothered but won't admit it. 1-2 sentences.", 120)
-                await message.reply(strip_narration(msg))
-                await mem.update_mood(message.author.id, -1); return
+            # Keyword triggers — only for ambient messages, NOT when user is talking to us
+            if not direct_to_me:
+                content_words = set(re.sub(r"[^\w\s]", "", content.lower()).split())
+                if content_words & {"hat", "headwear"}:
+                    msg = await qai("Someone mentioned your hat. React as the Wanderer — brief, slightly defensive, moves on fast. 1 sentence.", 80)
+                    await message.reply(strip_narration(msg)); return
+                if any(re.search(k, cl) for k in FOOD_KW) and random.random() < .3:
+                    await message.channel.send(await _pick_fresh_pool_line(UNSOLICITED_FOOD, channel_id=message.channel.id, user_id=message.author.id)); return
+                if any(re.search(k, cl) for k in SLEEP_KW) and random.random() < .3:
+                    await message.channel.send(await _pick_fresh_pool_line(UNSOLICITED_SLEEP, channel_id=message.channel.id, user_id=message.author.id)); return
+                if any(k in cl for k in PLAN_KW) and random.random() < .2:
+                    await message.channel.send(await _pick_fresh_pool_line(UNSOLICITED_PLANS, channel_id=message.channel.id, user_id=message.author.id)); return
+                if romance and any(k in cl for k in OTHER_BOT_KW):
+                    msg = await qai(f"{message.author.display_name} mentioned preferring something else. React as the Wanderer — bothered but won't admit it. 1-2 sentences.", 120)
+                    await message.reply(strip_narration(msg))
+                    await mem.update_mood(message.author.id, -1); return
         except Exception as e: log_error("on_message/triggers", e)
 
         # Tedtalk follow-up
