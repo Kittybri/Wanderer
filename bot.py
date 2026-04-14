@@ -4282,7 +4282,7 @@ async def on_message(message):
                         })
                         def _vision_call():
                             r = groq_client.call_with_retry(
-                                model="llama-3.2-90b-vision-preview", max_tokens=400,
+                                model="meta-llama/llama-4-scout-17b-16e-instruct", max_tokens=400,
                                 messages=[{"role": "system", "content": system},
                                           {"role": "user", "content": vision_content}]
                             )
