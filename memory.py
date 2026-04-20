@@ -5,14 +5,29 @@ inside jokes, absence tracking, anniversaries, slow burn, personality drift,
 memory summaries, muted users, contradiction tracking, name progression.
 """
 
+from __future__ import annotations
+
 import aiosqlite
 import time
 import json
 import os
 import re
 
-# Use Railway volume if available, otherwise current directory
-_data_dir = "/data" if os.path.isdir("/data") else "."
+def _resolve_data_dir() -> str:
+    preferred = (os.getenv("MEMORY_DATA_DIR") or os.getenv("BOT_DATA_DIR") or "").strip()
+    if preferred:
+        preferred = os.path.abspath(os.path.expanduser(preferred))
+        try:
+            os.makedirs(preferred, exist_ok=True)
+            return preferred
+        except OSError:
+            pass
+    if os.path.isdir("/data"):
+        return "/data"
+    return "."
+
+
+_data_dir = _resolve_data_dir()
 DB_PATH = os.path.join(_data_dir, "scaramouche.db")
 SHARED_DB_PATH = os.path.join(_data_dir, "shared_state.db")
 
@@ -52,6 +67,13 @@ class Memory:
                     mood             INTEGER DEFAULT 0,
                     affection        INTEGER DEFAULT 0,
                     trust            INTEGER DEFAULT 0,
+                    anger_level      INTEGER DEFAULT 0,
+                    affection_ever_maxed INTEGER DEFAULT 0,
+                    anger_repair_active INTEGER DEFAULT 0,
+                    anger_repair_kind TEXT DEFAULT NULL,
+                    anger_repair_instruction TEXT DEFAULT NULL,
+                    anger_repair_requirement TEXT DEFAULT NULL,
+                    anger_aftercare_messages INTEGER DEFAULT 0,
                     rival_id         INTEGER DEFAULT NULL,
                     grudge_nick      TEXT    DEFAULT NULL,
                     affection_nick   TEXT    DEFAULT NULL,
@@ -144,38 +166,7 @@ class Memory:
                     round       INTEGER DEFAULT 0,
                     scores      TEXT    DEFAULT '{}',
                     active      INTEGER DEFAULT 1,
-                    turn_user   INTEGER DEFAULT 0,
                     ts          REAL
-                );
-                CREATE TABLE IF NOT EXISTS game_scores (
-                    user_id     INTEGER,
-                    game_type   TEXT,
-                    wins        INTEGER DEFAULT 0,
-                    losses      INTEGER DEFAULT 0,
-                    draws       INTEGER DEFAULT 0,
-                    total_points INTEGER DEFAULT 0,
-                    PRIMARY KEY (user_id, game_type)
-                );
-                CREATE TABLE IF NOT EXISTS rpg_medals (
-                    user_id        INTEGER PRIMARY KEY,
-                    completions    INTEGER DEFAULT 0,
-                    best_points    INTEGER DEFAULT 0,
-                    first_clear_ts REAL DEFAULT 0,
-                    last_clear_ts  REAL DEFAULT 0
-                );
-                CREATE TABLE IF NOT EXISTS rpg_state (
-                    user_id        INTEGER PRIMARY KEY,
-                    current_boss   INTEGER DEFAULT 0,
-                    current_round  INTEGER DEFAULT 0,
-                    boss_points    INTEGER DEFAULT 0,
-                    total_points   INTEGER DEFAULT 0,
-                    bosses_beaten  TEXT DEFAULT '[]',
-                    scenario_data  TEXT DEFAULT '{}',
-                    active         INTEGER DEFAULT 0,
-                    last_updated   REAL DEFAULT 0,
-                    world_type     TEXT DEFAULT '',
-                    char_type      TEXT DEFAULT '',
-                    element        TEXT DEFAULT ''
                 );
                 CREATE TABLE IF NOT EXISTS phrase_cooldowns (
                     scope       TEXT,
@@ -258,14 +249,6 @@ class Memory:
                     created_ts  REAL DEFAULT 0,
                     last_seen   REAL DEFAULT 0
                 );
-                CREATE TABLE IF NOT EXISTS blocked_users (
-                    user_id     INTEGER PRIMARY KEY,
-                    blocked_ts  REAL DEFAULT 0
-                );
-                CREATE TABLE IF NOT EXISTS banned_channels (
-                    channel_id  INTEGER PRIMARY KEY,
-                    banned_ts   REAL DEFAULT 0
-                );
             """)
             migrations = [
                 ("allow_dms",          "INTEGER DEFAULT 1"),
@@ -277,6 +260,13 @@ class Memory:
                 ("mood",               "INTEGER DEFAULT 0"),
                 ("affection",          "INTEGER DEFAULT 0"),
                 ("trust",              "INTEGER DEFAULT 0"),
+                ("anger_level",        "INTEGER DEFAULT 0"),
+                ("affection_ever_maxed", "INTEGER DEFAULT 0"),
+                ("anger_repair_active", "INTEGER DEFAULT 0"),
+                ("anger_repair_kind",  "TEXT DEFAULT NULL"),
+                ("anger_repair_instruction", "TEXT DEFAULT NULL"),
+                ("anger_repair_requirement", "TEXT DEFAULT NULL"),
+                ("anger_aftercare_messages", "INTEGER DEFAULT 0"),
                 ("rival_id",           "INTEGER DEFAULT NULL"),
                 ("grudge_nick",        "TEXT DEFAULT NULL"),
                 ("affection_nick",     "TEXT DEFAULT NULL"),
@@ -494,18 +484,6 @@ class Memory:
             except Exception:
                 pass
             await db.execute("UPDATE messages SET bot_name=? WHERE bot_name IS NULL", (self.bot_name,))
-            # Game system migrations
-            for stmt in (
-                "ALTER TABLE roast_battles ADD COLUMN turn_user INTEGER DEFAULT 0",
-                "CREATE TABLE IF NOT EXISTS game_scores (user_id INTEGER, game_type TEXT, wins INTEGER DEFAULT 0, losses INTEGER DEFAULT 0, draws INTEGER DEFAULT 0, total_points INTEGER DEFAULT 0, PRIMARY KEY (user_id, game_type))",
-                "ALTER TABLE rpg_state ADD COLUMN world_type TEXT DEFAULT ''",
-                "ALTER TABLE rpg_state ADD COLUMN char_type TEXT DEFAULT ''",
-                "ALTER TABLE rpg_state ADD COLUMN element TEXT DEFAULT ''",
-            ):
-                try:
-                    await db.execute(stmt)
-                except Exception:
-                    pass
             await db.commit()
 
     # ── Users ────────────────────────────────────────────────────────────────
@@ -540,7 +518,8 @@ class Memory:
             async with db.execute("""
                 SELECT user_id,username,display_name,romance_mode,nsfw_mode,proactive,allow_dms,
                        timezone_name,quiet_hours_start,quiet_hours_end,dm_frequency_hours,recent_activity_grace_minutes,
-                       mood,affection,trust,rival_id,grudge_nick,affection_nick,message_count,
+                       mood,affection,trust,anger_level,affection_ever_maxed,anger_repair_active,anger_repair_kind,
+                       anger_repair_instruction,anger_repair_requirement,anger_aftercare_messages,rival_id,grudge_nick,affection_nick,message_count,
                        milestone_last,first_seen,last_seen,last_active,greeted_today,anniversary_last,
                        slow_burn,slow_burn_fired,drift_score,memory_summary,last_statement,
                        style_profile,emotional_arc,conflict_open,conflict_summary,last_conflict_ts,repair_progress,
@@ -559,23 +538,30 @@ class Memory:
                     "dm_frequency_hours": row[10] if row[10] is not None else 8,
                     "recent_activity_grace_minutes": row[11] if row[11] is not None else 45,
                     "mood": row[12] or 0, "affection": row[13] or 0, "trust": row[14] or 0,
-                    "rival_id": row[15], "grudge_nick": row[16], "affection_nick": row[17],
-                    "message_count": row[18] or 0, "milestone_last": row[19] or 0,
-                    "first_seen": row[20] or 0, "last_seen": row[21] or 0,
-                    "last_active": row[22] or 0, "greeted_today": bool(row[23]),
-                    "anniversary_last": row[24] or 0,
-                    "slow_burn": row[25] or 0, "slow_burn_fired": bool(row[26]),
-                    "drift_score": row[27] or 0, "memory_summary": row[28],
-                    "last_statement": row[29],
-                    "style_profile": json.loads(row[30]) if row[30] else {},
-                    "emotional_arc": row[31] or "guarded",
-                    "conflict_open": bool(row[32]),
-                    "conflict_summary": row[33],
-                    "last_conflict_ts": row[34] or 0,
-                    "repair_progress": row[35] or 0,
-                    "callback_memory": row[36],
-                    "callback_ts": row[37] or 0,
-                    "repair_count": row[38] or 0,
+                    "anger_level": row[15] or 0,
+                    "affection_ever_maxed": bool(row[16]),
+                    "anger_repair_active": bool(row[17]),
+                    "anger_repair_kind": row[18] or "",
+                    "anger_repair_instruction": row[19] or "",
+                    "anger_repair_requirement": row[20] or "",
+                    "anger_aftercare_messages": row[21] or 0,
+                    "rival_id": row[22], "grudge_nick": row[23], "affection_nick": row[24],
+                    "message_count": row[25] or 0, "milestone_last": row[26] or 0,
+                    "first_seen": row[27] or 0, "last_seen": row[28] or 0,
+                    "last_active": row[29] or 0, "greeted_today": bool(row[30]),
+                    "anniversary_last": row[31] or 0,
+                    "slow_burn": row[32] or 0, "slow_burn_fired": bool(row[33]),
+                    "drift_score": row[34] or 0, "memory_summary": row[35],
+                    "last_statement": row[36],
+                    "style_profile": json.loads(row[37]) if row[37] else {},
+                    "emotional_arc": row[38] or "guarded",
+                    "conflict_open": bool(row[39]),
+                    "conflict_summary": row[40],
+                    "last_conflict_ts": row[41] or 0,
+                    "repair_progress": row[42] or 0,
+                    "callback_memory": row[43],
+                    "callback_ts": row[44] or 0,
+                    "repair_count": row[45] or 0,
                 }
         prefs = await self.get_user_preferences(user_id)
         user.update(prefs)
@@ -913,8 +899,79 @@ class Memory:
     # ── Affection ─────────────────────────────────────────────────────────────
     async def update_affection(self, user_id: int, delta: int):
         async with aiosqlite.connect(DB_PATH) as db:
-            await db.execute("UPDATE users SET affection=MAX(0,MIN(100,affection+?)) WHERE user_id=?", (delta, user_id))
+            async with db.execute(
+                "SELECT affection, affection_ever_maxed FROM users WHERE user_id=?",
+                (user_id,),
+            ) as cur:
+                row = await cur.fetchone()
+            if not row:
+                await db.execute("UPDATE users SET affection=MAX(0,MIN(100,affection+?)) WHERE user_id=?", (delta, user_id))
+                await db.commit()
+                return
+            affection = int(row[0] or 0)
+            ever_maxed = bool(row[1]) or affection >= 100 or (affection + delta) >= 100
+            floor = 50 if self.bot_name == "scaramouche" and ever_maxed and delta < 0 else 0
+            new_affection = max(floor, min(100, affection + delta))
+            await db.execute(
+                "UPDATE users SET affection=?, affection_ever_maxed=? WHERE user_id=?",
+                (new_affection, int(ever_maxed or new_affection >= 100), user_id),
+            )
             await db.commit()
+
+    async def update_anger(self, user_id: int, delta: int):
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "UPDATE users SET anger_level=MAX(0,MIN(100,anger_level+?)) WHERE user_id=?",
+                (delta, user_id),
+            )
+            await db.commit()
+
+    async def set_anger_repair(
+        self,
+        user_id: int,
+        kind: str,
+        instruction: str,
+        requirement: str,
+    ):
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "UPDATE users SET anger_repair_active=1, anger_repair_kind=?, anger_repair_instruction=?, anger_repair_requirement=? WHERE user_id=?",
+                (kind[:24], instruction[:800], requirement[:800], user_id),
+            )
+            await db.commit()
+
+    async def clear_anger_repair(self, user_id: int):
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "UPDATE users SET anger_repair_active=0, anger_repair_kind=NULL, anger_repair_instruction=NULL, anger_repair_requirement=NULL WHERE user_id=?",
+                (user_id,),
+            )
+            await db.commit()
+
+    async def resolve_anger_repair(self, user_id: int):
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "UPDATE users SET anger_level=0, affection=50, anger_repair_active=0, anger_repair_kind=NULL, anger_repair_instruction=NULL, anger_repair_requirement=NULL, anger_aftercare_messages=3 WHERE user_id=?",
+                (user_id,),
+            )
+            await db.commit()
+
+    async def consume_anger_aftercare(self, user_id: int) -> int:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                "SELECT anger_aftercare_messages FROM users WHERE user_id=?",
+                (user_id,),
+            ) as cur:
+                row = await cur.fetchone()
+            remaining = int((row[0] if row else 0) or 0)
+            if remaining > 0:
+                remaining -= 1
+                await db.execute(
+                    "UPDATE users SET anger_aftercare_messages=? WHERE user_id=?",
+                    (remaining, user_id),
+                )
+                await db.commit()
+            return remaining
 
     async def set_affection_nick(self, user_id: int, nick: str):
         async with aiosqlite.connect(DB_PATH) as db:
@@ -2189,75 +2246,6 @@ class Memory:
                 rows = await cur.fetchall()
         return [{"user_id":r[0],"display_name":r[1],"message_count":r[2]} for r in rows]
 
-    # ── Blocked users ─────────────────────────────────────────────────────────
-    async def block_user(self, user_id: int):
-        async with aiosqlite.connect(DB_PATH) as db:
-            await db.execute(
-                "INSERT OR REPLACE INTO blocked_users (user_id, blocked_ts) VALUES (?, ?)",
-                (user_id, time.time()))
-            await db.commit()
-
-    async def unblock_user(self, user_id: int):
-        async with aiosqlite.connect(DB_PATH) as db:
-            await db.execute("DELETE FROM blocked_users WHERE user_id=?", (user_id,))
-            await db.commit()
-
-    async def get_blocked_users(self) -> set[int]:
-        async with aiosqlite.connect(DB_PATH) as db:
-            async with db.execute("SELECT user_id FROM blocked_users") as cur:
-                rows = await cur.fetchall()
-        return {r[0] for r in rows}
-
-    async def is_blocked(self, user_id: int) -> bool:
-        async with aiosqlite.connect(DB_PATH) as db:
-            async with db.execute("SELECT 1 FROM blocked_users WHERE user_id=?", (user_id,)) as cur:
-                return await cur.fetchone() is not None
-
-    async def get_user_logs(self, user_id: int, limit: int = 200) -> list[dict]:
-        """Get full conversation log for a user across all channels, newest last."""
-        async with aiosqlite.connect(DB_PATH) as db:
-            async with db.execute("""
-                SELECT role, content, ts FROM messages
-                WHERE user_id=? AND (bot_name=? OR bot_name IS NULL)
-                ORDER BY ts ASC LIMIT ?
-            """, (user_id, self.bot_name, limit)) as cur:
-                rows = await cur.fetchall()
-        return [{"role": r[0], "content": r[1], "ts": r[2]} for r in rows]
-
-    # ── Banned channels ────────────────────────────────────────────────────────
-    async def ban_channel(self, channel_id: int):
-        async with aiosqlite.connect(DB_PATH) as db:
-            await db.execute(
-                "INSERT OR REPLACE INTO banned_channels (channel_id, banned_ts) VALUES (?, ?)",
-                (channel_id, time.time()))
-            await db.commit()
-
-    async def unban_channel(self, channel_id: int):
-        async with aiosqlite.connect(DB_PATH) as db:
-            await db.execute("DELETE FROM banned_channels WHERE channel_id=?", (channel_id,))
-            await db.commit()
-
-    async def get_banned_channels(self) -> set[int]:
-        async with aiosqlite.connect(DB_PATH) as db:
-            async with db.execute("SELECT channel_id FROM banned_channels") as cur:
-                rows = await cur.fetchall()
-        return {r[0] for r in rows}
-
-    async def get_most_active_channel(self, exclude_channels: set[int] | None = None, only_channels: set[int] | None = None) -> int | None:
-        exclude = exclude_channels or set()
-        async with aiosqlite.connect(DB_PATH) as db:
-            async with db.execute(
-                "SELECT channel_id, COUNT(*) as cnt FROM messages WHERE role='assistant' AND (bot_name=? OR bot_name IS NULL) GROUP BY channel_id ORDER BY cnt DESC LIMIT 50",
-                (self.bot_name,)
-            ) as cur:
-                rows = await cur.fetchall()
-        for r in rows:
-            if r[0] and r[0] not in exclude:
-                if only_channels is not None and r[0] not in only_channels:
-                    continue
-                return r[0]
-        return None
-
     # ── Greetings ─────────────────────────────────────────────────────────────
     async def should_greet(self, user_id: int) -> bool:
         async with aiosqlite.connect(DB_PATH) as db:
@@ -2398,7 +2386,8 @@ class Memory:
             await db.execute("DELETE FROM consequence_marks WHERE user_id=?", (user_id,))
             await db.execute("DELETE FROM relationship_milestones WHERE scope LIKE ?", (f"{self.bot_name}:user:{user_id}%",))
             await db.execute("DELETE FROM scene_state WHERE channel_id=?", (user_id,))
-            await db.execute("""UPDATE users SET mood=0,affection=0,trust=0,rival_id=NULL,grudge_nick=NULL,
+            await db.execute("""UPDATE users SET mood=0,affection=0,trust=0,anger_level=0,affection_ever_maxed=0,anger_repair_active=0,
+                anger_repair_kind=NULL,anger_repair_instruction=NULL,anger_repair_requirement=NULL,anger_aftercare_messages=0,rival_id=NULL,grudge_nick=NULL,
                 affection_nick=NULL,message_count=0,milestone_last=0,slow_burn=0,slow_burn_fired=0,
                 drift_score=0,memory_summary=NULL,last_statement=NULL,style_profile=NULL,emotional_arc='guarded',
                 conflict_open=0,conflict_summary=NULL,last_conflict_ts=0,repair_progress=0,
@@ -2409,6 +2398,30 @@ class Memory:
             await db.execute("DELETE FROM shared_inside_jokes WHERE user_id=?", (user_id,))
             await db.execute("DELETE FROM user_bot_attention WHERE user_id=?", (user_id,))
             await db.execute("DELETE FROM hidden_achievements WHERE scope LIKE ?", (f"%user:{user_id}",))
+            await db.execute("DELETE FROM relationship_milestones WHERE scope LIKE ?", (f"%user:{user_id}",))
+            await db.commit()
+
+    async def reset_user_for_rebuild(self, user_id: int):
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("DELETE FROM messages WHERE user_id=?", (user_id,))
+            await db.execute("DELETE FROM user_topics WHERE user_id=?", (user_id,))
+            await db.execute("DELETE FROM memory_bank WHERE user_id=?", (user_id,))
+            await db.execute("DELETE FROM consequence_marks WHERE user_id=?", (user_id,))
+            await db.execute("DELETE FROM relationship_milestones WHERE scope LIKE ?", (f"{self.bot_name}:user:{user_id}%",))
+            await db.execute("DELETE FROM scene_state WHERE channel_id=?", (user_id,))
+            await db.execute(
+                """UPDATE users SET mood=0,affection=0,trust=0,anger_level=0,affection_ever_maxed=0,anger_repair_active=0,
+                anger_repair_kind=NULL,anger_repair_instruction=NULL,anger_repair_requirement=NULL,anger_aftercare_messages=0,rival_id=NULL,grudge_nick=NULL,
+                affection_nick=NULL,message_count=0,milestone_last=0,slow_burn=0,slow_burn_fired=0,
+                drift_score=0,memory_summary=NULL,last_statement=NULL,style_profile=NULL,emotional_arc='guarded',
+                conflict_open=0,conflict_summary=NULL,last_conflict_ts=0,repair_progress=0,
+                callback_memory=NULL,callback_ts=0,repair_count=0
+                WHERE user_id=?""",
+                (user_id,),
+            )
+            await db.commit()
+        async with aiosqlite.connect(self.shared_db_path) as db:
+            await db.execute("DELETE FROM user_bot_attention WHERE user_id=?", (user_id,))
             await db.execute("DELETE FROM relationship_milestones WHERE scope LIKE ?", (f"%user:{user_id}",))
             await db.commit()
 
@@ -2530,179 +2543,44 @@ class Memory:
 
     # ── Roast battles ─────────────────────────────────────────────────────────
     async def start_roast_battle(self, channel_id: int, u1: int, u2: int) -> int:
-        # End any existing active battle first
         async with aiosqlite.connect(DB_PATH) as db:
-            await db.execute("UPDATE roast_battles SET active=0 WHERE channel_id=? AND active=1", (channel_id,))
             cur = await db.execute(
-                "INSERT INTO roast_battles (channel_id,user1_id,user2_id,round,scores,active,turn_user,ts) VALUES (?,?,?,1,'{}',1,?,?)",
-                (channel_id, u1, u2, u1, time.time()))
+                "INSERT INTO roast_battles (channel_id,user1_id,user2_id,round,scores,active,ts) VALUES (?,?,?,0,'{}',1,?)",
+                (channel_id,u1,u2,time.time()))
             await db.commit()
             return cur.lastrowid
 
     async def get_active_roast(self, channel_id: int) -> dict | None:
         async with aiosqlite.connect(DB_PATH) as db:
             async with db.execute(
-                "SELECT id,user1_id,user2_id,round,scores,turn_user FROM roast_battles WHERE channel_id=? AND active=1", (channel_id,)
+                "SELECT id,user1_id,user2_id,round,scores FROM roast_battles WHERE channel_id=? AND active=1", (channel_id,)
             ) as cur:
                 row = await cur.fetchone()
                 if not row: return None
-                return {"id":row[0],"user1":row[1],"user2":row[2],"round":row[3],"scores":json.loads(row[4]),"turn_user":row[5] or row[1]}
+                return {"id":row[0],"user1":row[1],"user2":row[2],"round":row[3],"scores":json.loads(row[4])}
 
     async def end_roast_battle(self, battle_id: int):
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute("UPDATE roast_battles SET active=0 WHERE id=?", (battle_id,))
             await db.commit()
 
-    async def advance_roast_turn(self, battle_id: int, next_user: int, new_round: bool = False):
+    async def increment_roast_round(self, battle_id: int):
         async with aiosqlite.connect(DB_PATH) as db:
-            if new_round:
-                await db.execute("UPDATE roast_battles SET round=round+1, turn_user=? WHERE id=?", (next_user, battle_id))
-            else:
-                await db.execute("UPDATE roast_battles SET turn_user=? WHERE id=?", (next_user, battle_id))
+            await db.execute("UPDATE roast_battles SET round=round+1 WHERE id=?", (battle_id,))
             await db.commit()
 
-    async def award_roast_points(self, battle_id: int, user_id: int, points: int):
+    async def award_roast_round(self, battle_id: int, winner_user_id: int):
         async with aiosqlite.connect(DB_PATH) as db:
             async with db.execute("SELECT scores FROM roast_battles WHERE id=?", (battle_id,)) as cur:
                 row = await cur.fetchone()
             scores = json.loads(row[0] or "{}") if row else {}
-            key = str(user_id)
-            scores[key] = int(scores.get(key, 0)) + points
+            key = str(winner_user_id)
+            scores[key] = int(scores.get(key, 0)) + 1
             await db.execute(
                 "UPDATE roast_battles SET scores=? WHERE id=?",
                 (json.dumps(scores, ensure_ascii=True), battle_id),
             )
             await db.commit()
-
-    # ── Game scores (persistent leaderboard) ──────────────────────────────────
-    async def record_game_result(self, user_id: int, game_type: str, won: bool | None, points: int = 0):
-        """Record a game result. won=True/False/None(draw)."""
-        async with aiosqlite.connect(DB_PATH) as db:
-            await db.execute(
-                "INSERT INTO game_scores (user_id, game_type, wins, losses, draws, total_points) "
-                "VALUES (?,?,?,?,?,?) "
-                "ON CONFLICT(user_id, game_type) DO UPDATE SET "
-                "wins=wins+excluded.wins, losses=losses+excluded.losses, "
-                "draws=draws+excluded.draws, total_points=total_points+excluded.total_points",
-                (user_id, game_type,
-                 1 if won is True else 0,
-                 1 if won is False else 0,
-                 1 if won is None else 0,
-                 points),
-            )
-            await db.commit()
-
-    async def get_game_stats(self, user_id: int) -> list[dict]:
-        async with aiosqlite.connect(DB_PATH) as db:
-            async with db.execute(
-                "SELECT game_type, wins, losses, draws, total_points FROM game_scores WHERE user_id=? ORDER BY wins DESC",
-                (user_id,),
-            ) as cur:
-                rows = await cur.fetchall()
-        return [{"game": r[0], "wins": r[1], "losses": r[2], "draws": r[3], "points": r[4]} for r in rows]
-
-    async def get_leaderboard(self, game_type: str = None, limit: int = 10) -> list[dict]:
-        async with aiosqlite.connect(DB_PATH) as db:
-            if game_type:
-                async with db.execute(
-                    "SELECT user_id, wins, losses, draws, total_points FROM game_scores WHERE game_type=? ORDER BY wins DESC, total_points DESC LIMIT ?",
-                    (game_type, limit),
-                ) as cur:
-                    rows = await cur.fetchall()
-            else:
-                async with db.execute(
-                    "SELECT user_id, SUM(wins) as w, SUM(losses) as l, SUM(draws) as d, SUM(total_points) as p "
-                    "FROM game_scores GROUP BY user_id ORDER BY w DESC, p DESC LIMIT ?",
-                    (limit,),
-                ) as cur:
-                    rows = await cur.fetchall()
-        return [{"user_id": r[0], "wins": r[1], "losses": r[2], "draws": r[3], "points": r[4]} for r in rows]
-
-    # ── RPG System ─────────────────────────────────────────────────────────────
-    async def get_rpg_state(self, user_id: int) -> dict | None:
-        async with aiosqlite.connect(DB_PATH) as db:
-            async with db.execute(
-                "SELECT current_boss, current_round, boss_points, total_points, bosses_beaten, scenario_data, active, "
-                "world_type, char_type, element "
-                "FROM rpg_state WHERE user_id=?", (user_id,)
-            ) as cur:
-                row = await cur.fetchone()
-        if not row:
-            return None
-        return {
-            "current_boss": row[0], "current_round": row[1], "boss_points": row[2],
-            "total_points": row[3], "bosses_beaten": json.loads(row[4] or "[]"),
-            "scenario_data": json.loads(row[5] or "{}"), "active": bool(row[6]),
-            "world_type": row[7] or "", "char_type": row[8] or "", "element": row[9] or "",
-        }
-
-    async def save_rpg_state(self, user_id: int, **kwargs):
-        async with aiosqlite.connect(DB_PATH) as db:
-            existing = await self.get_rpg_state(user_id)
-            if not existing:
-                await db.execute(
-                    "INSERT INTO rpg_state (user_id, current_boss, current_round, boss_points, total_points, "
-                    "bosses_beaten, scenario_data, active, last_updated, world_type, char_type, element) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (user_id, kwargs.get("current_boss", 0), kwargs.get("current_round", 0),
-                     kwargs.get("boss_points", 0), kwargs.get("total_points", 0),
-                     json.dumps(kwargs.get("bosses_beaten", [])), json.dumps(kwargs.get("scenario_data", {})),
-                     1 if kwargs.get("active", False) else 0, time.time(),
-                     kwargs.get("world_type", ""), kwargs.get("char_type", ""), kwargs.get("element", "")),
-                )
-            else:
-                sets, vals = [], []
-                for k, v in kwargs.items():
-                    if k in ("bosses_beaten", "scenario_data"):
-                        sets.append(f"{k}=?"); vals.append(json.dumps(v))
-                    elif k == "active":
-                        sets.append(f"{k}=?"); vals.append(1 if v else 0)
-                    else:
-                        sets.append(f"{k}=?"); vals.append(v)
-                sets.append("last_updated=?"); vals.append(time.time())
-                vals.append(user_id)
-                await db.execute(f"UPDATE rpg_state SET {','.join(sets)} WHERE user_id=?", vals)
-            await db.commit()
-
-    async def reset_rpg(self, user_id: int):
-        async with aiosqlite.connect(DB_PATH) as db:
-            await db.execute("DELETE FROM rpg_state WHERE user_id=?", (user_id,))
-            await db.commit()
-
-    async def award_rpg_medal(self, user_id: int, total_points: int):
-        async with aiosqlite.connect(DB_PATH) as db:
-            async with db.execute("SELECT completions, best_points FROM rpg_medals WHERE user_id=?", (user_id,)) as cur:
-                row = await cur.fetchone()
-            now = time.time()
-            if row:
-                new_best = max(row[1], total_points)
-                await db.execute(
-                    "UPDATE rpg_medals SET completions=completions+1, best_points=?, last_clear_ts=? WHERE user_id=?",
-                    (new_best, now, user_id),
-                )
-            else:
-                await db.execute(
-                    "INSERT INTO rpg_medals (user_id, completions, best_points, first_clear_ts, last_clear_ts) VALUES (?,1,?,?,?)",
-                    (user_id, total_points, now, now),
-                )
-            await db.commit()
-
-    async def get_rpg_medal(self, user_id: int) -> dict | None:
-        async with aiosqlite.connect(DB_PATH) as db:
-            async with db.execute("SELECT completions, best_points, first_clear_ts FROM rpg_medals WHERE user_id=?", (user_id,)) as cur:
-                row = await cur.fetchone()
-        if not row:
-            return None
-        return {"completions": row[0], "best_points": row[1], "first_clear_ts": row[2]}
-
-    async def get_rpg_leaderboard(self, limit: int = 15) -> list[dict]:
-        async with aiosqlite.connect(DB_PATH) as db:
-            async with db.execute(
-                "SELECT user_id, completions, best_points, first_clear_ts FROM rpg_medals ORDER BY completions DESC, best_points DESC LIMIT ?",
-                (limit,),
-            ) as cur:
-                rows = await cur.fetchall()
-        return [{"user_id": r[0], "completions": r[1], "best_points": r[2], "first_clear_ts": r[3]} for r in rows]
 
     async def list_inside_jokes(self, user_id: int, limit: int = 6) -> list[str]:
         async with aiosqlite.connect(DB_PATH) as db:
@@ -2821,40 +2699,3 @@ class Memory:
             "affection_nick":row[6], "romance_mode":bool(row[7]), "nsfw_mode":bool(row[8]),
             "drift_score":row[9] or 0, "slow_burn":row[10] or 0, "joke_count":jokes,
         }
-
-    # ── DM follow-up (unanswered messages) ───────────────────────────────────
-    async def get_dm_unanswered_count(self, user_id: int) -> int:
-        """Count consecutive 'assistant' messages at the tail of a DM conversation (channel_id == user_id)."""
-        async with aiosqlite.connect(DB_PATH) as db:
-            async with db.execute(
-                "SELECT role FROM messages WHERE user_id=? AND channel_id=? AND (bot_name=? OR bot_name IS NULL) ORDER BY ts DESC LIMIT 30",
-                (user_id, user_id, self.bot_name),
-            ) as cur:
-                rows = await cur.fetchall()
-        count = 0
-        for r in rows:
-            if r[0] == "assistant":
-                count += 1
-            else:
-                break
-        return count
-
-    async def get_dm_followup_candidates(self, min_unanswered: int = 5) -> list[dict]:
-        """Find DM-eligible users who have min_unanswered+ consecutive bot messages with no reply."""
-        eligible = await self.get_dm_eligible_users()
-        candidates = []
-        for ud in eligible:
-            uid = ud["user_id"]
-            count = await self.get_dm_unanswered_count(uid)
-            if count >= min_unanswered:
-                ud["unanswered_count"] = count
-                # Get timestamp of the last bot message
-                async with aiosqlite.connect(DB_PATH) as db:
-                    async with db.execute(
-                        "SELECT ts FROM messages WHERE user_id=? AND channel_id=? AND role='assistant' AND (bot_name=? OR bot_name IS NULL) ORDER BY ts DESC LIMIT 1",
-                        (uid, uid, self.bot_name),
-                    ) as cur:
-                        row = await cur.fetchone()
-                        ud["last_bot_msg_ts"] = row[0] if row else 0
-                candidates.append(ud)
-        return candidates

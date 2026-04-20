@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import random
 import re
 from collections import Counter, deque
@@ -7,6 +9,11 @@ from difflib import SequenceMatcher
 _RUNTIME_RECENT: dict[str, deque[str]] = {
     "scaramouche": deque(maxlen=80),
     "wanderer": deque(maxlen=80),
+}
+
+_DISCOURAGED_OPENINGS: dict[str, set[str]] = {
+    "scaramouche": {"how quaint"},
+    "wanderer": {"how quaint"},
 }
 
 
@@ -72,6 +79,17 @@ _OPENING_VARIANTS: dict[str, list[tuple[str, re.Pattern[str], list[str]]]] = {
         ),
     ],
     "wanderer": [
+        (
+            "how quaint",
+            re.compile(r"^\s*how(?:\W+\w+){0,2}\W+quaint\b[,.! ]*", re.IGNORECASE),
+            [
+                "Predictable.",
+                "That was thinner than you thought it was.",
+                "You really opened with that.",
+                "So that is the performance you chose.",
+                "I expected slightly more effort than that.",
+            ],
+        ),
         (
             "how irritating",
             re.compile(r"^\s*how(?:\W+\w+){0,2}\W+irritating\b[,.! ]*", re.IGNORECASE),
@@ -264,6 +282,10 @@ def diversify_reply(bot_name: str, text: str, recent_messages: list[str]) -> str
             continue
 
         matched_text = _normalize(match.group(0))
+        if matched_text in _DISCOURAGED_OPENINGS.get(bot_name, set()):
+            replacement = pick_fresh_option(bot_name, options, recent_messages)
+            rest = updated[match.end():].lstrip(" ,.!?-")
+            return f"{replacement} {rest}".strip() if rest else replacement
         is_stale = phrase_counts.get(matched_text, 0) >= 2 or _opening_key(updated) in recent_openings
         if not is_stale:
             return updated
@@ -290,6 +312,11 @@ def replace_opening_phrase(bot_name: str, text: str, recent_messages: list[str] 
         match = pattern.match(updated)
         if not match:
             continue
+        matched_text = _normalize(match.group(0))
+        if matched_text in _DISCOURAGED_OPENINGS.get(bot_name, set()):
+            replacement = pick_fresh_option(bot_name, options, recent_messages)
+            rest = updated[match.end():].lstrip(" ,.!?-")
+            return f"{replacement} {rest}".strip() if rest else replacement
         replacement = pick_fresh_option(bot_name, options, recent_messages)
         rest = updated[match.end():].lstrip(" ,.!?-")
         return f"{replacement} {rest}".strip() if rest else replacement

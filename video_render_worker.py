@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import os
 import queue
@@ -11,6 +13,8 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
+
+from google_docs_bridge import fetch_google_doc, overwrite_google_doc
 
 
 ROOT_DIR = Path(__file__).resolve().parent
@@ -33,11 +37,76 @@ VIDEO_RENDER_SECRET = (
 VIDEO_RENDER_HOST = (os.getenv("VIDEO_RENDER_HOST") or "0.0.0.0").strip() or "0.0.0.0"
 VIDEO_RENDER_PORT = int(os.getenv("VIDEO_RENDER_PORT", "8765") or "8765")
 VIDEO_RENDER_MAX_QUEUE = int(os.getenv("VIDEO_RENDER_MAX_QUEUE", "6") or "6")
+WORKER_GROQ_MODEL = (os.getenv("GROQ_MODEL_PRIMARY") or "llama-3.3-70b-versatile").strip() or "llama-3.3-70b-versatile"
 
 JOB_QUEUE: "queue.Queue[str]" = queue.Queue()
 JOBS: dict[str, dict] = {}
 JOBS_LOCK = threading.Lock()
 ACTIVE_JOB_ID: str | None = None
+
+
+def _load_groq_keys() -> list[str]:
+    keys: list[str] = []
+
+    def _remember(value: str):
+        cleaned = (value or "").strip()
+        if cleaned and cleaned not in keys:
+            keys.append(cleaned)
+
+    packed = os.getenv("GROQ_API_KEYS", "")
+    if packed:
+        for piece in packed.replace(";", ",").replace("\n", ",").split(","):
+            _remember(piece)
+
+    for env_name, env_value in os.environ.items():
+        if env_name == "GROQ_API_KEY":
+            _remember(env_value)
+            continue
+        if env_name.startswith("GROQ_API_KEY_"):
+            _remember(env_value)
+    return keys
+
+
+def _worker_docfix_prompt(bot_name: str, display_name: str, original_text: str, instructions: str = "") -> str:
+    persona = "Scaramouche" if (bot_name or "").strip().lower() == "scaramouche" else "the Wanderer"
+    flavor = (
+        "cleaner and sharper"
+        if persona == "Scaramouche"
+        else "clearer, calmer, and more natural"
+    )
+    extra = instructions.strip() or "Fix wording, grammar, clarity, and flow while preserving meaning and overall structure."
+    return (
+        f"You are {persona} editing a Google Doc for {display_name}.\n"
+        f"Revise the wording so it reads {flavor}, but do not invent facts or change the meaning.\n"
+        f"Keep headings, paragraph breaks, and list-like structure where possible.\n"
+        f"If the text is already good, make only light refinements.\n"
+        f"Specific instruction: {extra}\n\n"
+        f"Return only the final revised document text. No commentary, no notes, no quotes.\n\n"
+        f"DOCUMENT:\n{original_text[:10000]}"
+    )
+
+
+def _worker_rewrite_google_doc_text(bot_name: str, display_name: str, original_text: str, instructions: str = "") -> str:
+    from groq import Groq
+
+    keys = _load_groq_keys()
+    if not keys:
+        raise RuntimeError("No Groq API key is configured on the worker.")
+    client = Groq(api_key=keys[0])
+    response = client.chat.completions.create(
+        model=WORKER_GROQ_MODEL,
+        max_tokens=1800,
+        messages=[
+            {
+                "role": "user",
+                "content": _worker_docfix_prompt(bot_name, display_name, original_text, instructions),
+            }
+        ],
+    )
+    content = ""
+    if response and getattr(response, "choices", None):
+        content = (response.choices[0].message.content or "").strip()
+    return content or original_text
 
 
 def _load_worker_env():
@@ -302,11 +371,47 @@ class RenderRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urlparse(self.path)
-        if parsed.path != "/jobs":
-            self._send_json({"ok": False, "error": "Not found"}, status=404)
-            return
         if not _authorized(self.headers):
             self._send_json({"ok": False, "error": "Unauthorized"}, status=401)
+            return
+        if parsed.path == "/docfix":
+            try:
+                body = self._read_json()
+            except Exception:
+                self._send_json({"ok": False, "error": "Expected JSON body."}, status=400)
+                return
+            doc_url = (body.get("doc_url") or body.get("doc_link") or "").strip()
+            bot_name = (body.get("bot_name") or "scaramouche").strip().lower()
+            instructions = (body.get("instructions") or "").strip()
+            display_name = (body.get("display_name") or "you").strip() or "you"
+            if bot_name not in {"scaramouche", "wanderer"}:
+                self._send_json({"ok": False, "error": "bot_name must be 'scaramouche' or 'wanderer'."}, status=400)
+                return
+            if not doc_url:
+                self._send_json({"ok": False, "error": "doc_url is required."}, status=400)
+                return
+            try:
+                doc = fetch_google_doc(doc_url)
+                if not (doc.get("text") or "").strip():
+                    self._send_json({"ok": False, "error": "The Google Doc is empty or unreadable."}, status=400)
+                    return
+                revised = _worker_rewrite_google_doc_text(bot_name, display_name, doc["text"], instructions)
+                result = overwrite_google_doc(doc_url, revised)
+            except Exception as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=500)
+                return
+            self._send_json(
+                {
+                    "ok": True,
+                    "doc_id": result["doc_id"],
+                    "title": result["title"],
+                    "chars_written": result["chars_written"],
+                },
+                status=200,
+            )
+            return
+        if parsed.path != "/jobs":
+            self._send_json({"ok": False, "error": "Not found"}, status=404)
             return
         if JOB_QUEUE.qsize() >= VIDEO_RENDER_MAX_QUEUE:
             self._send_json({"ok": False, "error": "Render queue is full. Try again later."}, status=429)

@@ -1,0 +1,17 @@
+[Unit]
+Description=Scaramouche Discord Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=opc
+WorkingDirectory=/opt/scara-wanderer-bots
+Environment=APP_DIR=/opt/scara-wanderer-bots
+EnvironmentFile=/opt/scara-wanderer-bots/deploy/oracle-free/scaramouche.env
+ExecStart=/opt/scara-wanderer-bots/deploy/oracle-free/launch_scaramouche.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

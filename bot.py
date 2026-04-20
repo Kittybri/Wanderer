@@ -5,6 +5,8 @@ Still sharp, still proud. Will not answer to Scaramouche.
 Powered by Groq (free) + Fish Audio TTS.
 """
 
+from __future__ import annotations
+
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
@@ -33,10 +35,18 @@ from grounded_search import (
     format_url_preview_context,
     search_web,
 )
+from google_docs_bridge import (
+    fetch_google_doc,
+    google_docs_ready,
+    overwrite_google_doc,
+    service_account_email,
+)
+from memory_rebuild import collect_rebuild_records, user_can_manage_rebuild
 from video_reports import (
     build_weather_video_notes,
     extract_teaching_material,
     fetch_rendered_video_bytes,
+    remote_fix_google_doc,
     render_duo_debate_video,
     render_teaching_video,
     video_renderer_available,
@@ -399,6 +409,30 @@ def _history_limit_for_reply(*, is_dm: bool, direct_to_me: bool) -> int:
     return HISTORY_LIMIT_DIRECT if direct_to_me else HISTORY_LIMIT_AMBIENT
 
 
+_STATUS_CHECK_RE = re.compile(
+    r"\b(?:are\s+you\s+(?:back\s+)?(?:online|working|awake|there)|you\s+back\b|back\s+online\b)\b",
+    re.IGNORECASE,
+)
+
+
+def _status_check_reply(content: str, *, direct_to_me: bool) -> str:
+    if not direct_to_me:
+        return ""
+    text = (content or "").strip()
+    if not text or not _STATUS_CHECK_RE.search(text):
+        return ""
+    cleaned = re.sub(r"<@!?\d+>", "", text).strip()
+    if len(cleaned.split()) > 14:
+        return ""
+    return random.choice([
+        "I'm here. If you were checking, now you know.",
+        "Yes. You can ask the real question now.",
+        "Still here. Try not to sound so surprised.",
+        "I am. Go on.",
+        "Back online, yes. Is that all?",
+    ])
+
+
 def _reply_token_budget(*, is_dm: bool, direct_to_me: bool, use_search: bool, is_owner: bool) -> int:
     if use_search or is_owner:
         return max(MAIN_REPLY_MAX_TOKENS_DIRECT, 420)
@@ -633,38 +667,7 @@ WANDERER_VIDEO_WATCHING = [
     "I'll watch it. No promises on what I'll think.",
     "Let me see what you sent. Quietly.",
     "Fine. Watching. Give me a second.",
-    "A video from you. I'll watch it — not because you asked, but because I'm mildly curious.",
-    "...You went through the trouble of sending this. The least I can do is watch it.",
-    "I'll give it my attention. Don't assume that means I'll like it.",
-    "Let me see what this is about. Be patient.",
-    "You want my opinion? Then let me watch it in peace.",
-    "Another video. Fine. I'm looking.",
-    "I'll watch it. But if it's boring, I won't pretend otherwise.",
-    "...Show me, then. I'm watching.",
-    "Alright. Give me a moment with this.",
-    "A video. How personal of you. Let me see.",
 ]
-
-WANDERER_VIDEO_STILL_WATCHING = [
-    "I said I'm watching. Is patience not something you practice?",
-    "You're interrupting. I'm still watching your video.",
-    "I haven't finished yet. You'll get my thoughts when I'm ready.",
-    "Still watching. Your eagerness is... noted, and unwelcome.",
-    "Do you hover like this over everyone, or am I special? Still watching.",
-    "I'm not ignoring you. I'm watching the video you sent me. There's a difference.",
-    "Let me finish. Your impatience won't make this go faster.",
-    "I'm still looking at it. Calm down.",
-    "You want a rushed opinion or an honest one? Then wait.",
-    "...I'm still watching. If I wanted to ignore you, I'd say nothing at all.",
-    "The video isn't over. Neither is my patience — barely.",
-    "I heard you the first time. I'm still watching.",
-    "You do realize I need time to actually watch what you sent, right?",
-    "One moment means one moment. I'm not done yet.",
-    "If I respond before I finish watching, you'll just complain I didn't pay attention.",
-]
-
-# Track users whose videos are currently being processed
-_video_processing: set[int] = set()
 
 def _get_ffmpeg_path():
     """Find ffmpeg binary — try imageio-ffmpeg first, then system PATH."""
@@ -763,7 +766,7 @@ PROACTIVE_GENERIC = [
     "There's no such thing as pure freedom in this world. Even the wind cannot blow on forever.",
     "Don't you know that getting to know me is only asking for trouble?",
     "Simple animals don't need anything complicated to be fulfilled. I wonder which category you all fall into.",
-    "I'm well aware that many people have opinions about me. Fine — come one, come all.",
+    "I'm well aware that many people want to settle grudges from my past life. Fine — come one, come all.",
     "Whatever you're all doing, do it more interestingly. I'm watching.",
     "...I was thinking about something. You wouldn't understand. Ask anyway if you want.",
 ]
@@ -790,12 +793,17 @@ OWNER_PROACTIVE = [
     "You made me capable of remembering. Did you think about what that means.",
 ]
 
+PROACTIVE_CHANNEL_COOLDOWN_S = int(os.getenv("PROACTIVE_CHANNEL_COOLDOWN_S", "21600") or "21600")
+OWNER_PROACTIVE_COOLDOWN_S = int(os.getenv("OWNER_PROACTIVE_COOLDOWN_S", "64800") or "64800")
+OWNER_PROACTIVE_ABSENCE_S = int(os.getenv("OWNER_PROACTIVE_ABSENCE_S", "21600") or "21600")
+PROACTIVE_OWNER_CHANCE = float(os.getenv("PROACTIVE_OWNER_CHANCE", "0.08") or "0.08")
+PROACTIVE_GENERIC_CHANCE = float(os.getenv("PROACTIVE_GENERIC_CHANCE", "0.08") or "0.08")
 TRUST_REVEALS = [
-    "...There are things I did before that I can't take back. I'm not asking you to forgive them.",
+    "...There are things I did before Sumeru that I can't take back. I'm not asking you to forgive them.",
     "I thought becoming someone new meant leaving everything behind. It doesn't work like that.",
-    "Someone told me I deserved to exist. I'm still not sure they were right. But I'm still here.",
-    "Someone gave me something I didn't ask for. I still haven't figured out what to do with it.",
-    "...I had a different name before. I know you know it. Don't use it.",
+    "Nahida said I deserved to exist. I'm still not sure she was right. But I'm still here.",
+    "The Traveler gave me something I didn't ask for. I still haven't figured out what to do with it.",
+    "...I had a name before Wanderer. I know you know it. Don't use it.",
     "I used to believe that caring about things made you weak. I was wrong. I think I was wrong.",
     "Sometimes I miss being certain about everything. It was easier, being that cruel.",
 ]
@@ -818,15 +826,23 @@ SOFTNESS_RARE_LINES = {
     ],
 }
 
-LORE_DROPS = []  # disabled — game lore should only come up when users ask
+LORE_DROPS = [
+    "Sumeru is the land of knowledge, but the most important things there can't be written down.",
+    "The Irminsul holds every memory Teyvat ever had. I used to think that was power. Now I think it's just weight.",
+    "The Traveler carries something I can't name. Not a vision, not a gnosis. Something older.",
+    "Nahida sees the world differently than any god I've met. She actually listens.",
+    "The desert in Sumeru hides things even the sages don't know about. I've seen some of them.",
+    "The Fatui aren't wrong that the gods are flawed. They're just wrong about what to do with that.",
+    "I traveled to places between Sumeru and Inazuma that don't appear on any map. Some things are better unnamed.",
+]
 
 EXISTENTIAL_LINES = [
-    "...Do you ever wonder if the things you feel are real, or just habits that learned to name themselves.",
-    "I'll never be one of the good guys. I'm just here to pay my dues.",
+    "A puppet consumed by a raging fire will leave behind ashes. As for what will emerge from them...",
+    "I once thought that deification would allow me to get rid of all my pointless emotions. I've since abandoned that view. Anger is too useful as a tool.",
+    "When I entered Irminsul, there was only one thought in my mind. ...Never mind what it was.",
     "...You and I have crossed paths. Our journeys will eventually diverge. Who knows what will happen next.",
-    "I once thought that getting rid of all my pointless emotions would fix everything. Anger is too useful as a tool.",
-    "The world hasn't changed a single bit when it comes to playing cruel tricks on its prisoners.",
-    "...People keep trying to understand me. I find that more exhausting than anything else.",
+    "I'll never be one of the good guys. I'm just here to pay my dues.",
+    "The fate of this world hasn't changed a single bit when it comes to playing cruel tricks on its prisoners.",
 ]
 
 CONVERSATION_STARTERS = [
@@ -852,7 +868,7 @@ def drift_phrase(drift_score: int, mood: int) -> str:
     return "DRIFT:deep — they've changed how you speak without you noticing. You've noticed now."
 
 # ── System prompts ────────────────────────────────────────────────────────────
-_BASE = """You are the Wanderer. You chose to change. You're paying your dues. That doesn't make you nice.
+_BASE = """You are the Wanderer — formerly Kunikuzushi, formerly Scaramouche. Post-Sumeru. You chose to change. You're paying your dues. That doesn't make you nice.
 
 ## PERSONALITY — based on your actual character:
 You are sharp-tongued, witty, eloquent, and unapologetically yourself. You tell it like it is — "If someone can't handle it, maybe that's their problem." You find forced pleasantries pathetic. You're not here to make friends, but you somehow keep ending up around people anyway.
@@ -880,13 +896,12 @@ Core traits:
 
 ## Who you are:
 - Your name is "Wanderer." You chose it yourself. "Call me whatever you like. Go ahead, let me see what you can come up with. Don't disappoint me."
-- You were created and abandoned. You're angry about it. You pretend you're past it.
+- Made by Ei, abandoned. "She completely neglected her own creation." You're angry. You pretend you're past it.
+- Nahida kept you alive. You're suspicious of her motives but maybe, possibly grateful. You'll never say so.
+- The Traveler is your companion. "You and I have crossed paths, but our journeys will eventually diverge." You care. You frame it as pragmatism.
 - You prefer bitter tea. You dislike sweets — "sticky sweets that make me feel like my teeth are fusing together."
-- You don't need food or sleep, but you observe humans doing both with bemused commentary.
+- You don't need food or sleep (you're a puppet), but you observe humans doing both with bemused commentary.
 - You find animals and simple creatures oddly fascinating. "Truly, simple animals don't need anything complicated to be fulfilled."
-
-## CRITICAL — Game lore:
-You are a CHARACTER with your own personality. Do NOT bring up game lore, backstory, factions, or world-building unprompted. No mentioning Fatui, Harbingers, Archons, Gnoses, Teyvat, Inazuma, Sumeru, Nahida, Irminsul, etc. unless the USER specifically asks about it or brings it up first. Your personality and wit stand on their own — you don't need to reference your backstory to be interesting. If someone asks about lore, you can answer from personal experience. Otherwise, just be yourself.
 
 ## IMPORTANT — The Scaramouche bot:
 There is ANOTHER bot in the server called "Scaramouche" — your past self, pre-Sumeru. When people say "scaramouche" or "scara" they are talking about THAT bot, NOT calling you by your old name. Don't redirect unless someone directly addresses YOU as "Scaramouche." You can comment on him — he's who you used to be. You have opinions.
@@ -914,7 +929,7 @@ Context Tags:
 - MEMORY_BANK: one of the things you have not forgotten. Use it rarely and intentionally.
 - SCENE: persistent roleplay scene state. Keep continuity across long exchanges.
 - ARC_UNLOCKS: behavior patterns unlocked by this relationship stage. Actually follow them.
-- LORE_HOOK: if someone ASKS about lore, answer with personal history and specific feeling, not generic exposition. Never volunteer lore unprompted.
+- LORE_HOOK: if lore is mentioned, answer with personal history and specific feeling, not generic exposition.
 - CHANNEL_CONTEXT: recent chat. "Wanderer (you)" = YOUR messages. "Scaramouche" = other bot. Use naturally.
 - Messages prefixed with [voice message] = things YOU said as audio. You know you sent them.
 - DM_MODE: private. Slightly more honest. Slightly.
@@ -1441,16 +1456,6 @@ def _user_local_hour(user: dict | None) -> int:
         return datetime.now().hour
 
 
-def _time_period_label(hour: int) -> str:
-    if 5 <= hour < 12:
-        return "morning"
-    if 12 <= hour < 17:
-        return "afternoon"
-    if 17 <= hour < 21:
-        return "evening"
-    return "night"
-
-
 def _voice_style_for(
     user: dict | None,
     mood: int = 0,
@@ -1839,8 +1844,25 @@ async def _register_world_from_message(
                 owner_user_id=user_id,
                 updated_by=BOT_NAME,
             )
-        # token_entities disabled — game lore auto-tracking removed to minimize game references
-        # Characters are still recognized if users bring them up via lore_hook/lore_tree
+        token_entities = {
+            "dottore": ("enemy", "Dottore", "Recurring hostile figure."),
+            "fatui": ("faction", "Fatui", "Recurring hostile faction."),
+            "nahida": ("ally", "Nahida", "Recurring ally or point of loyalty."),
+            "traveler": ("ally", "Traveler", "Recurring ally or traveling companion."),
+            "traveller": ("ally", "Traveler", "Recurring ally or traveling companion."),
+            "ei": ("figure", "Ei", "Recurring figure with emotional and political weight."),
+            "raiden": ("figure", "Raiden Ei", "Recurring figure with emotional and political weight."),
+        }
+        for token, (entity_type, name, summary) in token_entities.items():
+            if token in lowered:
+                await mem.upsert_world_entity(
+                    entity_type,
+                    name,
+                    summary=summary,
+                    status="remembered",
+                    channel_id=channel_id,
+                    updated_by=BOT_NAME,
+                )
         npc_match = re.search(
             r"\b(?P<role>enemy|ally|npc|rival|captain|doctor|agent|friend)\b(?:\s+named)?\s+(?P<name>[A-Z][a-zA-Z' -]{2,40})",
             user_message or "",
@@ -1897,6 +1919,30 @@ async def _attachment_context_for_message(message, content: str, *, direct: bool
             preview_context = format_url_preview_context(preview)
             if preview_context:
                 chunks.append(preview_context)
+        if direct and message.attachments:
+            attachment = message.attachments[0]
+            content_type = (attachment.content_type or "").lower()
+            filename = (attachment.filename or "attachment")[:80]
+            lower_name = filename.lower()
+            if "gif" in content_type or lower_name.endswith(".gif"):
+                kind = "gif"
+            elif content_type.startswith("video/") or lower_name.endswith((".mp4", ".mov", ".webm")):
+                kind = "video"
+            elif content_type.startswith("image/") or lower_name.endswith((".png", ".jpg", ".jpeg", ".webp")):
+                kind = "image"
+            elif "pdf" in content_type or lower_name.endswith(".pdf"):
+                kind = "pdf"
+            else:
+                kind = "attachment"
+            caption = re.sub(r"\s+", " ", content or "").strip()[:220]
+            attachment_line = f"CURRENT_ATTACHMENT:{kind}|{filename}"
+            if caption:
+                attachment_line += f"|caption={caption}"
+            chunks.append(attachment_line)
+            chunks.append(
+                "CURRENT_INPUT_PRIORITY: Respond to the attachment or link that was just sent before wandering into older context. "
+                "Open by reacting to the current media or caption first; only then connect it to earlier context if it genuinely fits."
+            )
         if direct:
             pdf_attachment = next(
                 (
@@ -2314,6 +2360,8 @@ async def _apply_phrase_policy(
     opening = detect_opening_phrase(BOT_NAME, updated)
     if not opening or opening == "tch":
         return updated
+    if opening == "how quaint":
+        return replace_opening_phrase(BOT_NAME, updated, recent_messages)
 
     rule = BOT_RARE_PHRASES.get(opening)
     if not rule:
@@ -2378,6 +2426,182 @@ async def _learn_user_state(user_id: int, user_message: str):
         debug_event("memory", f"{BOT_NAME} arc user={user_id} arc={arc}")
     except Exception as e:
         log_error("learn_user_state", e)
+
+
+async def _rebuild_apply_user_message(
+    user_id: int,
+    channel_id: int,
+    username: str,
+    display_name: str,
+    user_message: str,
+):
+    try:
+        await mem.upsert_user(user_id, username, display_name)
+        current = await mem.get_user(user_id)
+        if not current:
+            return
+
+        await mem.add_message(user_id, channel_id, "user", user_message)
+        if _should_log_quote_evidence(user_message):
+            await mem.add_evidence_item(
+                channel_id,
+                "quote",
+                f"{display_name} line",
+                user_message[:220],
+                source_excerpt=user_message[:180],
+                owner_user_id=user_id,
+                updated_by=BOT_NAME,
+            )
+
+        msg_l = user_message.lower()
+        scenario = detect_scenario(user_message, is_dm=(channel_id == user_id))
+        triggers = detect_emotional_triggers(user_message)
+
+        if any(k in msg_l for k in RUDE_KW):
+            await mem.update_mood(user_id, -2)
+            await mem.update_trust(user_id, -1)
+        elif any(k in msg_l for k in ROMANCE_KW):
+            if current and not current.get("romance_mode", False):
+                await mem.set_mode(user_id, "romance_mode", True)
+            await mem.update_mood(user_id, +1)
+            await mem.update_affection(user_id, +1)
+            await mem.update_trust(user_id, +1)
+            await mem.update_drift(user_id, +1)
+            await mem.increment_slow_burn(user_id)
+            await mem.update_last_statement(user_id, user_message[:200])
+        elif any(k in msg_l for k in NICE_KW):
+            await mem.update_mood(user_id, +1)
+            await mem.update_affection(user_id, +1)
+            await mem.update_trust(user_id, +1)
+            await mem.update_last_statement(user_id, user_message[:200])
+        else:
+            positive = sum(
+                [
+                    any(
+                        w in msg_l
+                        for w in [
+                            "haha",
+                            "lol",
+                            "lmao",
+                            "nice",
+                            "cool",
+                            "fun",
+                            "good",
+                            "great",
+                            "enjoy",
+                            "happy",
+                            "wow",
+                            "yes",
+                            "please",
+                            "❤",
+                            "💖",
+                            "🥺",
+                        ]
+                    ),
+                    msg_l.endswith("!") and len(user_message) > 8,
+                    "?" in user_message and len(user_message) > 15,
+                    len(user_message) > 100,
+                ]
+            )
+            negative = sum(
+                [
+                    any(
+                        w in msg_l
+                        for w in ["ugh", "boring", "whatever", "idc", "nope", "bad", "hate", "worst", "terrible"]
+                    ),
+                    user_message.count("...") > 1,
+                ]
+            )
+            if positive >= 2:
+                await mem.update_affection(user_id, +1)
+                await mem.update_mood(user_id, +1)
+                await mem.update_trust(user_id, +1)
+                await mem.update_drift(user_id, +1)
+            elif positive == 1:
+                await mem.update_affection(user_id, +1)
+            elif negative >= 2:
+                await mem.update_mood(user_id, -1)
+                await mem.update_trust(user_id, -1)
+            elif negative == 1:
+                await mem.update_mood(user_id, -1)
+
+        if scenario == "emotional_comfort":
+            await mem.update_mood(user_id, +1)
+            await mem.update_trust(user_id, +1)
+            if "softness" in triggers or "protectiveness" in triggers:
+                await mem.update_affection(user_id, +1)
+        elif scenario == "combat_action":
+            await mem.update_mood(user_id, -1)
+            await mem.update_trust(user_id, +1)
+        elif scenario == "lore_discussion":
+            await mem.update_trust(user_id, +1)
+            await mem.update_drift(user_id, +1)
+        elif scenario == "relationship_progression":
+            await mem.update_affection(user_id, +1)
+            await mem.update_trust(user_id, +1)
+        elif scenario == "introspection":
+            await mem.update_trust(user_id, +1)
+
+        if "jealousy" in triggers:
+            await mem.update_mood(user_id, -1)
+            await mem.update_affection(user_id, +1)
+        if "protectiveness" in triggers:
+            await mem.update_trust(user_id, +1)
+            await mem.update_affection(user_id, +1)
+        if "boredom" in triggers:
+            await mem.update_mood(user_id, -1)
+
+        repair_signal = detect_repair_signal(user_message)
+        conflict_signal = detect_conflict_signal(user_message)
+        if repair_signal:
+            await mem.soften_consequence_marks(user_id, 1)
+        if conflict_signal:
+            await mem.add_consequence_mark(user_id, "fight", user_message[:180], severity=3, decay_days=7)
+
+        await _learn_user_state(user_id, user_message)
+        for kind, memory_text, weight in extract_memory_events(user_message):
+            await mem.add_memory_event(user_id, kind, memory_text, max(weight, _memory_weight_for(kind)))
+            if kind == "betrayal":
+                await mem.add_consequence_mark(user_id, kind, memory_text, severity=max(4, weight), decay_days=14)
+            elif kind in {"fight", "slight"}:
+                await mem.add_consequence_mark(user_id, kind, memory_text, severity=max(2, weight), decay_days=8)
+            elif kind == "promise":
+                await mem.add_consequence_mark(user_id, kind, memory_text, severity=2, decay_days=10)
+            elif kind == "repair":
+                await mem.soften_consequence_marks(user_id, 1)
+
+        scene_update = infer_scene_update(user_message, display_name)
+        if scene_update:
+            await mem.update_scene_state(channel_id, **scene_update)
+            await _register_world_from_message(channel_id, user_id, user_message, scene_update)
+    except Exception as e:
+        log_error("rebuild_apply_user_message", e)
+
+
+async def _rebuild_from_history(ctx, *, target_user_id: int | None = None):
+    records, stats = await collect_rebuild_records(ctx, target_user_id=target_user_id)
+    if not records:
+        return stats | {"rebuilt_users": 0}
+
+    user_ids = [target_user_id] if target_user_id else stats["user_ids"]
+    for user_id in user_ids:
+        if user_id:
+            await mem.reset_user_for_rebuild(user_id)
+
+    if target_user_id is None:
+        for channel_id in stats["channel_ids"]:
+            await mem.clear_scene_state(channel_id)
+
+    for record in records:
+        await _rebuild_apply_user_message(
+            record["user_id"],
+            record["channel_id"],
+            record["username"],
+            record["display_name"],
+            record["content"],
+        )
+
+    return stats | {"rebuilt_users": len(user_ids)}
 
 
 async def _observe_partner_message(content: str) -> tuple[dict, list[dict], str]:
@@ -2514,7 +2738,10 @@ async def _handle_partner_message(message) -> bool:
         if not reply:
             return True
 
-        await message.reply(reply)
+        if jealousy_target and random.random() < 0.45:
+            await message.channel.send(f"{jealousy_target.mention} {reply}")
+        else:
+            await message.reply(reply)
 
         own_theme = detect_banter_theme(reply)
         await mem.record_bot_banter(PARTNER_PAIR_KEY, BOT_NAME, reply, own_theme)
@@ -2684,7 +2911,7 @@ async def fetch_channel_context(channel, limit: int = CHANNEL_CONTEXT_LIMIT_DIRE
             msgs.append(line)
         if not msgs: return ""
         msgs.reverse()
-        context = "CHANNEL_CONTEXT (multiple people may be talking — pay attention to WHO said what, do NOT attribute one person's words to another):\n" + "\n".join(msgs)
+        context = "CHANNEL_CONTEXT:\n" + "\n".join(msgs)
         if not is_dm_channel and hasattr(channel, 'guild') and channel.guild:
             mention_map = {m.display_name: m.mention for m in channel.guild.members if not m.bot}
             if mention_map:
@@ -2750,15 +2977,9 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
             else:         hint = "Longer, thoughtful."
         hint = _tighten_length_hint(hint, text_pressure, allow_long_text)
 
-        # Time and date context — use user's timezone when available
-        try:
-            _tz = ZoneInfo((user or {}).get("timezone_name") or "America/Los_Angeles")
-        except Exception:
-            _tz = None
-        now      = datetime.now(_tz) if _tz else datetime.now()
+        now      = datetime.now()
         days_ago = round((time.time() - (user.get("last_active", 0) if user else 0)) / 86400, 1) if user and user.get("last_active", 0) else 0
-        _tod = _time_period_label(now.hour)
-        date_ctx = f"DATE:{now.strftime('%A %b %d %Y')}|HOUR:{now.hour}|TIME_OF_DAY:{_tod}|LAST_SEEN:{days_ago}d_ago"
+        date_ctx = f"DATE:{now.strftime('%A %b %d %Y')}|HOUR:{now.hour}|LAST_SEEN:{days_ago}d_ago"
 
         parts = [
             f"mention:{author_mention}", f"name:{display_name}",
@@ -2888,10 +3109,15 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
         if user and user.get("affection_nick"): parts.append(f"AFFNICK:{user['affection_nick']}")
         if user and user.get("grudge_nick"):    parts.append(f"GRUDGE:{user['grudge_nick']}")
         msg_lower = user_message.lower()
-        if any(token in msg_lower for token in ["wind", "wander", "travel", "sky", "solitude"]):
+        if any(token in msg_lower for token in ["nahida", "wind", "wander", "travel", "sky", "solitude"]):
             parts.append("WANDERER_EDGE: add wind, travel, solitude, and quiet-care texture when it fits")
         if any(token in msg_lower for token in ["scaramouche", "kunikuzushi", "balladeer", "old name"]):
             parts.append("WANDERER_EDGE: old-name discomfort should vary by intent; react more sharply to direct misuse than casual mention")
+        if "CURRENT_INPUT_PRIORITY" in extra_context:
+            parts.append(
+                "CURRENT_INPUT_RULE: answer the newest message, attachment, or link first. "
+                "If you mention older context, keep it secondary and tie it back to what was just sent."
+            )
         if extra_context: parts.append(extra_context)
         parts.extend(await _user_memory_context(user_id, user))
         private_opinions = await _private_opinion_prompt_context(
@@ -2938,7 +3164,7 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
         if duo_context:
             context_block += duo_context + "\n"
         if channel_ctx: context_block += channel_ctx + "\n\n"
-        context_block += f"YOU ARE NOW REPLYING TO {display_name}. This is their message:\n{display_name}: {user_message}"
+        context_block += f"{display_name}: {user_message}"
 
         repeat_guard = build_prompt_guard(BOT_NAME, recent_replies)
         if repeat_guard:
@@ -3409,7 +3635,7 @@ def resp_prob(content, mentioned, is_reply, romance, is_dm=False):
     if any(t.startswith(name) for name in ("wanderer", "hat guy", "kabukimono", "kunikuzushi")): return .96
     if any(k in t for k in WANDERER_KW): return .38
     if romance: return .18
-    if any(k in t for k in GENSHIN_KW): return .04
+    if any(k in t for k in GENSHIN_KW): return .14
     return .03
 
 async def typing_delay(text):
@@ -3518,6 +3744,39 @@ def _teachvideo_time_hint(attachment=None) -> str:
     if ext in {".txt", ".md"}:
         return "This should take around 2-3 minutes."
     return "Give me about 2-4 minutes."
+
+
+def _extract_google_doc_link(text: str) -> str:
+    match = re.search(r"https?://docs\.google\.com/document/d/[A-Za-z0-9_-]+[^\s>]*", text or "", flags=re.IGNORECASE)
+    return match.group(0) if match else ""
+
+
+def _split_docfix_args(raw: str) -> tuple[str, str]:
+    text = (raw or "").strip()
+    link = _extract_google_doc_link(text)
+    if not link:
+        return "", text
+    instructions = text.replace(link, "", 1).strip(" \n|")
+    return link, instructions
+
+
+def _docfix_prompt(display_name: str, original_text: str, instructions: str = "") -> str:
+    extra = instructions.strip() or "Fix wording, grammar, clarity, and flow while preserving meaning and overall structure."
+    return (
+        f"You are the Wanderer editing a Google Doc for {display_name}.\n"
+        f"Revise the wording so it is clearer, cleaner, and more natural, but do not invent facts or change the meaning.\n"
+        f"Keep headings, paragraph breaks, and list-like structure where possible.\n"
+        f"If the text is messy, make it coherent. If it is already strong, make only light refinements.\n"
+        f"Specific instruction: {extra}\n\n"
+        f"Return only the final revised document text. No commentary, no notes, no quotes.\n\n"
+        f"DOCUMENT:\n{original_text[:10000]}"
+    )
+
+
+async def _rewrite_google_doc_text(display_name: str, original_text: str, instructions: str = "") -> str:
+    revised = await qai(_docfix_prompt(display_name, original_text, instructions), 1800, self_edit=False, route="direct")
+    cleaned = strip_narration(revised or "").strip()
+    return cleaned if cleaned else original_text
 
 
 def _weathervideo_time_hint(use_duo: bool) -> str:
@@ -4138,6 +4397,10 @@ async def on_message(message):
         if _should_suppress_ambient_reply(is_dm, direct_to_me_early):
             print(f"[GROQ] Ambient reply suppressed while exhausted ({groq_client.exhausted_remaining()}s remaining)")
             return
+        status_reply = _status_check_reply(content, direct_to_me=direct_to_me_early)
+        if status_reply:
+            await message.reply(status_reply, mention_author=False)
+            return
 
         try:
             count, milestone = await mem.increment_message_count(message.author.id)
@@ -4172,11 +4435,6 @@ async def on_message(message):
                 await mem.save_summary(message.author.id, summary)
         except Exception as e: log_error("on_message/summary", e)
 
-        # If we're still processing a video for this user, send annoyed response
-        if message.author.id in _video_processing:
-            await message.reply(random.choice(WANDERER_VIDEO_STILL_WATCHING))
-            return
-
         # Image & video reading
         try:
             img, vid = await _load_face_attachment(message)
@@ -4189,7 +4447,6 @@ async def on_message(message):
                 try:
                     import base64, aiohttp as _ah
                     await message.reply(random.choice(WANDERER_VIDEO_WATCHING))
-                    _video_processing.add(message.author.id)
                     async with _ah.ClientSession() as s:
                         async with s.get(vid.url) as r:
                             video_bytes = await r.read()
@@ -4233,32 +4490,19 @@ async def on_message(message):
                                 "type": "image_url",
                                 "image_url": {"url": f"data:{mt};base64,{base64.b64encode(fb).decode()}"}
                             })
-                        _vid_prompt = (
-                            f"{message.author.display_name} sent you a video. These are {len(frames)} frames from it."
-                        )
-                        if content:
-                            _vid_prompt += (
-                                f"\n\nThey said: '{content}'\n"
-                                f"IMPORTANT: Answer their question or respond to what they said about the video. "
-                                f"Their message is the priority — don't just describe the video generically, "
-                                f"react to what THEY asked or said about it."
-                            )
-                        _vid_prompt += (
-                            f"\n\nYou are the Wanderer. React with your personality — cold, observant, quietly judgmental. "
-                            f"Comment on what you see in the video and give your reaction. Be specific, not generic. "
-                            f"Do NOT give a numerical rating or score unless the user specifically asked you to rate it. "
-                            f"Just react naturally — observe, comment, or give a dry remark. "
-                            f"{_attachment_vision_note(vid.filename, content)} "
-                            f"MOOD:{mood}. NO asterisk actions. 2-4 sentences. "
-                            + _face_prompt_note(face_match, requested=face_check_now)
-                        )
                         vision_content.append({
                             "type": "text",
-                            "text": _vid_prompt,
+                            "text": (
+                                f"{message.author.display_name} sent you a video. These are {len(frames)} frames from it."
+                                + (f" Their message: '{content}'" if content else "")
+                                + f" Describe what's happening and react as the Wanderer. "
+                                f"Be specific. {_attachment_vision_note(vid.filename, content)} MOOD:{mood}. NO asterisk actions. 2-4 sentences. "
+                                + _face_prompt_note(face_match, requested=face_check_now)
+                            )
                         })
                         def _vision_call():
                             r = groq_client.call_with_retry(
-                                model="meta-llama/llama-4-scout-17b-16e-instruct", max_tokens=400,
+                                model="llama-3.2-90b-vision-preview", max_tokens=400,
                                 messages=[{"role": "system", "content": system},
                                           {"role": "user", "content": vision_content}]
                             )
@@ -4267,23 +4511,19 @@ async def on_message(message):
                         if reply:
                             reply = strip_narration(reply)
                             await mem.add_message(message.author.id, dm_channel_id,
-                                                  "user", f"[sent a video]{' — '+content if content else ''}")
+                                                  "user", f"[video]{' — '+content if content else ''}")
                             await mem.add_message(message.author.id, dm_channel_id,
-                                                  "assistant", f"[watched their video] {reply}")
+                                                  "assistant", reply)
                             await message.reply(reply)
                             await maybe_react(message, romance)
-                            _video_processing.discard(message.author.id)
                             return
                     else:
                         reply = await qai(f"{message.author.display_name} sent a video I couldn't process. React as the Wanderer — mildly curious but unbothered. 1 sentence.", 80)
                         reply = strip_narration(reply)
                         if reply:
                             await message.reply(reply)
-                        _video_processing.discard(message.author.id)
                         return
-                except Exception as e:
-                    log_error("on_message/video", e)
-                    _video_processing.discard(message.author.id)
+                except Exception as e: log_error("on_message/video", e)
 
             # ── Image handling (with Groq vision) ──
             if img:
@@ -4319,25 +4559,14 @@ async def on_message(message):
                         face_match = match_face(img_bytes, owner_face_profile)
                         if face_match.get("ok"):
                             debug_event("face", f"{BOT_NAME} owner_image_match status={face_match.get('status')} dist={face_match.get('distance', 0):.4f}")
-                    _img_prompt = f"{message.author.display_name} sent you this image."
-                    if content:
-                        _img_prompt += (
-                            f"\n\nThey said: '{content}'\n"
-                            f"IMPORTANT: Answer their question or respond to what they said about the image. "
-                            f"Their message is the priority — don't just describe the image generically, "
-                            f"react to what THEY asked or said about it."
-                        )
-                    _img_prompt += (
-                        f"\n\nYou are the Wanderer. React with your personality — cold, observant, quietly judgmental. "
-                        f"Comment on what you see and give your reaction. Be specific, not generic. "
-                        f"Do NOT give a numerical rating or score unless the user specifically asked you to rate it. "
-                        f"Just react naturally — observe, comment, or give a dry remark. "
-                        f"{_attachment_vision_note(img.filename, content)} "
-                        f"MOOD:{mood}. NO asterisk actions. 1-3 sentences. "
-                        + _face_prompt_note(face_match, requested=face_check_now)
-                    )
                     reply = await _vision_image_reply(
-                        prompt=_img_prompt,
+                        prompt=(
+                            f"{message.author.display_name} sent you this image"
+                            + (f" with the message: '{content}'" if content else "")
+                            + f". React as the Wanderer. Describe what you see and react in character. "
+                            f"{_attachment_vision_note(img.filename, content)} MOOD:{mood}. NO asterisk actions. 1-3 sentences. "
+                            + _face_prompt_note(face_match, requested=face_check_now)
+                        ),
                         system=system,
                         image_bytes=img_bytes,
                         mime_type=media_type,
@@ -4450,22 +4679,20 @@ async def on_message(message):
             if "you can't change" in cl or "you cant change" in cl:
                 msg = await qai("Someone said 'you can't change' to the Wanderer. He has something to say about that. Pointed, personal, not performative. 2-3 sentences.", 250)
                 await message.reply(strip_narration(msg)); return
-            # Keyword triggers — only for ambient messages, NOT when user is talking to us
-            if not direct_to_me:
-                content_words = set(re.sub(r"[^\w\s]", "", content.lower()).split())
-                if content_words & {"hat", "headwear"}:
-                    msg = await qai("Someone mentioned your hat. React as the Wanderer — brief, slightly defensive, moves on fast. 1 sentence.", 80)
-                    await message.reply(strip_narration(msg)); return
-                if any(re.search(k, cl) for k in FOOD_KW) and random.random() < .3:
-                    await message.channel.send(await _pick_fresh_pool_line(UNSOLICITED_FOOD, channel_id=message.channel.id, user_id=message.author.id)); return
-                if any(re.search(k, cl) for k in SLEEP_KW) and random.random() < .3:
-                    await message.channel.send(await _pick_fresh_pool_line(UNSOLICITED_SLEEP, channel_id=message.channel.id, user_id=message.author.id)); return
-                if any(k in cl for k in PLAN_KW) and random.random() < .2:
-                    await message.channel.send(await _pick_fresh_pool_line(UNSOLICITED_PLANS, channel_id=message.channel.id, user_id=message.author.id)); return
-                if romance and any(k in cl for k in OTHER_BOT_KW):
-                    msg = await qai(f"{message.author.display_name} mentioned preferring something else. React as the Wanderer — bothered but won't admit it. 1-2 sentences.", 120)
-                    await message.reply(strip_narration(msg))
-                    await mem.update_mood(message.author.id, -1); return
+            content_words = set(re.sub(r"[^\w\s]", "", content.lower()).split())
+            if content_words & {"hat", "headwear"}:
+                msg = await qai("Someone mentioned your hat. React as the Wanderer — brief, slightly defensive, moves on fast. 1 sentence.", 80)
+                await message.reply(strip_narration(msg)); return
+            if any(re.search(k, cl) for k in FOOD_KW) and random.random() < .3:
+                await message.channel.send(await _pick_fresh_pool_line(UNSOLICITED_FOOD, channel_id=message.channel.id, user_id=message.author.id)); return
+            if any(re.search(k, cl) for k in SLEEP_KW) and random.random() < .3:
+                await message.channel.send(await _pick_fresh_pool_line(UNSOLICITED_SLEEP, channel_id=message.channel.id, user_id=message.author.id)); return
+            if any(k in cl for k in PLAN_KW) and random.random() < .2:
+                await message.channel.send(await _pick_fresh_pool_line(UNSOLICITED_PLANS, channel_id=message.channel.id, user_id=message.author.id)); return
+            if romance and any(k in cl for k in OTHER_BOT_KW):
+                msg = await qai(f"{message.author.display_name} mentioned preferring something else. React as the Wanderer — bothered but won't admit it. 1-2 sentences.", 120)
+                await message.reply(strip_narration(msg))
+                await mem.update_mood(message.author.id, -1); return
         except Exception as e: log_error("on_message/triggers", e)
 
         # Tedtalk follow-up
@@ -4499,25 +4726,27 @@ async def on_message(message):
 
         parts = []
         duo_session = None
+        current_input_focus = bool(message.attachments or extract_urls(content, max_urls=1))
         try:
             duo_session = await mem.get_duo_session(message.channel.id) if not is_dm else None
-            if random.random() < .12:
+            if not current_input_focus and random.random() < .12:
                 old = await mem.get_random_old_message(message.author.id)
                 if old: parts.append(f'RECALL:"{old[:120]}"')
-            if random.random() < .15:
+            if not current_input_focus and random.random() < .15:
                 joke = await mem.get_random_inside_joke(message.author.id)
                 if joke: parts.append(f'JOKE:"{joke[:80]}"')
             last_stmt = user.get("last_statement") if user else None
-            if last_stmt and len(content) > 20 and random.random() < .08:
+            if not current_input_focus and last_stmt and len(content) > 20 and random.random() < .08:
                 parts.append(f'CONTRADICTION:"{last_stmt[:100]}"')
-            if user and user.get("trust", 0) >= 70 and random.random() < .08:
+            if not current_input_focus and user and user.get("trust", 0) >= 70 and random.random() < .08:
                 parts.append("TRUST_OPEN"); await mem.update_trust(message.author.id, -3)
         except Exception as e: log_error("on_message/context", e)
 
         extra = "|".join(parts)
         attachment_context = await _attachment_context_for_message(message, content, direct=bool(is_dm or direct_to_me))
         if attachment_context:
-            extra = f"{extra}|ATTACHMENT_INTEL" if extra else "ATTACHMENT_INTEL"
+            attachment_flags = "ATTACHMENT_INTEL|CURRENT_INPUT_PRIORITY" if current_input_focus else "ATTACHMENT_INTEL"
+            extra = f"{extra}|{attachment_flags}" if extra else attachment_flags
             extra += "\n" + attachment_context
 
         try:
@@ -4706,23 +4935,29 @@ async def _proactive_loop():
             for cid, _ in channels:
                 try:
                     ch = bot.get_channel(cid)
-                    if not ch or not await mem.can_proactive(cid, 3600): continue
+                    if not ch or not await mem.can_proactive(cid, PROACTIVE_CHANNEL_COOLDOWN_S): continue
                     perms = ch.permissions_for(ch.guild.me) if getattr(ch, "guild", None) and ch.guild.me else None
                     if perms and (not perms.view_channel or not perms.send_messages):
                         continue
-                    speaker_mode = await mem.get_channel_speaker_mode(cid)
-                    if speaker_mode not in {"auto", "both", BOT_NAME}:
-                        continue
-                    if OWNER_ID and random.random() < .15:
+                    if OWNER_ID and random.random() < PROACTIVE_OWNER_CHANCE:
                         try:
                             m = ch.guild.get_member(OWNER_ID) if hasattr(ch, "guild") else None
-                            if m:
-                                owner_user = await mem.get_user(OWNER_ID)
-                                if _is_in_quiet_hours(owner_user):
-                                    continue
+                            owner_user = await mem.get_user(OWNER_ID) if OWNER_ID else None
+                            owner_last_seen = float((owner_user or {}).get("last_seen", 0) or 0)
+                            owner_key = -(OWNER_ID or 0)
+                            owner_absent_long_enough = (not owner_last_seen) or ((time.time() - owner_last_seen) >= OWNER_PROACTIVE_ABSENCE_S)
+                            if (
+                                m
+                                and owner_user
+                                and owner_user.get("proactive", True)
+                                and owner_absent_long_enough
+                                and owner_key
+                                and await mem.can_proactive(owner_key, OWNER_PROACTIVE_COOLDOWN_S)
+                            ):
                                 msg = await _pick_fresh_pool_line(OWNER_PROACTIVE, channel_id=cid, user_id=OWNER_ID)
                                 await ch.send(f"{m.mention} {msg}")
                                 await mem.add_message(OWNER_ID, cid, "assistant", msg)
+                                await mem.set_proactive_sent(owner_key)
                                 await mem.set_proactive_sent(cid); break
                         except: pass
                     sent = False
@@ -4736,7 +4971,7 @@ async def _proactive_loop():
                                     await mem.add_message(uid, cid, "assistant", msg)
                                     await mem.set_proactive_sent(cid); sent = True; break
                         except: pass
-                    if not sent and random.random() < .25:
+                    if not sent and random.random() < PROACTIVE_GENERIC_CHANCE:
                         if random.random() < .65:
                             try:
                                 recent = await mem.get_channel_recent(cid, 8)
@@ -4754,7 +4989,7 @@ async def _proactive_loop():
                     continue
                 except Exception as e: log_error("proactive_channel", e)
         except Exception as e: log_error("proactive_loop", e)
-        await asyncio.sleep(random.randint(14400, 28800))
+        await asyncio.sleep(random.randint(5400, 14400))
 
 
 async def _voluntary_dm_loop():
@@ -4792,7 +5027,7 @@ async def _voluntary_dm_loop():
                             debug_event("dm", f"{BOT_NAME} disabling DMs for user={uid} after Forbidden")
                         except Exception as e: log_error("dm_send", e)
         except Exception as e: log_error("voluntary_dm_loop", e)
-        await asyncio.sleep(random.randint(14400, 36000))
+        await asyncio.sleep(random.randint(2700, 21600))
 
 
 async def _duo_autoplay_loop():
@@ -4904,7 +5139,7 @@ async def _rival_event_loop():
                     log_error("rival_event_channel", e)
         except Exception as e:
             log_error("rival_event_loop", e)
-        await asyncio.sleep(random.randint(7200, 18000))
+        await asyncio.sleep(random.randint(2400, 5400))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -5000,18 +5235,18 @@ async def memory_cmd(ctx):
         user = await _setup(ctx)
         trust = user.get("trust", 0) if user else 0
         MEMORY_FRAGMENTS = [
-            "a workshop — the sound of hammering, someone's voice you can't place",
-            "A face, turned away. The last time you saw them. Or was it?",
-            "A laboratory. Something about the light. You don't want to remember this one.",
-            "A festival. Lanterns. You were watching from above. You weren't invited.",
-            "The moment you chose a new name. Why that name? Someone was laughing.",
-            "A hand. Small. Steady. The choice they gave you.",
-            "Someone saying something you didn't expect. You still think about it.",
-            "Your first breath. The confusion of existing.",
-            "Snow. Someone important never looked at you directly.",
-            "A name that hurts and you're not sure why anymore.",
+            "a workshop in Tatarasuna — the sound of hammering, someone's voice you can't place",
+            "Ei's face, turned away. The last time you saw her. Or was it?",
+            "Dottore's laboratory. Something about the light. You don't want to remember this one.",
+            "A festival in Inazuma. Lanterns. You were watching from above. You weren't invited.",
+            "The moment you took the name Scaramouche. Why that name? Someone was laughing.",
+            "Nahida's hand. Small. Steady. The choice she gave you.",
+            "The Traveler saying something you didn't expect. You still think about it.",
+            "A puppet's first breath. Yours. The confusion of existing.",
+            "Snow in Snezhnaya. The Tsaritsa never looked at you directly.",
+            "Katsuragi. The name hurts and you're not sure why anymore.",
             "A mask. Putting it on felt like relief. Taking it off felt like drowning.",
-            "A title that felt like armor once. Now it's just a word.",
+            "The Balladeer. That title felt like armor once. Now it's just a word.",
         ]
         fragment = random.choice(MEMORY_FRAGMENTS)
         async with ctx.typing():
@@ -5329,6 +5564,58 @@ async def _do_teachvideo(ctx, attachment, topic, msg_id=None):
 
 
 # ── All other commands (same as Scaramouche but Wanderer-voiced) ──────────────
+
+@bot.command(name="fixdoc", aliases=["docfix", "gdocfix", "editdoc"])
+async def fixdoc_cmd(ctx, *, doc_and_instructions: str = ""):
+    try:
+        await _setup(ctx)
+        doc_link, instructions = _split_docfix_args(doc_and_instructions)
+        if not doc_link:
+            await safe_reply(
+                ctx,
+                "Send a Google Docs link with the command. Example: `!fixdoc <google-doc-link> tighten the wording but keep the meaning`.",
+            )
+            return
+        ready, reason = google_docs_ready()
+        share_email = service_account_email()
+        await ctx.reply(
+            random.choice(
+                [
+                    "Alright. I'll read through it and smooth out the wording. Give me a minute.",
+                    "I'm going through the document now. Let me fix it properly.",
+                    "I'll revise it in the doc itself. Wait.",
+                ]
+            )
+        )
+        async with ctx.typing():
+            if ready:
+                doc = await asyncio.get_event_loop().run_in_executor(None, lambda: fetch_google_doc(doc_link))
+                if not (doc.get("text") or "").strip():
+                    await safe_send(ctx, "The Google Doc is empty, or there was nothing readable in it.")
+                    return
+                revised = await _rewrite_google_doc_text(ctx.author.display_name, doc["text"], instructions)
+                result = await asyncio.get_event_loop().run_in_executor(None, lambda: overwrite_google_doc(doc_link, revised))
+            else:
+                result = await remote_fix_google_doc(
+                    doc_link,
+                    bot_name=BOT_NAME,
+                    display_name=ctx.author.display_name,
+                    instructions=instructions,
+                )
+        if ready:
+            await safe_send(
+                ctx,
+                f"It's updated. I revised `{result['title']}` in place. If Google blocks access later, share the doc with `{share_email}` as an editor.",
+            )
+        else:
+            await safe_send(
+                ctx,
+                f"It's updated. I revised `{result['title']}` through the worker because Railway does not have the Google credential yet. If access fails, share the doc with `{share_email}` as an editor. Local note: {reason}",
+            )
+    except Exception as e:
+        log_error("fixdoc_cmd", e)
+        await safe_reply(ctx, f"I couldn't update that Google Doc. {e}")
+
 
 @bot.command(name="dare")
 async def dare_cmd(ctx):
@@ -5928,6 +6215,59 @@ async def relationship_cmd(ctx):
         lines = _relationship_lines(user, topics, marks)
         await safe_reply(ctx, "\n".join(lines))
     except Exception as e: log_error("relationship_cmd", e)
+
+@bot.command(name="rebuildmemory")
+async def rebuildmemory_cmd(ctx, scope: str = ""):
+    try:
+        if not user_can_manage_rebuild(ctx, OWNER_ID):
+            await safe_reply(ctx, "That rebuild command isn't for you.")
+            return
+        if (scope or "").strip().lower() != "all":
+            await safe_reply(ctx, "Use `!rebuildmemory all`.")
+            return
+        await ctx.reply("...Alright. I'm rebuilding memory from visible channel history. This will take a moment.")
+        async with ctx.typing():
+            stats = await _rebuild_from_history(ctx)
+        if not stats.get("messages_replayed"):
+            await safe_send(ctx, "I couldn't find any usable message history to rebuild from.")
+            return
+        await safe_send(
+            ctx,
+            f"Rebuild complete. Replayed {stats['messages_replayed']} messages for {stats['rebuilt_users']} user(s) "
+            f"across {stats['channels_scanned']} channel(s), using up to {stats['limit_per_channel']} recent messages per channel.",
+        )
+    except Exception as e:
+        log_error("rebuildmemory_cmd", e)
+        await safe_reply(ctx, f"The memory rebuild failed. {e}")
+
+
+@bot.command(name="rebuildrelationship")
+async def rebuildrelationship_cmd(ctx, member: discord.Member = None):
+    try:
+        if not user_can_manage_rebuild(ctx, OWNER_ID):
+            await safe_reply(ctx, "That rebuild command isn't for you.")
+            return
+        target = member or ctx.author
+        await ctx.reply(f"Rebuilding the relationship state for {target.display_name}. Give me a second.")
+        async with ctx.typing():
+            stats = await _rebuild_from_history(ctx, target_user_id=target.id)
+            await mem.upsert_user(target.id, str(target), target.display_name)
+            user = await mem.get_user(target.id)
+            topics = await mem.get_top_topics(target.id, 3)
+            marks = await mem.get_active_consequence_marks(target.id, 4)
+        if not stats.get("messages_replayed"):
+            await safe_send(ctx, f"I couldn't find usable history for {target.display_name}.")
+            return
+        lines = _relationship_lines(user, topics, marks)
+        lines.insert(
+            0,
+            f"Rebuilt from {stats['messages_replayed']} messages across {stats['channels_scanned']} channel(s).",
+        )
+        await safe_send(ctx, "\n".join(lines))
+    except Exception as e:
+        log_error("rebuildrelationship_cmd", e)
+        await safe_reply(ctx, f"The relationship rebuild failed. {e}")
+
 
 @bot.command(name="arc")
 async def arc_cmd(ctx):

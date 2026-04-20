@@ -1,0 +1,7 @@
+.env
+deploy/oracle-free/*.env
+*.db
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store

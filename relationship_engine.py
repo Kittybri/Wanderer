@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import re
 import time
 
@@ -256,6 +258,13 @@ def detect_repair_signal(text: str) -> bool:
             "forgive",
             "didn't mean",
             "did not mean",
+            "make it up",
+            "how can i make it up",
+            "what can i do",
+            "how do i fix this",
+            "how do i fix it",
+            "tell me how to fix it",
+            "tell me what to say",
             "can we talk",
             "miss you",
             "i appreciate you",

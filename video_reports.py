@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import json
 import os
@@ -364,6 +366,45 @@ async def render_duo_debate_video(notes_text: str, *, title: str = "") -> dict:
             }
         )
     return await _run_render_script(DUO_VIDEO_SCRIPT, notes_text, title=title)
+
+
+async def remote_fix_google_doc(doc_url: str, *, bot_name: str, display_name: str, instructions: str = "") -> dict:
+    if not _remote_requested():
+        raise RuntimeError("Remote worker mode is not enabled for document editing.")
+    base_urls = _remote_base_urls()
+    if not base_urls:
+        raise RuntimeError("VIDEO_RENDER_BASE_URL or VIDEO_RENDER_BASE_URLS is not set.")
+
+    aiohttp = _aiohttp()
+    errors: list[str] = []
+    payload = {
+        "doc_url": doc_url,
+        "bot_name": (bot_name or "").strip().lower(),
+        "display_name": display_name,
+        "instructions": instructions or "",
+    }
+    timeout = aiohttp.ClientTimeout(total=VIDEO_RENDER_REMOTE_TIMEOUT_S)
+    for index, base_url in enumerate(base_urls, start=1):
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(
+                    f"{base_url}/docfix",
+                    json=payload,
+                    headers=_remote_headers(),
+                ) as resp:
+                    body_text = await resp.text()
+                    if resp.status != 200:
+                        raise RuntimeError(f"Remote doc worker rejected the request ({resp.status}): {body_text[:400]}")
+                    body = json.loads(body_text or "{}")
+                    if not body.get("ok"):
+                        raise RuntimeError(body.get("error") or "Remote doc worker failed the request.")
+                    body["_remote_base_url"] = base_url
+                    return body
+        except Exception as exc:
+            errors.append(f"[{index}] {base_url} -> {exc}")
+            if not _can_failover_remote(exc) or index == len(base_urls):
+                break
+    raise RuntimeError("Remote doc editing failed across all configured workers.\n" + "\n".join(errors[:4]))
 
 
 async def fetch_rendered_video_bytes(summary: dict) -> tuple[bytes, str]:
