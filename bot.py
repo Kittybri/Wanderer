@@ -7552,8 +7552,10 @@ async def reban_cmd(ctx):
     """Owner-only: silently block all DM-only strangers (not in any shared server). No farewell sent."""
     try:
         if not OWNER_ID or ctx.author.id != OWNER_ID: await safe_reply(ctx, "That's not for you."); return
+        await ctx.send("Scanning for strangers to block...")
         all_users = await mem.get_top_users(500)
-        if not all_users: await safe_reply(ctx, "No users in my records."); return
+        if not all_users: await ctx.send("No users in my records."); return
+        await ctx.send(f"Found {len(all_users)} user(s) in records. Checking servers...")
         safe_user_ids = {OWNER_ID, bot.user.id}
         if PARTNER_BOT_ID: safe_user_ids.add(PARTNER_BOT_ID)
         owner_guild_ids = set()
@@ -7565,19 +7567,23 @@ async def reban_cmd(ctx):
         for g in bot.guilds:
             if g.id in owner_guild_ids:
                 for m in g.members: safe_user_ids.add(m.id)
+        await ctx.send(f"Safe users (in your servers): {len(safe_user_ids)}. Already blocked: {len(_dm_blocked_users)}. Blocking strangers...")
         rebanned_count, rebanned_names = 0, []
         for u in all_users:
             uid = u["user_id"]
             if uid in safe_user_ids or uid in _dm_blocked_users: continue
             _dm_blocked_users.add(uid); await mem.block_user(uid)
-            rebanned_names.append(u["display_name"]); rebanned_count += 1
+            rebanned_names.append(u.get("display_name", str(uid))); rebanned_count += 1
         if rebanned_count == 0:
-            await safe_reply(ctx, "No strangers to block. Everyone shares a server with you.")
+            await ctx.send("No strangers to block. Everyone either shares a server with you or is already blocked.")
         else:
             names_preview = ", ".join(rebanned_names[:20])
             if len(rebanned_names) > 20: names_preview += f" ... and {len(rebanned_names) - 20} more"
-            await safe_reply(ctx, f"Silently blocked **{rebanned_count}** stranger(s): {names_preview}\n\nNo farewell messages sent.")
-    except Exception as e: log_error("reban_cmd", e)
+            await ctx.send(f"Silently blocked **{rebanned_count}** stranger(s): {names_preview}\n\nNo farewell messages sent.")
+    except Exception as e:
+        log_error("reban_cmd", e)
+        try: await ctx.send(f"Error in reban: {e}")
+        except: pass
 
 @bot.command(name="blockdm")
 async def blockdm_cmd(ctx, *, target: str = None):
