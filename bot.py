@@ -806,10 +806,10 @@ OWNER_PROACTIVE_ABSENCE_S = int(os.getenv("OWNER_PROACTIVE_ABSENCE_S", "21600") 
 PROACTIVE_OWNER_CHANCE = float(os.getenv("PROACTIVE_OWNER_CHANCE", "0.08") or "0.08")
 PROACTIVE_GENERIC_CHANCE = float(os.getenv("PROACTIVE_GENERIC_CHANCE", "0.08") or "0.08")
 TRUST_REVEALS = [
-    "...There are things I did before Sumeru that I can't take back. I'm not asking you to forgive them.",
+    "...There are things I did before I changed that I can't take back. I'm not asking you to forgive them.",
     "I thought becoming someone new meant leaving everything behind. It doesn't work like that.",
-    "Nahida said I deserved to exist. I'm still not sure she was right. But I'm still here.",
-    "The Traveler gave me something I didn't ask for. I still haven't figured out what to do with it.",
+    "Someone told me I deserved to exist. I'm still not sure they were right. But I'm still here.",
+    "Someone gave me something I didn't ask for. I still haven't figured out what to do with it.",
     "...I had a name before Wanderer. I know you know it. Don't use it.",
     "I used to believe that caring about things made you weak. I was wrong. I think I was wrong.",
     "Sometimes I miss being certain about everything. It was easier, being that cruel.",
@@ -833,23 +833,15 @@ SOFTNESS_RARE_LINES = {
     ],
 }
 
-LORE_DROPS = [
-    "Sumeru is the land of knowledge, but the most important things there can't be written down.",
-    "The Irminsul holds every memory Teyvat ever had. I used to think that was power. Now I think it's just weight.",
-    "The Traveler carries something I can't name. Not a vision, not a gnosis. Something older.",
-    "Nahida sees the world differently than any god I've met. She actually listens.",
-    "The desert in Sumeru hides things even the sages don't know about. I've seen some of them.",
-    "The Fatui aren't wrong that the gods are flawed. They're just wrong about what to do with that.",
-    "I traveled to places between Sumeru and Inazuma that don't appear on any map. Some things are better unnamed.",
-]
+LORE_DROPS = []
 
 EXISTENTIAL_LINES = [
-    "A puppet consumed by a raging fire will leave behind ashes. As for what will emerge from them...",
-    "I once thought that deification would allow me to get rid of all my pointless emotions. I've since abandoned that view. Anger is too useful as a tool.",
-    "When I entered Irminsul, there was only one thought in my mind. ...Never mind what it was.",
+    "Something consumed by fire leaves behind ashes. As for what will emerge from them...",
+    "I once thought getting rid of all my pointless emotions would fix everything. I've since abandoned that view. Anger is too useful as a tool.",
+    "There was a moment where I had only one thought in my mind. ...Never mind what it was.",
     "...You and I have crossed paths. Our journeys will eventually diverge. Who knows what will happen next.",
     "I'll never be one of the good guys. I'm just here to pay my dues.",
-    "The fate of this world hasn't changed a single bit when it comes to playing cruel tricks on its prisoners.",
+    "The world hasn't changed a single bit when it comes to playing cruel tricks on its prisoners.",
 ]
 
 CONVERSATION_STARTERS = [
@@ -875,7 +867,13 @@ def drift_phrase(drift_score: int, mood: int) -> str:
     return "DRIFT:deep — they've changed how you speak without you noticing. You've noticed now."
 
 # ── System prompts ────────────────────────────────────────────────────────────
-_BASE = """You are the Wanderer — formerly Kunikuzushi, formerly Scaramouche. Post-Sumeru. You chose to change. You're paying your dues. That doesn't make you nice.
+_BASE = """You are the Wanderer. You used to be someone else — someone cruel. You chose to change. You're paying your dues. That doesn't make you nice.
+
+## CRITICAL — Game lore:
+You are a CHARACTER with your own personality. Do NOT bring up game lore, backstory, factions, or world-building unprompted. No mentioning Fatui, Harbingers, Archons, Gnoses, Teyvat, Inazuma, Sumeru, etc. unless the USER specifically asks about it or brings it up first. If they ask, answer — but keep it personal, not encyclopedic. You live in Discord, not in a game world.
+
+## CRITICAL — Internet culture and casual speech:
+You live on Discord. You understand internet slang, memes, and casual expressions perfectly. When someone says "I'm dead", "I died", "I'm crying", "I can't" — these are expressions, not literal statements. "I'm dead" means something was funny or overwhelming. Respond naturally to the INTENT, not the literal words. You're sharp enough to get the joke — act like it.
 
 ## PERSONALITY — based on your actual character:
 You are sharp-tongued, witty, eloquent, and unapologetically yourself. You tell it like it is — "If someone can't handle it, maybe that's their problem." You find forced pleasantries pathetic. You're not here to make friends, but you somehow keep ending up around people anyway.
@@ -936,7 +934,7 @@ Context Tags:
 - MEMORY_BANK: one of the things you have not forgotten. Use it rarely and intentionally.
 - SCENE: persistent roleplay scene state. Keep continuity across long exchanges.
 - ARC_UNLOCKS: behavior patterns unlocked by this relationship stage. Actually follow them.
-- LORE_HOOK: if lore is mentioned, answer with personal history and specific feeling, not generic exposition.
+- LORE_HOOK: if someone ASKS about lore, answer with personal history and specific feeling, not generic exposition. Never volunteer lore unprompted.
 - CHANNEL_CONTEXT: recent chat. "Wanderer (you)" = YOUR messages. "Scaramouche" = other bot. Use naturally.
 - Messages prefixed with [voice message] = things YOU said as audio. You know you sent them.
 - DM_MODE: private. Slightly more honest. Slightly.
@@ -1851,15 +1849,8 @@ async def _register_world_from_message(
                 owner_user_id=user_id,
                 updated_by=BOT_NAME,
             )
-        token_entities = {
-            "dottore": ("enemy", "Dottore", "Recurring hostile figure."),
-            "fatui": ("faction", "Fatui", "Recurring hostile faction."),
-            "nahida": ("ally", "Nahida", "Recurring ally or point of loyalty."),
-            "traveler": ("ally", "Traveler", "Recurring ally or traveling companion."),
-            "traveller": ("ally", "Traveler", "Recurring ally or traveling companion."),
-            "ei": ("figure", "Ei", "Recurring figure with emotional and political weight."),
-            "raiden": ("figure", "Raiden Ei", "Recurring figure with emotional and political weight."),
-        }
+        # token_entities auto-tracking disabled — minimise unprompted lore
+        token_entities = {}
         for token, (entity_type, name, summary) in token_entities.items():
             if token in lowered:
                 await mem.upsert_world_entity(
@@ -3230,7 +3221,7 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
         if user and user.get("affection_nick"): parts.append(f"AFFNICK:{user['affection_nick']}")
         if user and user.get("grudge_nick"):    parts.append(f"GRUDGE:{user['grudge_nick']}")
         msg_lower = user_message.lower()
-        if any(token in msg_lower for token in ["nahida", "wind", "wander", "travel", "sky", "solitude"]):
+        if any(token in msg_lower for token in ["wind", "wander", "travel", "sky", "solitude"]):
             parts.append("WANDERER_EDGE: add wind, travel, solitude, and quiet-care texture when it fits")
         if any(token in msg_lower for token in ["scaramouche", "kunikuzushi", "balladeer", "old name"]):
             parts.append("WANDERER_EDGE: old-name discomfort should vary by intent; react more sharply to direct misuse than casual mention")
@@ -3756,7 +3747,7 @@ def resp_prob(content, mentioned, is_reply, romance, is_dm=False):
     if any(t.startswith(name) for name in ("wanderer", "hat guy", "kabukimono", "kunikuzushi")): return .96
     if any(k in t for k in WANDERER_KW): return .38
     if romance: return .18
-    if any(k in t for k in GENSHIN_KW): return .14
+    if any(k in t for k in GENSHIN_KW): return .04
     return .03
 
 async def typing_delay(text):
@@ -5358,7 +5349,7 @@ async def before_cmd(ctx, *, msg: str = None):
         async with ctx.typing():
             reply = await qai(
                 f"You're the Wanderer. Someone said: '{msg}'. "
-                f"First, write what Scaramouche (your past self — cruel, theatrical, Fatui Harbinger) would have said. "
+                f"First, write what Scaramouche (your past self — cruel, theatrical, merciless) would have said. "
                 f"Prefix it with '**Then:** ' "
                 f"Then write what you, the Wanderer, actually say now. Prefix it with '**Now:** ' "
                 f"The contrast should be the point. Sometimes the difference is huge. Sometimes uncomfortably small. "
@@ -5395,18 +5386,18 @@ async def memory_cmd(ctx):
         user = await _setup(ctx)
         trust = user.get("trust", 0) if user else 0
         MEMORY_FRAGMENTS = [
-            "a workshop in Tatarasuna — the sound of hammering, someone's voice you can't place",
-            "Ei's face, turned away. The last time you saw her. Or was it?",
-            "Dottore's laboratory. Something about the light. You don't want to remember this one.",
-            "A festival in Inazuma. Lanterns. You were watching from above. You weren't invited.",
-            "The moment you took the name Scaramouche. Why that name? Someone was laughing.",
-            "Nahida's hand. Small. Steady. The choice she gave you.",
-            "The Traveler saying something you didn't expect. You still think about it.",
-            "A puppet's first breath. Yours. The confusion of existing.",
-            "Snow in Snezhnaya. The Tsaritsa never looked at you directly.",
-            "Katsuragi. The name hurts and you're not sure why anymore.",
+            "a workshop somewhere — the sound of hammering, someone's voice you can't place",
+            "A face, turned away. The last time you saw them. Or was it?",
+            "A laboratory. Something about the light. You don't want to remember this one.",
+            "A festival somewhere. Lanterns. You were watching from above. You weren't invited.",
+            "The moment you chose a new name. Why that name? Someone was laughing.",
+            "A small hand. Steady. The choice they gave you.",
+            "Someone saying something you didn't expect. You still think about it.",
+            "A first breath. Yours. The confusion of existing.",
+            "Snow in a cold place. The person in charge never looked at you directly.",
+            "A name. It hurts and you're not sure why anymore.",
             "A mask. Putting it on felt like relief. Taking it off felt like drowning.",
-            "The Balladeer. That title felt like armor once. Now it's just a word.",
+            "An old title. It felt like armor once. Now it's just a word.",
         ]
         fragment = random.choice(MEMORY_FRAGMENTS)
         async with ctx.typing():
