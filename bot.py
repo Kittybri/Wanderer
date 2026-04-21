@@ -7380,6 +7380,44 @@ async def dmlist_cmd(ctx):
         for p in pages: await owner_reply(ctx, p)
     except Exception as e: log_error("dmlist_cmd", e)
 
+@bot.command(name="rebanchannels")
+async def rebanchannels_cmd(ctx):
+    """Owner-only: re-ban all channels the bot was previously banned from by scanning server history."""
+    try:
+        if not OWNER_ID or ctx.author.id != OWNER_ID: await safe_reply(ctx, "That's not for you."); return
+        if not ctx.guild: await safe_reply(ctx, "Use this in a server."); return
+        ban_patterns = re.compile(r"(?:stay out of|banned from|exiled from|off-limits|no longer wants me|unwanted somewhere)\s*<#(\d+)>", re.IGNORECASE)
+        # Also catch the pattern where channel ID appears before the keyword
+        ban_patterns_alt = re.compile(r"<#(\d+)>\s*(?:is off-limits|no longer wants me)", re.IGNORECASE)
+        found_channel_ids: set[int] = set()
+        for ch in ctx.guild.text_channels:
+            try:
+                perms = ch.permissions_for(ctx.guild.me)
+                if not perms.read_message_history: continue
+                async for msg in ch.history(limit=200):
+                    if msg.author.id == bot.user.id:
+                        match = ban_patterns.search(msg.content or "") or ban_patterns_alt.search(msg.content or "")
+                        if match:
+                            found_channel_ids.add(int(match.group(1)))
+            except Exception: pass
+        if not found_channel_ids:
+            await safe_reply(ctx, "...I couldn't find any record of being banned from channels in this server's history.")
+            return
+        all_rebanned = []
+        for cid in found_channel_ids:
+            ch = bot.get_channel(cid)
+            if not ch: continue
+            if cid not in _banned_channels:
+                _banned_channels.add(cid)
+                await mem.ban_channel(cid)
+            all_rebanned.append(ch)
+        if not all_rebanned:
+            await safe_reply(ctx, "Found references to banned channels but they no longer exist.")
+            return
+        channel_list = "\n".join(f"- {ch.mention}" for ch in all_rebanned)
+        await ctx.send(f"...You're banning me from all of these again. How predictable.\n\n{channel_list}\n\nFine. {len(all_rebanned)} channel(s). The wind doesn't go where it isn't wanted.")
+    except Exception as e: log_error("rebanchannels_cmd", e)
+
 @bot.command(name="banchannel")
 async def banchannel_cmd(ctx, channel: discord.TextChannel = None):
     try:
