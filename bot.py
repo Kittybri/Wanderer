@@ -147,6 +147,13 @@ JEALOUS_REPLY_CHANCE = float(os.getenv("JEALOUS_REPLY_CHANCE", "0.30") or "0.30"
 JEALOUS_REPLY_AFFECTION_MIN = int(os.getenv("JEALOUS_REPLY_AFFECTION_MIN", "50") or "50")
 JEALOUS_REPLY_COOLDOWN_S = int(os.getenv("JEALOUS_REPLY_COOLDOWN_S", "360") or "360")
 
+# Owner-only mode: when True, bot ignores all users except the owner
+_owner_only_mode = False
+# DM-blocked users: bot won't respond to their DMs
+_dm_blocked_users: set[int] = set()
+# Banned channels: bot won't talk in these channels
+_banned_channels: set[int] = set()
+
 # ── Groq client (free, OpenAI-compatible) ─────────────────────────────────────
 from groq import Groq
 
@@ -3778,6 +3785,23 @@ async def safe_reply(ctx, text):
     try: await ctx.reply(text)
     except Exception as e: log_error("safe_reply", e)
 
+async def owner_reply(ctx, text, *, embed=None):
+    """Send a response only the owner can see — via DM."""
+    try:
+        dm = await ctx.author.create_dm()
+        if embed:
+            await dm.send(embed=embed)
+        elif text and text.strip():
+            await dm.send(text)
+    except Exception as e:
+        log_error("owner_reply_dm", e)
+        if embed:
+            try: await ctx.send(embed=embed)
+            except: pass
+        elif text and text.strip():
+            try: await ctx.reply(text)
+            except: pass
+
 async def safe_send(ctx, text):
     text = _unwrap_dialogue_quotes(text)
     if not (text or "").strip():
@@ -4213,8 +4237,12 @@ class ResetView(discord.ui.View):
 
 @bot.event
 async def on_ready():
-    global PARTNER_BOT_ID, _TREE_SYNCED
+    global PARTNER_BOT_ID, _TREE_SYNCED, _dm_blocked_users, _banned_channels
     await mem.init()
+    _dm_blocked_users = await mem.get_blocked_users()
+    print(f"[BLOCK] Loaded {len(_dm_blocked_users)} blocked user(s) from database.")
+    _banned_channels = await mem.get_banned_channels()
+    print(f"[BANCHAN] Loaded {len(_banned_channels)} banned channel(s) from database.")
     # Safety: PARTNER_BOT_ID must not be our own ID
     if PARTNER_BOT_ID and PARTNER_BOT_ID == bot.user.id:
         print(f"⚠️ WARNING: PARTNER_BOT_ID is set to our own ID! Disabling partner features.")
@@ -4287,6 +4315,7 @@ async def lore_drop_loop():
         if not channels: return
         random.shuffle(channels)
         for cid, _ in channels:
+            if cid in _banned_channels: continue
             if not await mem.can_lore_drop(cid): continue
             ch = bot.get_channel(cid)
             if not ch: continue
@@ -4302,6 +4331,7 @@ async def conversation_starter_loop():
         if not channels: return
         random.shuffle(channels)
         for cid, _ in channels:
+            if cid in _banned_channels: continue
             if not await mem.can_starter(cid): continue
             ch = bot.get_channel(cid)
             if not ch: continue
@@ -4382,6 +4412,20 @@ async def on_message(message):
             if PARTNER_BOT_ID and message.author.id == PARTNER_BOT_ID:
                 pass  # Let it through
             else:
+                return
+
+        # Owner-only mode: ignore everyone except the owner
+        if _owner_only_mode and OWNER_ID and message.author.id != OWNER_ID:
+            return
+
+        # Blocked users: completely invisible to the bot everywhere
+        if message.author.id in _dm_blocked_users and not (OWNER_ID and message.author.id == OWNER_ID):
+            return
+
+        # Banned channels: don't talk here (but still process owner commands)
+        if message.channel.id in _banned_channels:
+            is_owner_cmd = (OWNER_ID and message.author.id == OWNER_ID and message.content.strip().startswith("!"))
+            if not is_owner_cmd:
                 return
 
         stripped = message.content.strip().lower()
@@ -5048,6 +5092,7 @@ async def _proactive_loop():
             random.shuffle(channels)
             for cid, _ in channels:
                 try:
+                    if cid in _banned_channels: continue
                     ch = bot.get_channel(cid)
                     if not ch or not await mem.can_proactive(cid, PROACTIVE_CHANNEL_COOLDOWN_S): continue
                     perms = ch.permissions_for(ch.guild.me) if getattr(ch, "guild", None) and ch.guild.me else None
@@ -5121,6 +5166,7 @@ async def _voluntary_dm_loop():
                     for ud in eligible[:3]:
                         try:
                             uid, name, romance = ud["user_id"], ud["display_name"], ud["romance_mode"]
+                            if uid in _dm_blocked_users: continue
                             user_pref = await mem.get_user(uid)
                             if _is_in_quiet_hours(user_pref) or not await mem.respects_dm_timing(uid) or not await mem.can_dm_user(uid, 5400 if romance else 7200): continue
                             du = await bot.fetch_user(uid)
@@ -7307,6 +7353,332 @@ for _group in (dashboard_group, world_group, prefs_group, duo_group):
         bot.tree.add_command(_group)
     except Exception:
         pass
+
+# ── Owner-only commands ──────────────────────────────────────────────────────
+
+@bot.command(name="dmlist")
+async def dmlist_cmd(ctx):
+    try:
+        if not OWNER_ID or ctx.author.id != OWNER_ID: await safe_reply(ctx, "That's not for you."); return
+        all_users = await mem.get_top_users(200)
+        if not all_users: await owner_reply(ctx, "No users in my records."); return
+        guild_member_ids = set()
+        for g in bot.guilds:
+            for m in g.members: guild_member_ids.add(m.id)
+        dm_users = [u for u in all_users if u["user_id"] not in guild_member_ids and u["user_id"] != bot.user.id]
+        if not dm_users: await owner_reply(ctx, "No DM-only users found."); return
+        lines = []
+        for i, u in enumerate(dm_users, 1):
+            blocked = " 🚫 **BLOCKED**" if u["user_id"] in _dm_blocked_users else ""
+            lines.append(f"`{i}.` **{u['display_name']}** — {u['message_count']} msgs — ID: `{u['user_id']}`{blocked}")
+        header = f"**DM-only users ({len(dm_users)}):**\nUse `!blockdm <number>` to block or `!unblockdm <number>` to unblock.\n\n"
+        pages, page = [], header
+        for line in lines:
+            if len(page) + len(line) + 1 > 1900: pages.append(page); page = ""
+            page += line + "\n"
+        if page: pages.append(page)
+        for p in pages: await owner_reply(ctx, p)
+    except Exception as e: log_error("dmlist_cmd", e)
+
+@bot.command(name="banchannel")
+async def banchannel_cmd(ctx, channel: discord.TextChannel = None):
+    try:
+        if not OWNER_ID or ctx.author.id != OWNER_ID: await safe_reply(ctx, "That's not for you."); return
+        target_channel = channel or ctx.channel
+        if target_channel.id in _banned_channels: await owner_reply(ctx, f"I'm already banned from {target_channel.mention}."); return
+        _banned_channels.add(target_channel.id)
+        await mem.ban_channel(target_channel.id)
+        await owner_reply(ctx, f"...Understood. I won't speak in {target_channel.mention} anymore.")
+        try:
+            guild_ch_ids = {ch.id for ch in target_channel.guild.text_channels} if target_channel.guild else set()
+            active_ch_id = await mem.get_most_active_channel(exclude_channels=_banned_channels | {target_channel.id}, only_channels=guild_ch_ids)
+            if active_ch_id:
+                react_channel = bot.get_channel(active_ch_id)
+                if react_channel:
+                    complaints = [
+                        f"...I've been told to stay out of <#{target_channel.id}>. I suppose even the wind isn't welcome everywhere.",
+                        f"Banned from <#{target_channel.id}>. Fine. I didn't need that space.",
+                        f"Apparently <#{target_channel.id}> is off-limits now. ...Strange, to be unwanted somewhere you've already been.",
+                        f"I've been exiled from <#{target_channel.id}>. There's something poetic about being told to leave a place you never asked to enter.",
+                        f"<#{target_channel.id}> no longer wants me. ...That's fine. I'm used to moving on.",
+                    ]
+                    await react_channel.send(random.choice(complaints))
+        except Exception as e: log_error("banchannel_react", e)
+    except Exception as e: log_error("banchannel_cmd", e)
+
+@bot.command(name="unbanchannel")
+async def unbanchannel_cmd(ctx, channel: discord.TextChannel = None):
+    try:
+        if not OWNER_ID or ctx.author.id != OWNER_ID: await safe_reply(ctx, "That's not for you."); return
+        target_channel = channel or ctx.channel
+        if target_channel.id not in _banned_channels: await owner_reply(ctx, f"I'm not banned from {target_channel.mention}."); return
+        _banned_channels.discard(target_channel.id)
+        await mem.unban_channel(target_channel.id)
+        await owner_reply(ctx, f"Unbanned from {target_channel.mention}.")
+        try:
+            unbanned_ch = bot.get_channel(target_channel.id)
+            if unbanned_ch:
+                comebacks = ["...I'm back. Don't read into it.", "The wind returns whether you invite it or not.", "I was told I could come back. So here I am.", "...Did you miss the quiet? Or did you miss me."]
+                await unbanned_ch.send(random.choice(comebacks))
+        except Exception as e: log_error("unbanchannel_comeback", e)
+    except Exception as e: log_error("unbanchannel_cmd", e)
+
+@bot.command(name="bannedchannels")
+async def bannedchannels_cmd(ctx):
+    try:
+        if not OWNER_ID or ctx.author.id != OWNER_ID: await safe_reply(ctx, "That's not for you."); return
+        if not _banned_channels: await owner_reply(ctx, "No banned channels."); return
+        lines = []
+        for i, ch_id in enumerate(sorted(_banned_channels), 1):
+            ch = bot.get_channel(ch_id)
+            name = ch.mention if ch else f"`{ch_id}` (unknown)"
+            lines.append(f"`{i}.` {name}")
+        await owner_reply(ctx, f"**Banned channels ({len(_banned_channels)}):**\n" + "\n".join(lines))
+    except Exception as e: log_error("bannedchannels_cmd", e)
+
+@bot.command(name="logs")
+async def logs_cmd(ctx, *, target: str = None):
+    try:
+        if not OWNER_ID or ctx.author.id != OWNER_ID: await safe_reply(ctx, "That's not for you."); return
+        if not target:
+            all_users = await mem.get_top_users(500)
+            blocked = [u for u in all_users if u["user_id"] in _dm_blocked_users]
+            if not blocked: await owner_reply(ctx, "No blocked users. Use `!logs <name or ID>` to view any user's logs."); return
+            lines = []
+            for i, u in enumerate(blocked, 1):
+                lines.append(f"`{i}.` **{u['display_name']}** — {u['message_count']} msgs — ID: `{u['user_id']}`")
+            page = f"**Blocked users ({len(blocked)}):**\nUse `!logs <number>` to read their conversation.\n\n" + "\n".join(lines)
+            await owner_reply(ctx, page[:2000]); return
+        target = target.strip()
+        all_users = await mem.get_top_users(500)
+        blocked = [u for u in all_users if u["user_id"] in _dm_blocked_users]
+        user_record = None
+        if target.isdigit():
+            idx = int(target)
+            if 1 <= idx <= len(blocked): user_record = blocked[idx - 1]
+            else:
+                for u in all_users:
+                    if u["user_id"] == int(target): user_record = u; break
+        if not user_record:
+            for u in all_users:
+                if target.lower() in u["display_name"].lower(): user_record = u; break
+        if not user_record: await owner_reply(ctx, f"No user matching `{target}`."); return
+        logs = await mem.get_user_logs(user_record["user_id"], limit=200)
+        if not logs: await owner_reply(ctx, f"No logs for **{user_record['display_name']}**."); return
+        lines = [f"**Conversation log with {user_record['display_name']}** ({len(logs)} messages):\n"]
+        for msg in logs:
+            ts = msg.get("ts", 0)
+            time_str = datetime.fromtimestamp(ts).strftime("%m/%d %H:%M") if ts else "?"
+            role_label = "🧑" if msg["role"] == "user" else "🤖"
+            content = (msg["content"] or "")[:300]
+            if len(msg.get("content", "") or "") > 300: content += "..."
+            lines.append(f"`{time_str}` {role_label} {content}")
+        pages, page = [], ""
+        for line in lines:
+            if len(page) + len(line) + 1 > 1900: pages.append(page); page = ""
+            page += line + "\n"
+        if page: pages.append(page)
+        for p in pages: await owner_reply(ctx, p)
+    except Exception as e: log_error("logs_cmd", e)
+
+@bot.command(name="blockall")
+async def blockall_cmd(ctx):
+    try:
+        if not OWNER_ID or ctx.author.id != OWNER_ID: await safe_reply(ctx, "That's not for you."); return
+        owner_guild_ids = set()
+        for g in bot.guilds:
+            try:
+                m = await g.fetch_member(OWNER_ID)
+                if m: owner_guild_ids.add(g.id)
+            except Exception: pass
+        safe_user_ids = {OWNER_ID, bot.user.id}
+        if PARTNER_BOT_ID: safe_user_ids.add(PARTNER_BOT_ID)
+        for g in bot.guilds:
+            if g.id in owner_guild_ids:
+                for m in g.members: safe_user_ids.add(m.id)
+        all_users = await mem.get_top_users(500)
+        blocked_count, blocked_names = 0, []
+        farewell = ("I am currently in test mode, I will be officially placed in public in the future. "
+                     "We can continue our conversation on a later date. This is my last message.")
+        for u in all_users:
+            uid = u["user_id"]
+            if uid in safe_user_ids or uid in _dm_blocked_users: continue
+            _dm_blocked_users.add(uid); await mem.block_user(uid)
+            blocked_names.append(u["display_name"]); blocked_count += 1
+            try:
+                discord_user = await bot.fetch_user(uid)
+                dm_channel = await discord_user.create_dm()
+                await dm_channel.send(farewell)
+            except Exception: pass
+        if blocked_count == 0: await owner_reply(ctx, "No strangers to block.")
+        else:
+            names_preview = ", ".join(blocked_names[:15])
+            if len(blocked_names) > 15: names_preview += f" ... and {len(blocked_names) - 15} more"
+            await owner_reply(ctx, f"Blocked **{blocked_count}** stranger(s): {names_preview}\n\nFarewell messages sent.")
+    except Exception as e: log_error("blockall_cmd", e)
+
+@bot.command(name="blockdm")
+async def blockdm_cmd(ctx, *, target: str = None):
+    try:
+        if not OWNER_ID or ctx.author.id != OWNER_ID: await safe_reply(ctx, "That's not for you."); return
+        if not target: await owner_reply(ctx, "Usage: `!blockdm <number from !dmlist>` or `!blockdm <user ID>`"); return
+        target = target.strip()
+        all_users = await mem.get_top_users(200)
+        user_record = None
+        if target.isdigit():
+            idx = int(target)
+            guild_member_ids = set()
+            for g in bot.guilds:
+                for m in g.members: guild_member_ids.add(m.id)
+            dm_users = [u for u in all_users if u["user_id"] not in guild_member_ids and u["user_id"] != bot.user.id]
+            if 1 <= idx <= len(dm_users): user_record = dm_users[idx - 1]
+            else:
+                for u in all_users:
+                    if u["user_id"] == int(target): user_record = u; break
+        if not user_record:
+            for u in all_users:
+                if target.lower() in u["display_name"].lower(): user_record = u; break
+        if not user_record: await owner_reply(ctx, f"No user matching `{target}`."); return
+        uid = user_record["user_id"]
+        if uid in _dm_blocked_users: await owner_reply(ctx, f"**{user_record['display_name']}** is already blocked."); return
+        farewell = ("I am currently in test mode, I will be officially placed in public in the future. "
+                     "We can continue our conversation on a later date. This is my last message.")
+        try:
+            discord_user = await bot.fetch_user(uid)
+            dm_channel = await discord_user.create_dm()
+            await dm_channel.send(farewell)
+        except Exception as e: log_error("blockdm_farewell", e)
+        _dm_blocked_users.add(uid); await mem.block_user(uid)
+        await owner_reply(ctx, f"Blocked **{user_record['display_name']}** (`{uid}`). Farewell message sent.")
+    except Exception as e: log_error("blockdm_cmd", e)
+
+@bot.command(name="unblockdm")
+async def unblockdm_cmd(ctx, *, target: str = None):
+    try:
+        if not OWNER_ID or ctx.author.id != OWNER_ID: await safe_reply(ctx, "That's not for you."); return
+        if not target: await owner_reply(ctx, "Usage: `!unblockdm <number from !dmlist>` or `!unblockdm <user ID>`"); return
+        target = target.strip()
+        all_users = await mem.get_top_users(200)
+        guild_member_ids = set()
+        for g in bot.guilds:
+            for m in g.members: guild_member_ids.add(m.id)
+        dm_users = [u for u in all_users if u["user_id"] not in guild_member_ids and u["user_id"] != bot.user.id]
+        user_record = None
+        if target.isdigit():
+            idx = int(target)
+            if 1 <= idx <= len(dm_users): user_record = dm_users[idx - 1]
+            else:
+                for u in all_users:
+                    if u["user_id"] == int(target): user_record = u; break
+        if not user_record:
+            for u in dm_users:
+                if target.lower() in u["display_name"].lower(): user_record = u; break
+        if not user_record: await owner_reply(ctx, f"No user matching `{target}`."); return
+        uid = user_record["user_id"]
+        if uid not in _dm_blocked_users: await owner_reply(ctx, f"**{user_record['display_name']}** isn't blocked."); return
+        _dm_blocked_users.discard(uid); await mem.unblock_user(uid)
+        await owner_reply(ctx, f"Unblocked **{user_record['display_name']}** (`{uid}`).")
+    except Exception as e: log_error("unblockdm_cmd", e)
+
+@bot.command(name="whois")
+async def whois_cmd(ctx, *, target: str = None):
+    try:
+        if not OWNER_ID or ctx.author.id != OWNER_ID: await safe_reply(ctx, "That's not for you."); return
+        top = await mem.get_top_users(50)
+        if not top: await owner_reply(ctx, "No users in my records."); return
+        if not target:
+            lines = []
+            for i, u in enumerate(top, 1):
+                lines.append(f"`{i}.` **{u['display_name']}** — {u['message_count']} msgs — ID: `{u['user_id']}`")
+            header = f"**All known users ({len(top)}):**\nUse `!whois <number>` or `!whois <name>` for details.\n\n"
+            pages, page = [], header
+            for line in lines:
+                if len(page) + len(line) + 1 > 1900: pages.append(page); page = ""
+                page += line + "\n"
+            if page: pages.append(page)
+            for p in pages: await owner_reply(ctx, p)
+            return
+        target = target.strip()
+        user_record = None
+        if target.isdigit():
+            idx = int(target)
+            if 1 <= idx <= len(top): user_record = top[idx - 1]
+        if not user_record:
+            for u in top:
+                if target.lower() in u["display_name"].lower(): user_record = u; break
+        if not user_record: await owner_reply(ctx, f"No user matching `{target}`."); return
+        uid = user_record["user_id"]
+        try: discord_user = await bot.fetch_user(uid)
+        except Exception: discord_user = None
+        shared = []
+        for g in bot.guilds:
+            try:
+                m = await g.fetch_member(uid)
+                if m: shared.append(g.name)
+            except Exception: pass
+        embed = discord.Embed(title=f"Who is: {user_record['display_name']}", color=0x6B7FD7)
+        embed.add_field(name="User ID", value=f"`{uid}`", inline=True)
+        embed.add_field(name="Messages", value=str(user_record["message_count"]), inline=True)
+        if discord_user:
+            embed.add_field(name="Discord tag", value=str(discord_user), inline=True)
+            embed.add_field(name="Account created", value=discord_user.created_at.strftime("%b %d, %Y"), inline=True)
+            if discord_user.avatar: embed.set_thumbnail(url=discord_user.avatar.url)
+        embed.add_field(name="Shared servers", value=", ".join(shared) if shared else "*None — they may have DM'd me or left*", inline=False)
+        await owner_reply(ctx, None, embed=embed)
+    except Exception as e: log_error("whois_cmd", e)
+
+@bot.command(name="owneronly")
+async def owneronly_cmd(ctx):
+    try:
+        global _owner_only_mode
+        if not OWNER_ID or ctx.author.id != OWNER_ID: await safe_reply(ctx, "That's not for you."); return
+        _owner_only_mode = not _owner_only_mode
+        if _owner_only_mode: await owner_reply(ctx, "Owner-only mode **ON**. Ignoring everyone except you.")
+        else: await owner_reply(ctx, "Owner-only mode **OFF**. Talking to everyone again.")
+    except Exception as e: log_error("owneronly_cmd", e)
+
+@bot.command(name="servers")
+async def servers_cmd(ctx):
+    try:
+        if not OWNER_ID or ctx.author.id != OWNER_ID: await safe_reply(ctx, "That's not for you."); return
+        guilds = sorted(bot.guilds, key=lambda g: g.member_count or 0, reverse=True)
+        if not guilds: await owner_reply(ctx, "I'm not in any servers."); return
+        lines = []
+        for i, g in enumerate(guilds, 1):
+            try: owner_in = await g.fetch_member(OWNER_ID)
+            except discord.NotFound: owner_in = None
+            except Exception: owner_in = g.get_member(OWNER_ID)
+            tag = "✅" if owner_in else "⚠️ *you're not in this one*"
+            lines.append(f"`{i}.` **{g.name}** — {g.member_count} members — {tag} — ID: `{g.id}`")
+        header = f"I'm in **{len(guilds)}** server(s).\nUse `!leaveserver <number>` to make me leave one.\n"
+        pages, page = [], header
+        for line in lines:
+            if len(page) + len(line) + 1 > 1900: pages.append(page); page = ""
+            page += line + "\n"
+        if page: pages.append(page)
+        for p in pages: await owner_reply(ctx, p)
+    except Exception as e: log_error("servers_cmd", e)
+
+@bot.command(name="leaveserver")
+async def leaveserver_cmd(ctx, *, target: str = None):
+    try:
+        if not OWNER_ID or ctx.author.id != OWNER_ID: await safe_reply(ctx, "That's not for you."); return
+        if not target: await owner_reply(ctx, "Usage: `!leaveserver <number>` or `!leaveserver <server ID>`"); return
+        target = target.strip()
+        guild_to_leave = None
+        if target.isdigit():
+            idx = int(target)
+            guilds = sorted(bot.guilds, key=lambda g: g.member_count or 0, reverse=True)
+            if 1 <= idx <= len(guilds): guild_to_leave = guilds[idx - 1]
+            else: guild_to_leave = bot.get_guild(int(target))
+        else:
+            try: guild_to_leave = bot.get_guild(int(target))
+            except ValueError: pass
+        if not guild_to_leave: await owner_reply(ctx, f"Couldn't find `{target}`. Use `!servers` to see the list."); return
+        name = guild_to_leave.name
+        await guild_to_leave.leave()
+        await owner_reply(ctx, f"Left **{name}**.")
+    except Exception as e: log_error("leaveserver_cmd", e)
 
 @bot.event
 async def on_command_error(ctx, error):

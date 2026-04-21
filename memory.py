@@ -249,6 +249,14 @@ class Memory:
                     created_ts  REAL DEFAULT 0,
                     last_seen   REAL DEFAULT 0
                 );
+                CREATE TABLE IF NOT EXISTS blocked_users (
+                    user_id     INTEGER PRIMARY KEY,
+                    blocked_ts  REAL DEFAULT 0
+                );
+                CREATE TABLE IF NOT EXISTS banned_channels (
+                    channel_id  INTEGER PRIMARY KEY,
+                    banned_ts   REAL DEFAULT 0
+                );
             """)
             migrations = [
                 ("allow_dms",          "INTEGER DEFAULT 1"),
@@ -2245,6 +2253,76 @@ class Memory:
             ) as cur:
                 rows = await cur.fetchall()
         return [{"user_id":r[0],"display_name":r[1],"message_count":r[2]} for r in rows]
+
+    # ── Blocked users ─────────────────────────────────────────────────────────
+    async def block_user(self, user_id: int):
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "INSERT OR REPLACE INTO blocked_users (user_id, blocked_ts) VALUES (?, ?)",
+                (user_id, time.time()))
+            await db.commit()
+
+    async def unblock_user(self, user_id: int):
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("DELETE FROM blocked_users WHERE user_id=?", (user_id,))
+            await db.commit()
+
+    async def get_blocked_users(self) -> set[int]:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("SELECT user_id FROM blocked_users") as cur:
+                rows = await cur.fetchall()
+        return {r[0] for r in rows}
+
+    async def is_blocked(self, user_id: int) -> bool:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("SELECT 1 FROM blocked_users WHERE user_id=?", (user_id,)) as cur:
+                return await cur.fetchone() is not None
+
+    async def get_user_logs(self, user_id: int, limit: int = 200) -> list[dict]:
+        """Get full conversation log for a user across all channels, newest last."""
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("""
+                SELECT role, content, ts FROM messages
+                WHERE user_id=? AND (bot_name=? OR bot_name IS NULL)
+                ORDER BY ts ASC LIMIT ?
+            """, (user_id, self.bot_name, limit)) as cur:
+                rows = await cur.fetchall()
+        return [{"role": r[0], "content": r[1], "ts": r[2]} for r in rows]
+
+    # ── Banned channels ────────────────────────────────────────────────────────
+    async def ban_channel(self, channel_id: int):
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "INSERT OR REPLACE INTO banned_channels (channel_id, banned_ts) VALUES (?, ?)",
+                (channel_id, time.time()))
+            await db.commit()
+
+    async def unban_channel(self, channel_id: int):
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("DELETE FROM banned_channels WHERE channel_id=?", (channel_id,))
+            await db.commit()
+
+    async def get_banned_channels(self) -> set[int]:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("SELECT channel_id FROM banned_channels") as cur:
+                rows = await cur.fetchall()
+        return {r[0] for r in rows}
+
+    async def get_most_active_channel(self, exclude_channels: set[int] | None = None, only_channels: set[int] | None = None) -> int | None:
+        """Get the channel_id where the bot has been most active recently."""
+        exclude = exclude_channels or set()
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                "SELECT channel_id, COUNT(*) as cnt FROM messages WHERE role='assistant' AND (bot_name=? OR bot_name IS NULL) GROUP BY channel_id ORDER BY cnt DESC LIMIT 50",
+                (self.bot_name,)
+            ) as cur:
+                rows = await cur.fetchall()
+        for r in rows:
+            if r[0] and r[0] not in exclude:
+                if only_channels is not None and r[0] not in only_channels:
+                    continue
+                return r[0]
+        return None
 
     # ── Greetings ─────────────────────────────────────────────────────────────
     async def should_greet(self, user_id: int) -> bool:
