@@ -2649,8 +2649,9 @@ async def _find_romance_target(channel) -> discord.Member | None:
     return None
 
 
-async def _handle_partner_message(message) -> bool:
+async def _handle_partner_message(message, target_info: dict | None = None) -> bool:
     try:
+        target_info = target_info or {}
         relation, recent_banter, theme = await _observe_partner_message(message.content)
         if time.time() - relation.get("last_exchange", 0) < 90:
             return True
@@ -2692,9 +2693,19 @@ async def _handle_partner_message(message) -> bool:
                 )
                 reply = await qai(prompt, 180, route="primary")
                 reply = await _apply_phrase_policy(reply, [item.get("content", "") for item in recent_banter], mood=-3, conflict_open=True)
-                reply = _sanitize_partner_dialogue_reply(reply, message.guild if message.guild else None)
+                partner_ping = getattr(message.author, "mention", "") or f"@{getattr(message.author, 'display_name', PARTNER_NAME.title())}"
+                reply = _sanitize_partner_dialogue_reply(
+                    reply,
+                    message.guild if message.guild else None,
+                    partner_mention=partner_ping,
+                    partner_name=getattr(message.author, "display_name", PARTNER_NAME.title()),
+                )
                 if reply:
-                    await message.reply(reply, mention_author=False, allowed_mentions=discord.AllowedMentions.none())
+                    await message.reply(
+                        reply,
+                        mention_author=False,
+                        allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False, replied_user=False),
+                    )
                     await mem.record_bot_banter(PARTNER_PAIR_KEY, BOT_NAME, reply, "intervention")
                     await mem.note_shared_event_memory(
                         message.channel.id,
@@ -2723,6 +2734,9 @@ async def _handle_partner_message(message) -> bool:
         extra = ""
         if jealousy_target:
             extra = f"\nA romance-mode user you care about is in this channel: {jealousy_target.display_name}. That should sharpen the jealousy."
+        target_note = target_info.get("prompt_note", "")
+        if target_note:
+            extra += f"\n{target_note}"
 
         prompt = (
             f"{partner_context}\n{contradiction}{extra}\n\n"
@@ -2736,14 +2750,27 @@ async def _handle_partner_message(message) -> bool:
         mood = -7 if theme in {'identity', 'weakness', 'jealousy'} else -3 if theme in {'origins', 'change'} else 0
         reply = await qai(prompt, 180)
         reply = await _apply_phrase_policy(reply, recent_partner_lines, mood=mood, conflict_open=theme in {'identity', 'weakness', 'jealousy'})
-        reply = _sanitize_partner_dialogue_reply(reply, message.guild if message.guild else None)
+        partner_ping = getattr(message.author, "mention", "") or f"@{getattr(message.author, 'display_name', PARTNER_NAME.title())}"
+        reply = _sanitize_partner_dialogue_reply(
+            reply,
+            message.guild if message.guild else None,
+            partner_mention=partner_ping,
+            partner_name=getattr(message.author, "display_name", PARTNER_NAME.title()),
+        )
         if not reply:
             return True
 
         if jealousy_target and random.random() < 0.45:
-            await message.channel.send(reply, allowed_mentions=discord.AllowedMentions.none())
+            await message.channel.send(
+                f"{partner_ping} {reply}",
+                allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False, replied_user=False),
+            )
         else:
-            await message.reply(reply, mention_author=False, allowed_mentions=discord.AllowedMentions.none())
+            await message.reply(
+                reply,
+                mention_author=False,
+                allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False, replied_user=False),
+            )
 
         own_theme = detect_banter_theme(reply)
         await mem.record_bot_banter(PARTNER_PAIR_KEY, BOT_NAME, reply, own_theme)
@@ -2773,6 +2800,62 @@ async def _handle_partner_message(message) -> bool:
     except Exception as e:
         log_error("handle_partner_message", e)
     return True
+
+
+async def _partner_message_target_info(message) -> dict:
+    try:
+        human_targets: list[str] = []
+        addressed_me = any(getattr(member, "id", 0) == bot.user.id for member in getattr(message, "mentions", []))
+
+        if message.reference:
+            try:
+                ref_msg = message.reference.resolved
+                if ref_msg is None and getattr(message.reference, "message_id", None):
+                    ref_msg = await message.channel.fetch_message(message.reference.message_id)
+                ref_author = getattr(ref_msg, "author", None)
+                ref_author_id = getattr(ref_author, "id", None)
+                if ref_author_id == bot.user.id:
+                    addressed_me = True
+                elif ref_author and not getattr(ref_author, "bot", False):
+                    human_targets.append(getattr(ref_author, "display_name", None) or getattr(ref_author, "name", "someone"))
+            except Exception as e:
+                log_error("partner_message_target_info/reference", e)
+
+        for member in getattr(message, "mentions", []):
+            if not getattr(member, "bot", False):
+                human_targets.append(getattr(member, "display_name", None) or getattr(member, "name", "someone"))
+
+        human_targets = [name for idx, name in enumerate(human_targets) if name and name not in human_targets[:idx]]
+        duo = await mem.get_duo_session(message.channel.id) if getattr(message, "channel", None) else None
+        duo_expected = bool(duo and duo.get("awaiting_bot") == BOT_NAME and int(duo.get("autoplay_remaining", 0) or 0) > 0)
+
+        if addressed_me:
+            prompt_note = f"TARGET_AWARENESS: {PARTNER_NAME.title()} addressed you directly."
+        elif human_targets:
+            names = ", ".join(human_targets[:3])
+            prompt_note = (
+                f"TARGET_AWARENESS: {PARTNER_NAME.title()} was addressing {names}, not you. "
+                "If you cut in, react to what he said to them and show clear awareness that they were the target."
+            )
+        elif duo_expected:
+            prompt_note = (
+                "TARGET_AWARENESS: the active duo scene was explicitly awaiting your answer, "
+                "so treat this as your turn even if no direct mention appeared."
+            )
+        else:
+            prompt_note = (
+                f"TARGET_AWARENESS: {PARTNER_NAME.title()} was speaking in the channel, not necessarily to you. "
+                "If you respond, do it as an interruption with awareness of whoever he was focused on."
+            )
+        return {
+            "addressed_me": addressed_me,
+            "human_targets": human_targets,
+            "duo_expected": duo_expected,
+            "prompt_note": prompt_note,
+        }
+    except Exception as e:
+        log_error("partner_message_target_info", e)
+    return {"addressed_me": False, "human_targets": [], "duo_expected": False, "prompt_note": ""}
 
 # ── Groq AI call (non-blocking) ───────────────────────────────────────────────
 def _groq_blocking(messages: list, system: str, max_tokens: int = 500, model: str | None = None) -> str:
@@ -2935,17 +3018,18 @@ def resolve_mentions(text: str, guild) -> str:
         return text
 
 
-def _sanitize_partner_dialogue_reply(text: str, guild) -> str:
+def _sanitize_partner_dialogue_reply(text: str, guild, *, partner_mention: str = "", partner_name: str = "") -> str:
     text = _unwrap_dialogue_quotes(strip_narration(text or ""))
     if not text:
         return ""
+    replacement = partner_mention or (f"@{partner_name}" if partner_name else "you")
     if guild:
         try:
             non_bot_members = [member for member in guild.members if not member.bot]
-            id_to_name = {str(member.id): member.display_name for member in non_bot_members}
+            id_to_name = {str(member.id): replacement for member in non_bot_members}
 
             def _mention_repl(match):
-                return id_to_name.get(match.group(1), "you")
+                return id_to_name.get(match.group(1), replacement)
 
             text = re.sub(r"<@!?(\d+)>", _mention_repl, text)
             for member in non_bot_members:
@@ -2954,7 +3038,7 @@ def _sanitize_partner_dialogue_reply(text: str, guild) -> str:
                         continue
                     text = re.sub(
                         rf"(?<!\w)@{re.escape(raw_name)}\b",
-                        raw_name,
+                        replacement,
                         text,
                         flags=re.IGNORECASE,
                     )
@@ -4311,7 +4395,7 @@ async def on_message(message):
 
         # Cross-bot interaction — if message is from partner (Scaramouche) bot
         if PARTNER_BOT_ID and message.author.id == PARTNER_BOT_ID:
-            await _handle_partner_message(message)
+            await _handle_partner_message(message, target_info=await _partner_message_target_info(message))
             return
 
         await bot.process_commands(message)
