@@ -7557,37 +7557,34 @@ async def blockall_cmd(ctx):
 
 @bot.command(name="reban")
 async def reban_cmd(ctx):
-    """Owner-only: re-block everyone who previously received the farewell message. No new farewell sent."""
+    """Owner-only: silently block all DM-only strangers (not in any shared server). No farewell sent."""
     try:
         if not OWNER_ID or ctx.author.id != OWNER_ID: await safe_reply(ctx, "That's not for you."); return
-        await owner_reply(ctx, "Scanning DM history for previously banned users... This may take a minute.")
-        farewell_fragment = "I am currently in test mode"
         all_users = await mem.get_top_users(500)
-        rebanned_count, rebanned_names = 0, []
+        if not all_users: await safe_reply(ctx, "No users in my records."); return
         safe_user_ids = {OWNER_ID, bot.user.id}
         if PARTNER_BOT_ID: safe_user_ids.add(PARTNER_BOT_ID)
+        owner_guild_ids = set()
         for g in bot.guilds:
-            for m in g.members: safe_user_ids.add(m.id)
+            try:
+                m = await g.fetch_member(OWNER_ID)
+                if m: owner_guild_ids.add(g.id)
+            except Exception: pass
+        for g in bot.guilds:
+            if g.id in owner_guild_ids:
+                for m in g.members: safe_user_ids.add(m.id)
+        rebanned_count, rebanned_names = 0, []
         for u in all_users:
             uid = u["user_id"]
             if uid in safe_user_ids or uid in _dm_blocked_users: continue
-            try:
-                discord_user = await bot.fetch_user(uid)
-                dm_channel = await discord_user.create_dm()
-                found_farewell = False
-                async for msg in dm_channel.history(limit=50):
-                    if msg.author.id == bot.user.id and farewell_fragment in (msg.content or ""):
-                        found_farewell = True; break
-                if found_farewell:
-                    _dm_blocked_users.add(uid); await mem.block_user(uid)
-                    rebanned_names.append(u["display_name"]); rebanned_count += 1
-            except Exception: pass
+            _dm_blocked_users.add(uid); await mem.block_user(uid)
+            rebanned_names.append(u["display_name"]); rebanned_count += 1
         if rebanned_count == 0:
-            await owner_reply(ctx, "No previously banned users found in DM history.")
+            await safe_reply(ctx, "No strangers to block. Everyone shares a server with you.")
         else:
             names_preview = ", ".join(rebanned_names[:20])
             if len(rebanned_names) > 20: names_preview += f" ... and {len(rebanned_names) - 20} more"
-            await owner_reply(ctx, f"Re-banned **{rebanned_count}** user(s): {names_preview}\n\nNo farewell messages sent — they were already told.")
+            await safe_reply(ctx, f"Silently blocked **{rebanned_count}** stranger(s): {names_preview}\n\nNo farewell messages sent.")
     except Exception as e: log_error("reban_cmd", e)
 
 @bot.command(name="blockdm")
