@@ -33,7 +33,7 @@ SHARED_DB_PATH = os.path.join(_data_dir, "shared_state.db")
 
 
 class Memory:
-    # In-memory only (resets on restart — intentional for mute)
+    # Cache mute state in memory, but persist it in sqlite so restarts keep working.
     _muted: dict[int, float] = {}
     db_path: str = DB_PATH
     shared_db_path: str = SHARED_DB_PATH
@@ -129,6 +129,27 @@ class Memory:
                     reminder    TEXT,
                     due_ts      REAL,
                     done        INTEGER DEFAULT 0
+                );
+                CREATE TABLE IF NOT EXISTS muted_users (
+                    user_id     INTEGER PRIMARY KEY,
+                    expires_ts  REAL DEFAULT 0,
+                    created_ts  REAL DEFAULT 0
+                );
+                CREATE TABLE IF NOT EXISTS blocked_dm_users (
+                    user_id     INTEGER PRIMARY KEY,
+                    created_ts  REAL DEFAULT 0
+                );
+                CREATE TABLE IF NOT EXISTS blocked_channels (
+                    channel_id  INTEGER PRIMARY KEY,
+                    created_ts  REAL DEFAULT 0
+                );
+                CREATE TABLE IF NOT EXISTS blocked_users (
+                    user_id     INTEGER PRIMARY KEY,
+                    blocked_ts  REAL DEFAULT 0
+                );
+                CREATE TABLE IF NOT EXISTS banned_channels (
+                    channel_id  INTEGER PRIMARY KEY,
+                    banned_ts   REAL DEFAULT 0
                 );
                 CREATE TABLE IF NOT EXISTS inside_jokes (
                     id      INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -248,14 +269,6 @@ class Memory:
                     decay_days  REAL DEFAULT 5,
                     created_ts  REAL DEFAULT 0,
                     last_seen   REAL DEFAULT 0
-                );
-                CREATE TABLE IF NOT EXISTS blocked_users (
-                    user_id     INTEGER PRIMARY KEY,
-                    blocked_ts  REAL DEFAULT 0
-                );
-                CREATE TABLE IF NOT EXISTS banned_channels (
-                    channel_id  INTEGER PRIMARY KEY,
-                    banned_ts   REAL DEFAULT 0
                 );
             """)
             migrations = [
@@ -2254,76 +2267,6 @@ class Memory:
                 rows = await cur.fetchall()
         return [{"user_id":r[0],"display_name":r[1],"message_count":r[2]} for r in rows]
 
-    # ── Blocked users ─────────────────────────────────────────────────────────
-    async def block_user(self, user_id: int):
-        async with aiosqlite.connect(DB_PATH) as db:
-            await db.execute(
-                "INSERT OR REPLACE INTO blocked_users (user_id, blocked_ts) VALUES (?, ?)",
-                (user_id, time.time()))
-            await db.commit()
-
-    async def unblock_user(self, user_id: int):
-        async with aiosqlite.connect(DB_PATH) as db:
-            await db.execute("DELETE FROM blocked_users WHERE user_id=?", (user_id,))
-            await db.commit()
-
-    async def get_blocked_users(self) -> set[int]:
-        async with aiosqlite.connect(DB_PATH) as db:
-            async with db.execute("SELECT user_id FROM blocked_users") as cur:
-                rows = await cur.fetchall()
-        return {r[0] for r in rows}
-
-    async def is_blocked(self, user_id: int) -> bool:
-        async with aiosqlite.connect(DB_PATH) as db:
-            async with db.execute("SELECT 1 FROM blocked_users WHERE user_id=?", (user_id,)) as cur:
-                return await cur.fetchone() is not None
-
-    async def get_user_logs(self, user_id: int, limit: int = 200) -> list[dict]:
-        """Get full conversation log for a user across all channels, newest last."""
-        async with aiosqlite.connect(DB_PATH) as db:
-            async with db.execute("""
-                SELECT role, content, ts FROM messages
-                WHERE user_id=? AND (bot_name=? OR bot_name IS NULL)
-                ORDER BY ts ASC LIMIT ?
-            """, (user_id, self.bot_name, limit)) as cur:
-                rows = await cur.fetchall()
-        return [{"role": r[0], "content": r[1], "ts": r[2]} for r in rows]
-
-    # ── Banned channels ────────────────────────────────────────────────────────
-    async def ban_channel(self, channel_id: int):
-        async with aiosqlite.connect(DB_PATH) as db:
-            await db.execute(
-                "INSERT OR REPLACE INTO banned_channels (channel_id, banned_ts) VALUES (?, ?)",
-                (channel_id, time.time()))
-            await db.commit()
-
-    async def unban_channel(self, channel_id: int):
-        async with aiosqlite.connect(DB_PATH) as db:
-            await db.execute("DELETE FROM banned_channels WHERE channel_id=?", (channel_id,))
-            await db.commit()
-
-    async def get_banned_channels(self) -> set[int]:
-        async with aiosqlite.connect(DB_PATH) as db:
-            async with db.execute("SELECT channel_id FROM banned_channels") as cur:
-                rows = await cur.fetchall()
-        return {r[0] for r in rows}
-
-    async def get_most_active_channel(self, exclude_channels: set[int] | None = None, only_channels: set[int] | None = None) -> int | None:
-        """Get the channel_id where the bot has been most active recently."""
-        exclude = exclude_channels or set()
-        async with aiosqlite.connect(DB_PATH) as db:
-            async with db.execute(
-                "SELECT channel_id, COUNT(*) as cnt FROM messages WHERE role='assistant' AND (bot_name=? OR bot_name IS NULL) GROUP BY channel_id ORDER BY cnt DESC LIMIT 50",
-                (self.bot_name,)
-            ) as cur:
-                rows = await cur.fetchall()
-        for r in rows:
-            if r[0] and r[0] not in exclude:
-                if only_channels is not None and r[0] not in only_channels:
-                    continue
-                return r[0]
-        return None
-
     # ── Greetings ─────────────────────────────────────────────────────────────
     async def should_greet(self, user_id: int) -> bool:
         async with aiosqlite.connect(DB_PATH) as db:
@@ -2548,6 +2491,191 @@ class Memory:
             await db.commit()
 
     # ── Mute (in-memory) ──────────────────────────────────────────────────────
+    async def block_dm_user(self, user_id: int):
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "INSERT INTO blocked_dm_users (user_id,created_ts) VALUES (?,?) "
+                "ON CONFLICT(user_id) DO NOTHING",
+                (user_id, time.time()),
+            )
+            await db.commit()
+
+    async def unblock_dm_user(self, user_id: int):
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("DELETE FROM blocked_dm_users WHERE user_id=?", (user_id,))
+            await db.commit()
+
+    async def is_dm_user_blocked(self, user_id: int) -> bool:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("SELECT 1 FROM blocked_dm_users WHERE user_id=?", (user_id,)) as cur:
+                return bool(await cur.fetchone())
+
+    async def list_dm_users(self, limit: int = 25) -> list[dict]:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                """
+                SELECT
+                    u.user_id,
+                    COALESCE(NULLIF(u.display_name,''), u.username, CAST(u.user_id AS TEXT)) AS name,
+                    COUNT(m.id) AS msg_count,
+                    EXISTS(SELECT 1 FROM blocked_dm_users b WHERE b.user_id=u.user_id) AS blocked
+                FROM users u
+                LEFT JOIN messages m
+                    ON m.user_id=u.user_id
+                   AND m.channel_id=u.user_id
+                   AND (m.bot_name=? OR m.bot_name IS NULL)
+                GROUP BY u.user_id, u.display_name, u.username
+                HAVING COUNT(m.id) > 0 OR blocked
+                ORDER BY msg_count DESC, u.last_seen DESC
+                LIMIT ?
+                """,
+                (self.bot_name, limit),
+            ) as cur:
+                rows = await cur.fetchall()
+        return [
+            {
+                "user_id": int(row[0] or 0),
+                "name": row[1] or str(row[0]),
+                "msg_count": int(row[2] or 0),
+                "blocked": bool(row[3]),
+            }
+            for row in rows
+        ]
+
+    async def block_channel(self, channel_id: int):
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "INSERT INTO blocked_channels (channel_id,created_ts) VALUES (?,?) "
+                "ON CONFLICT(channel_id) DO NOTHING",
+                (channel_id, time.time()),
+            )
+            await db.commit()
+
+    async def unblock_channel(self, channel_id: int):
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("DELETE FROM blocked_channels WHERE channel_id=?", (channel_id,))
+            await db.commit()
+
+    async def is_channel_blocked(self, channel_id: int) -> bool:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("SELECT 1 FROM blocked_channels WHERE channel_id=?", (channel_id,)) as cur:
+                return bool(await cur.fetchone())
+
+    async def list_blocked_channels(self, limit: int = 25) -> list[int]:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                "SELECT channel_id FROM blocked_channels ORDER BY created_ts DESC LIMIT ?",
+                (limit,),
+            ) as cur:
+                rows = await cur.fetchall()
+        return [int(row[0]) for row in rows if row and row[0] is not None]
+
+    async def block_user(self, user_id: int):
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "INSERT OR REPLACE INTO blocked_users (user_id, blocked_ts) VALUES (?, ?)",
+                (user_id, time.time()))
+            await db.commit()
+
+    async def unblock_user(self, user_id: int):
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("DELETE FROM blocked_users WHERE user_id=?", (user_id,))
+            await db.commit()
+
+    async def get_blocked_users(self) -> set[int]:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("SELECT user_id FROM blocked_users") as cur:
+                rows = await cur.fetchall()
+        return {r[0] for r in rows}
+
+    async def is_blocked(self, user_id: int) -> bool:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("SELECT 1 FROM blocked_users WHERE user_id=?", (user_id,)) as cur:
+                return await cur.fetchone() is not None
+
+    async def get_user_logs(self, user_id: int, limit: int = 200) -> list[dict]:
+        """Get full conversation log for a user across all channels, newest last."""
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("""
+                SELECT role, content, ts FROM messages
+                WHERE user_id=? AND (bot_name=? OR bot_name IS NULL)
+                ORDER BY ts ASC LIMIT ?
+            """, (user_id, self.bot_name, limit)) as cur:
+                rows = await cur.fetchall()
+        return [{"role": r[0], "content": r[1], "ts": r[2]} for r in rows]
+
+    async def ban_channel(self, channel_id: int):
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "INSERT OR REPLACE INTO banned_channels (channel_id, banned_ts) VALUES (?, ?)",
+                (channel_id, time.time()))
+            await db.commit()
+
+    async def unban_channel(self, channel_id: int):
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("DELETE FROM banned_channels WHERE channel_id=?", (channel_id,))
+            await db.commit()
+
+    async def get_banned_channels(self) -> set[int]:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("SELECT channel_id FROM banned_channels") as cur:
+                rows = await cur.fetchall()
+        return {r[0] for r in rows}
+
+    async def get_most_active_channel(self, exclude_channels: set[int] | None = None, only_channels: set[int] | None = None) -> int | None:
+        """Get the channel_id where the bot has been most active recently."""
+        exclude = exclude_channels or set()
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                "SELECT channel_id, COUNT(*) as cnt FROM messages WHERE role='assistant' AND (bot_name=? OR bot_name IS NULL) GROUP BY channel_id ORDER BY cnt DESC LIMIT 50",
+                (self.bot_name,)
+            ) as cur:
+                rows = await cur.fetchall()
+        for r in rows:
+            if r[0] and r[0] not in exclude:
+                if only_channels is not None and r[0] not in only_channels:
+                    continue
+                return r[0]
+        return None
+
+    async def set_muted(self, user_id: int, seconds: int = 600):
+        expires_ts = time.time() + max(0, seconds)
+        Memory._muted[user_id] = expires_ts
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "INSERT INTO muted_users (user_id,expires_ts,created_ts) VALUES (?,?,?) "
+                "ON CONFLICT(user_id) DO UPDATE SET expires_ts=excluded.expires_ts, created_ts=excluded.created_ts",
+                (user_id, expires_ts, time.time()),
+            )
+            await db.commit()
+
+    async def is_user_muted(self, user_id: int) -> bool:
+        now = time.time()
+        exp = Memory._muted.get(user_id, 0)
+        if exp:
+            if now > exp:
+                Memory._muted.pop(user_id, None)
+            else:
+                return True
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("SELECT expires_ts FROM muted_users WHERE user_id=?", (user_id,)) as cur:
+                row = await cur.fetchone()
+            if not row:
+                return False
+            expires_ts = float(row[0] or 0)
+            if expires_ts <= now:
+                await db.execute("DELETE FROM muted_users WHERE user_id=?", (user_id,))
+                await db.commit()
+                return False
+            Memory._muted[user_id] = expires_ts
+            return True
+
+    async def clear_muted(self, user_id: int):
+        Memory._muted.pop(user_id, None)
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("DELETE FROM muted_users WHERE user_id=?", (user_id,))
+            await db.commit()
+
     def mute_user(self, user_id: int, seconds: int = 600):
         Memory._muted[user_id] = time.time() + seconds
 
