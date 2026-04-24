@@ -11,6 +11,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 import os, re, random, asyncio, io, time, json, traceback
+from collections import deque
 from urllib.parse import quote_plus, urlencode
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -173,22 +174,40 @@ def _is_banned_channel_target(target) -> bool:
 async def _guarded_channel_send(channel, *args, **kwargs) -> bool:
     if _is_banned_channel_target(channel):
         return False
-    await channel.send(*args, **kwargs)
-    return True
+    try:
+        sent = await channel.send(*args, **kwargs)
+        cache = globals().get("_remember_recent_message")
+        if cache:
+            cache(sent)
+        return True
+    except Exception as e:
+        print(f"[SEND:channel] {type(e).__name__}: {e}")
+        return False
 
 
 async def _guarded_message_reply(message, *args, **kwargs) -> bool:
     if _is_banned_channel_target(message):
         return False
-    await message.reply(*args, **kwargs)
-    return True
+    try:
+        sent = await message.reply(*args, **kwargs)
+        cache = globals().get("_remember_recent_message")
+        if cache:
+            cache(sent)
+        return True
+    except Exception as e:
+        print(f"[SEND:reply] {type(e).__name__}: {e}")
+        return False
 
 
 async def _guarded_add_reaction(message, emoji) -> bool:
     if _is_banned_channel_target(message):
         return False
-    await message.add_reaction(emoji)
-    return True
+    try:
+        await message.add_reaction(emoji)
+        return True
+    except Exception as e:
+        print(f"[SEND:reaction] {type(e).__name__}: {e}")
+        return False
 
 JEALOUS_REPLY_CHANCE = float(os.getenv("JEALOUS_REPLY_CHANCE", "0.30") or "0.30")
 JEALOUS_REPLY_AFFECTION_MIN = int(os.getenv("JEALOUS_REPLY_AFFECTION_MIN", "50") or "50")
@@ -226,6 +245,18 @@ def _load_groq_keys() -> list[str]:
 
 
 _groq_keys = _load_groq_keys()
+GROQ_CIRCUIT_FAILURES = int(os.getenv("GROQ_CIRCUIT_FAILURES", "3") or "3")
+GROQ_CIRCUIT_COOLDOWN_S = int(os.getenv("GROQ_CIRCUIT_COOLDOWN_S", "180") or "180")
+
+
+def _is_transient_groq_error(error: Exception | str | None) -> bool:
+    text = str(error or "").lower()
+    return any(token in text for token in (
+        "timeout", "timed out", "connection", "connect", "temporarily",
+        "server error", "502", "503", "504", "500", "overloaded", "unavailable",
+    ))
+
+
 
 _DISCORD_OAUTH_RE = re.compile(r"https?://(?:ptb\.|canary\.)?discord(?:app)?\.com/oauth2/authorize\?[^\s>]+", re.IGNORECASE)
 _DISCORD_SERVER_INVITE_RE = re.compile(r"https?://(?:www\.)?(?:discord\.gg|discord(?:app)?\.com/invite)/[^\s>]+", re.IGNORECASE)
@@ -369,6 +400,8 @@ class RotatingGroq:
         self._clients = [Groq(api_key=k) for k in _groq_keys]
         self._idx = 0
         self._exhausted_until = 0.0
+        self._circuit_until = 0.0
+        self._failure_count = 0
         print(f"[GROQ] Loaded {len(self._clients)} API key(s)")
 
     @property
@@ -391,12 +424,22 @@ class RotatingGroq:
 
     def clear_exhausted(self):
         self._exhausted_until = 0.0
+        self._circuit_until = 0.0
+        self._failure_count = 0
 
     def is_exhausted(self) -> bool:
-        return time.time() < self._exhausted_until
+        now = time.time()
+        return now < self._exhausted_until or now < self._circuit_until
 
     def exhausted_remaining(self) -> int:
-        return max(0, int(self._exhausted_until - time.time()))
+        now = time.time()
+        return max(0, int(max(self._exhausted_until, self._circuit_until) - now))
+
+    def _mark_transient_failure(self, error: Exception | str | None):
+        self._failure_count += 1
+        if self._failure_count >= GROQ_CIRCUIT_FAILURES:
+            self._circuit_until = max(self._circuit_until, time.time() + GROQ_CIRCUIT_COOLDOWN_S)
+            print(f"[GROQ] Circuit open for {GROQ_CIRCUIT_COOLDOWN_S}s after transient failures: {str(error)[:160]}")
 
     def call_with_retry(self, **kwargs):
         """Try current key, rotate on rate limit, try remaining keys."""
@@ -413,6 +456,9 @@ class RotatingGroq:
                 if "rate_limit" in err_str.lower() or "429" in err_str:
                     last_err = e
                     self._rotate()
+                elif _is_transient_groq_error(e):
+                    self._mark_transient_failure(e)
+                    raise
                 else:
                     raise
         self._mark_exhausted(last_err)
@@ -518,19 +564,20 @@ async def _recent_self_quote_context(user_message: str, *, channel_id: int, user
     if not text or not _SELF_QUOTE_RE.search(text):
         return ""
     try:
-        recent_channel: list[str] = []
+        recent_channel: list[str] = _recent_self_lines_from_cache(channel_id, limit=6)
         if channel_obj and getattr(channel_obj, "history", None) and getattr(bot, "user", None):
             try:
-                async for msg in channel_obj.history(limit=20):
-                    if getattr(getattr(msg, "author", None), "id", None) != bot.user.id:
-                        continue
-                    cleaned = strip_narration((msg.content or "").strip())
-                    if cleaned:
-                        recent_channel.append(cleaned[:220])
-                    if len(recent_channel) >= 6:
-                        break
+                if len(recent_channel) < 3:
+                    async for msg in channel_obj.history(limit=20):
+                        if getattr(getattr(msg, "author", None), "id", None) != bot.user.id:
+                            continue
+                        cleaned = strip_narration((msg.content or "").strip())
+                        if cleaned:
+                            recent_channel.append(cleaned[:220])
+                        if len(recent_channel) >= 6:
+                            break
             except Exception:
-                recent_channel = []
+                pass
         if not recent_channel and channel_id:
             recent_channel = await mem.get_recent_assistant_messages(limit=6, channel_id=channel_id)
         recent_user = await mem.get_recent_assistant_messages(limit=4, user_id=user_id) if user_id else []
@@ -2879,6 +2926,26 @@ async def _find_romance_target(channel) -> discord.Member | None:
 async def _handle_partner_message(message, target_info: dict | None = None) -> bool:
     try:
         target_info = target_info or {}
+        human_targets = [str(name).strip() for name in (target_info.get("human_targets") or []) if str(name).strip()]
+        target_names = ", ".join(human_targets[:3])
+        if target_info.get("addressed_me"):
+            response_focus = f"RESPONSE_FOCUS: {PARTNER_NAME.title()} was talking to you. Answer him directly."
+        elif human_targets:
+            response_focus = (
+                f"RESPONSE_FOCUS: {PARTNER_NAME.title()} was talking to {target_names}, not you. "
+                f"If you cut in, react to what he said to {target_names} and make it obvious they were the target. "
+                "Do not answer as if he was talking to you."
+            )
+        elif target_info.get("duo_expected"):
+            response_focus = (
+                "RESPONSE_FOCUS: the duo scene was explicitly waiting for your turn, "
+                "so answer the partner directly and keep the handoff clean."
+            )
+        else:
+            response_focus = (
+                f"RESPONSE_FOCUS: {PARTNER_NAME.title()} was speaking in the channel generally. "
+                "If you interrupt, do it with clear awareness of whoever he seemed focused on."
+            )
         relation, recent_banter, theme = await _observe_partner_message(message.content)
         if time.time() - relation.get("last_exchange", 0) < 90:
             return True
@@ -2913,6 +2980,7 @@ async def _handle_partner_message(message, target_info: dict | None = None) -> b
                 prompt = (
                     f"{partner_context}\n"
                     f"{contradiction}\n"
+                    f"{response_focus}\n"
                     f"INTERVENTION_MODE:{intervention_reason}. {PARTNER_NAME.title()} just said: '{message.content[:220]}'.\n"
                     "Cut in unprompted as Wanderer. You can stop him, undercut the tone, or redirect the scene, "
                     "but make it sound like you noticed the line crossed into blunt damage instead of useful precision. "
@@ -2968,6 +3036,7 @@ async def _handle_partner_message(message, target_info: dict | None = None) -> b
 
         prompt = (
             f"{partner_context}\n{contradiction}{extra}\n\n"
+            f"{response_focus}\n"
             f"Scaramouche just said: '{message.content[:220]}'\n"
             f"Reply as Wanderer. He refuses to admit how much of that shared history still matters. "
             f"If respect has grown, show it as cleaner honesty instead of recycled annoyance. "
@@ -3191,6 +3260,9 @@ def needs_search(text: str) -> bool:
 async def fetch_channel_context(channel, limit: int = CHANNEL_CONTEXT_LIMIT_DIRECT) -> str:
     try:
         if not hasattr(channel, 'history'): return ""
+        cached_context = _format_cached_channel_context(channel, limit)
+        if cached_context:
+            return cached_context
         is_dm_channel = not hasattr(channel, 'guild') or channel.guild is None
         msgs = []
         async for msg in channel.history(limit=limit):
@@ -4083,6 +4155,25 @@ async def safe_send(ctx, text):
     except Exception as e: log_error("safe_send", e)
 
 
+@bot.command(name="bothealth")
+async def bothealth_cmd(ctx):
+    if OWNER_ID and ctx.author.id != OWNER_ID:
+        return
+    await owner_reply(ctx, f"{BOT_NAME} health: `{_pipeline_health_line()}`")
+
+
+@bot.command(name="backupmemory")
+async def backupmemory_cmd(ctx):
+    if OWNER_ID and ctx.author.id != OWNER_ID:
+        return
+    try:
+        backed_up = await mem.backup_now(label="manual")
+        await owner_reply(ctx, f"Backed up {len(backed_up)} memory database file(s).")
+    except Exception as e:
+        log_error("backupmemory_cmd", e)
+        await owner_reply(ctx, "Backup failed. Check the Oracle logs.")
+
+
 def _partner_bot_present(ctx) -> bool:
     try:
         return bool(ctx.guild and PARTNER_BOT_ID and ctx.guild.get_member(PARTNER_BOT_ID))
@@ -4261,12 +4352,25 @@ def _silence_reply_pool(user: dict | None) -> list[str]:
             "I saw it. I just needed a minute.",
             "I'm answering now. Don't mistake that for everything being fixed.",
             "I wasn't ignoring you. I was deciding whether to be honest.",
+            "I read what you said. I just wasn't ready to touch it yet.",
+            "You spoke. I took a moment to figure out what was actually worth saying back.",
+            "I heard you. Delay isn't the same thing as coldness.",
+            "I needed a breath before answering. That shouldn't be difficult to understand.",
+            "You don't get instant repair just because you finally said something real.",
         ]
     return [
         "I heard you. I just didn't want to answer immediately.",
         "Silence says enough sometimes.",
         "You can wait a moment. The sky won't fall.",
         "I was thinking. Try not to turn that into drama.",
+        "I read it. I just wasn't going to rush an answer for your comfort.",
+        "A pause is not a tragedy. Relax.",
+        "I took a second. You survived.",
+        "Not every answer needs to be dragged out of me on command.",
+        "I wanted a quiet second before I answered. That's all.",
+        "You really make too much of a short silence.",
+        "I wasn't gone. I was just deciding how much honesty you could handle.",
+        "You can wait a breath before I answer.",
     ]
 
 
@@ -4585,7 +4689,8 @@ async def on_ready():
     if PARTNER_BOT_ID: print(f"   Partner bot ID: {PARTNER_BOT_ID}")
     for t in [status_rotation, reminder_checker, daily_reset,
               absence_checker, lore_drop_loop, conversation_starter_loop,
-              existential_loop, mood_swing_loop]:
+              existential_loop, mood_swing_loop, health_watchdog_loop,
+              memory_backup_loop]:
         try: t.start()
         except: pass
     bot.loop.create_task(_proactive_loop())
@@ -4646,6 +4751,7 @@ async def absence_checker():
 async def lore_drop_loop():
     try:
         if random.random() > .3: return
+        if not LORE_DROPS: return
         channels = await mem.get_active_channels()
         if not channels: return
         random.shuffle(channels)
@@ -4702,6 +4808,24 @@ async def mood_swing_loop():
             except: pass
     except Exception as e: log_error("mood_swing_loop", e)
 
+
+@tasks.loop(minutes=5)
+async def health_watchdog_loop():
+    try:
+        debug_event("health", _pipeline_health_line())
+    except Exception as e:
+        log_error("health_watchdog_loop", e)
+
+
+@tasks.loop(hours=6)
+async def memory_backup_loop():
+    try:
+        backed_up = await mem.backup_now(label=BOT_NAME)
+        if backed_up:
+            debug_event("backup", f"{BOT_NAME} backed up {len(backed_up)} db file(s)")
+    except Exception as e:
+        log_error("memory_backup_loop", e)
+
 @bot.event
 async def on_member_join(member):
     try:
@@ -4731,8 +4855,312 @@ async def on_member_remove(member):
     except Exception as e: log_error("on_member_remove", e)
 
 # ── on_message ────────────────────────────────────────────────────────────────
+MESSAGE_QUEUE_MAX = int(os.getenv("MESSAGE_QUEUE_MAX", "6") or "6")
+MESSAGE_QUEUE_AMBIENT_STALE_S = float(os.getenv("MESSAGE_QUEUE_AMBIENT_STALE_S", "75") or "75")
+MESSAGE_QUEUE_DIRECT_STALE_S = float(os.getenv("MESSAGE_QUEUE_DIRECT_STALE_S", "240") or "240")
+RECENT_MESSAGE_CACHE_LIMIT = int(os.getenv("RECENT_MESSAGE_CACHE_LIMIT", "80") or "80")
+BACKGROUND_PRESSURE_QUEUE_LIMIT = int(os.getenv("BACKGROUND_PRESSURE_QUEUE_LIMIT", "3") or "3")
+
+_message_pipeline_scheduled: set[int] = set()
+_message_pipeline_queues: dict[tuple[str, int], asyncio.Queue] = {}
+_message_pipeline_workers: dict[tuple[str, int], asyncio.Task] = {}
+_recent_message_cache: dict[int, deque] = {}
+_message_pipeline_dropped = 0
+_message_pipeline_processed = 0
+
+
+def _message_pipeline_key(message) -> tuple[str, int]:
+    try:
+        if not getattr(message, "guild", None):
+            return ("dm", int(message.author.id))
+        return ("channel", int(getattr(message.channel, "id", 0) or message.author.id))
+    except Exception:
+        return ("unknown", 0)
+
+
+def _recent_cache_key(message_or_channel) -> int:
+    try:
+        channel = getattr(message_or_channel, "channel", message_or_channel)
+        cid = int(getattr(channel, "id", 0) or 0)
+        if cid:
+            return cid
+        author = getattr(message_or_channel, "author", None)
+        return int(getattr(author, "id", 0) or 0)
+    except Exception:
+        return 0
+
+
+def _remember_recent_message(message) -> None:
+    try:
+        key = _recent_cache_key(message)
+        if not key:
+            return
+        attachments = list(getattr(message, "attachments", []) or [])
+        ref = getattr(getattr(message, "reference", None), "resolved", None)
+        ref_author = getattr(ref, "author", None)
+        row = {
+            "id": int(getattr(message, "id", 0) or 0),
+            "ts": time.time(),
+            "author_id": int(getattr(getattr(message, "author", None), "id", 0) or 0),
+            "author_name": getattr(getattr(message, "author", None), "display_name", None)
+                or getattr(getattr(message, "author", None), "name", "Unknown"),
+            "author_bot": bool(getattr(getattr(message, "author", None), "bot", False)),
+            "content": (getattr(message, "content", "") or "")[:CHANNEL_CONTEXT_MESSAGE_CHARS],
+            "has_voice": any((getattr(a, "filename", "") or "").lower().endswith(".mp3") for a in attachments),
+            "has_image": any("image" in (getattr(a, "content_type", "") or "") for a in attachments),
+            "has_video": any((getattr(a, "filename", "") or "").lower().endswith((".mp4", ".mov", ".webm", ".avi")) for a in attachments),
+            "ref_author_id": int(getattr(ref_author, "id", 0) or 0),
+            "ref_author_name": getattr(ref_author, "display_name", "") or getattr(ref_author, "name", ""),
+            "ref_content": (getattr(ref, "content", "") or "")[:50],
+        }
+        bucket = _recent_message_cache.get(key)
+        if bucket is None:
+            bucket = deque(maxlen=RECENT_MESSAGE_CACHE_LIMIT)
+            _recent_message_cache[key] = bucket
+        bucket.append(row)
+    except Exception as e:
+        log_error("remember_recent_message", e)
+
+
+def _cached_author_label(row: dict) -> str:
+    author_id = int(row.get("author_id") or 0)
+    if getattr(bot, "user", None) and author_id == bot.user.id:
+        return f"{BOT_NAME.title()} (you)"
+    if PARTNER_BOT_ID and author_id == PARTNER_BOT_ID:
+        return PARTNER_NAME.title()
+    return row.get("author_name") or "Unknown"
+
+
+def _cached_ref_label(row: dict) -> str:
+    ref_author_id = int(row.get("ref_author_id") or 0)
+    if getattr(bot, "user", None) and ref_author_id == bot.user.id:
+        return f"{BOT_NAME.title()} (you)"
+    if PARTNER_BOT_ID and ref_author_id == PARTNER_BOT_ID:
+        return PARTNER_NAME.title()
+    return row.get("ref_author_name") or "someone"
+
+
+def _format_cached_channel_context(channel, limit: int) -> str:
+    try:
+        key = _recent_cache_key(channel)
+        rows = list(_recent_message_cache.get(key) or [])
+        if not rows:
+            return ""
+        if len(rows) < min(6, max(2, limit)):
+            return ""
+        is_dm_channel = not hasattr(channel, "guild") or channel.guild is None
+        lines: list[str] = []
+        for row in rows[-max(1, limit):]:
+            author_id = int(row.get("author_id") or 0)
+            if row.get("author_bot") and not (
+                getattr(bot, "user", None) and author_id == bot.user.id
+            ) and not (PARTNER_BOT_ID and author_id == PARTNER_BOT_ID):
+                if not is_dm_channel:
+                    continue
+            text = (row.get("content") or "").strip()
+            if not text:
+                if row.get("has_voice"):
+                    text = "[sent a voice message]"
+                elif row.get("has_image"):
+                    text = "[sent an image]"
+                elif row.get("has_video"):
+                    text = "[sent a video]"
+                else:
+                    continue
+            elif row.get("has_voice"):
+                text = f"[sent a voice message] {text}"
+            author_name = _cached_author_label(row)
+            ref_preview = (row.get("ref_content") or "").strip()
+            if row.get("ref_author_id"):
+                ref_author = _cached_ref_label(row)
+                line = f"{author_name} (replying to {ref_author}: \"{ref_preview}\"): {text}" if ref_preview else f"{author_name} (replying to {ref_author}): {text}"
+            else:
+                line = f"{author_name}: {text}"
+            lines.append(line)
+        if not lines:
+            return ""
+        context = "CHANNEL_CONTEXT:\n" + "\n".join(lines)
+        if hasattr(channel, "guild") and channel.guild:
+            mention_map = {m.display_name: m.mention for m in channel.guild.members if not m.bot}
+            if mention_map:
+                context += "\nMENTION_MAP: " + ", ".join(f"{n}={v}" for n, v in list(mention_map.items())[:12])
+        return context
+    except Exception as e:
+        log_error("format_cached_channel_context", e)
+        return ""
+
+
+def _recent_self_lines_from_cache(channel_id: int, limit: int = 6) -> list[str]:
+    try:
+        rows = list(_recent_message_cache.get(int(channel_id or 0)) or [])
+        if not getattr(bot, "user", None):
+            return []
+        lines = []
+        for row in reversed(rows):
+            if int(row.get("author_id") or 0) != bot.user.id:
+                continue
+            cleaned = strip_narration((row.get("content") or "").strip())
+            if cleaned:
+                lines.append(cleaned[:220])
+            if len(lines) >= limit:
+                break
+        return lines
+    except Exception:
+        return []
+
+
+def _message_fast_ignore(message) -> bool:
+    try:
+        bot_user = getattr(bot, "user", None)
+        if bot_user and message.author.id == bot_user.id:
+            return True
+        if message.author.bot and not (PARTNER_BOT_ID and message.author.id == PARTNER_BOT_ID):
+            return True
+        if _owner_only_mode and OWNER_ID and message.author.id != OWNER_ID:
+            return True
+        if message.author.id in _dm_blocked_users and not (OWNER_ID and message.author.id == OWNER_ID):
+            return True
+        if message.channel.id in _banned_channels:
+            is_owner_cmd = (
+                OWNER_ID
+                and message.author.id == OWNER_ID
+                and (message.content or "").strip().startswith("!")
+            )
+            if not is_owner_cmd:
+                return True
+    except Exception as e:
+        log_error("message_fast_ignore", e)
+    return False
+
+
+def _message_is_direct(message) -> bool:
+    try:
+        if not getattr(message, "guild", None):
+            return True
+        if (message.content or "").strip().startswith("!"):
+            return True
+        if getattr(bot, "user", None):
+            if any(getattr(m, "id", 0) == bot.user.id for m in getattr(message, "mentions", []) or []):
+                return True
+            ref = getattr(getattr(message, "reference", None), "resolved", None)
+            if getattr(getattr(ref, "author", None), "id", 0) == bot.user.id:
+                return True
+        return False
+    except Exception:
+        return False
+
+
+def _message_item_is_stale(item: dict) -> bool:
+    timeout = MESSAGE_QUEUE_DIRECT_STALE_S if item.get("direct") else MESSAGE_QUEUE_AMBIENT_STALE_S
+    return (time.time() - float(item.get("enqueued", 0) or 0)) > timeout
+
+
+def _drop_queued_ambient(queue: asyncio.Queue) -> bool:
+    try:
+        pending = getattr(queue, "_queue", None)
+        if not pending:
+            return False
+        for item in list(pending):
+            if not item.get("direct"):
+                pending.remove(item)
+                old_msg = item.get("message")
+                _message_pipeline_scheduled.discard(int(getattr(old_msg, "id", 0) or 0))
+                return True
+    except Exception as e:
+        log_error("drop_queued_ambient", e)
+    return False
+
+
+def _ensure_message_worker(key: tuple[str, int]) -> None:
+    worker = _message_pipeline_workers.get(key)
+    if worker and not worker.done():
+        return
+    worker = asyncio.create_task(_message_pipeline_worker(key), name=f"{BOT_NAME}-queue-{key[0]}-{key[1]}")
+    _message_pipeline_workers[key] = worker
+
+
+async def _message_pipeline_worker(key: tuple[str, int]):
+    global _message_pipeline_dropped, _message_pipeline_processed
+    queue = _message_pipeline_queues.get(key)
+    if queue is None:
+        return
+    try:
+        while True:
+            try:
+                item = await asyncio.wait_for(queue.get(), timeout=300)
+            except asyncio.TimeoutError:
+                if queue.empty():
+                    break
+                continue
+            message = item.get("message")
+            try:
+                _message_pipeline_scheduled.discard(int(getattr(message, "id", 0) or 0))
+                if _message_fast_ignore(message) or _message_item_is_stale(item):
+                    _message_pipeline_dropped += 1
+                    continue
+                await _handle_message_pipeline(message)
+                _message_pipeline_processed += 1
+            except Exception as e:
+                log_error("message_pipeline_worker", e)
+            finally:
+                queue.task_done()
+    finally:
+        if _message_pipeline_workers.get(key) is asyncio.current_task():
+            _message_pipeline_workers.pop(key, None)
+        if queue.empty():
+            _message_pipeline_queues.pop(key, None)
+        else:
+            _ensure_message_worker(key)
+
+
+def _pipeline_health_line() -> str:
+    queued = sum(q.qsize() for q in _message_pipeline_queues.values())
+    latency_ms = int((getattr(bot, "latency", 0.0) or 0.0) * 1000)
+    return (
+        f"queues={len(_message_pipeline_queues)} queued={queued} "
+        f"workers={len(_message_pipeline_workers)} processed={_message_pipeline_processed} "
+        f"dropped={_message_pipeline_dropped} cache_channels={len(_recent_message_cache)} "
+        f"latency={latency_ms}ms groq_wait={groq_client.exhausted_remaining()}s"
+    )
+
+
+def _system_under_pressure() -> bool:
+    try:
+        queued = sum(q.qsize() for q in _message_pipeline_queues.values())
+        return queued >= BACKGROUND_PRESSURE_QUEUE_LIMIT
+    except Exception:
+        return False
+
+
 @bot.event
 async def on_message(message):
+    global _message_pipeline_dropped
+    _remember_recent_message(message)
+    if _message_fast_ignore(message):
+        return
+    if message.id in _message_pipeline_scheduled:
+        return
+    key = _message_pipeline_key(message)
+    queue = _message_pipeline_queues.get(key)
+    if queue is None:
+        queue = asyncio.Queue(maxsize=MESSAGE_QUEUE_MAX)
+        _message_pipeline_queues[key] = queue
+    direct = _message_is_direct(message)
+    if queue.full() and not (direct and _drop_queued_ambient(queue)):
+        _message_pipeline_dropped += 1
+        debug_event("queue", f"{BOT_NAME} dropped message {message.id} for busy {key}")
+        return
+    _message_pipeline_scheduled.add(message.id)
+    try:
+        queue.put_nowait({"message": message, "enqueued": time.time(), "direct": direct})
+    except asyncio.QueueFull:
+        _message_pipeline_scheduled.discard(message.id)
+        _message_pipeline_dropped += 1
+        return
+    _ensure_message_worker(key)
+
+
+async def _handle_message_pipeline(message):
     try:
         # Always ignore own messages first
         if message.author.id == bot.user.id:
@@ -5426,6 +5854,9 @@ async def _proactive_loop():
             if groq_client.is_exhausted():
                 await asyncio.sleep(max(120, min(groq_client.exhausted_remaining(), 1800)))
                 continue
+            if _system_under_pressure():
+                await asyncio.sleep(120)
+                continue
             channels = await mem.get_active_channels()
             ru = await mem.get_romance_users()
             random.shuffle(channels)
@@ -5498,6 +5929,9 @@ async def _voluntary_dm_loop():
             if groq_client.is_exhausted():
                 await asyncio.sleep(max(120, min(groq_client.exhausted_remaining(), 1800)))
                 continue
+            if _system_under_pressure():
+                await asyncio.sleep(120)
+                continue
             if random.random() < .4:
                 eligible = await mem.get_dm_eligible_users()
                 if eligible:
@@ -5536,6 +5970,9 @@ async def _duo_autoplay_loop():
         try:
             if groq_client.is_exhausted():
                 await asyncio.sleep(max(60, min(groq_client.exhausted_remaining(), 900)))
+                continue
+            if _system_under_pressure():
+                await asyncio.sleep(60)
                 continue
             for session in await mem.get_due_duo_sessions(BOT_NAME):
                 try:
@@ -5591,6 +6028,9 @@ async def _rival_event_loop():
         try:
             if groq_client.is_exhausted():
                 await asyncio.sleep(max(120, min(groq_client.exhausted_remaining(), 1800)))
+                continue
+            if _system_under_pressure():
+                await asyncio.sleep(120)
                 continue
             channels = await mem.get_active_channels()
             random.shuffle(channels)

@@ -89,3 +89,75 @@ async def collect_rebuild_records(ctx, *, target_user_id: int | None = None, per
         "messages_replayed": len(records),
         "limit_per_channel": limit,
     }
+
+
+async def collect_rank_rebuild_records(
+    ctx,
+    *,
+    bot_user_id: int,
+    target_user_id: int | None = None,
+    per_channel_limit: int | None = None,
+    name_keywords: tuple[str, ...] = (),
+):
+    limit = per_channel_limit if per_channel_limit and per_channel_limit > 0 else REBUILD_HISTORY_PER_CHANNEL
+    records: list[dict[str, Any]] = []
+    user_ids: set[int] = set()
+    channels = _history_channels_for_ctx(ctx)
+    guild = getattr(ctx, "guild", None)
+    normalized_keywords = tuple(token.strip().lower() for token in name_keywords if token and token.strip())
+
+    def looks_like_direct_name_call(content: str) -> bool:
+        lowered = content.lower()
+        return any(token in lowered for token in normalized_keywords)
+
+    for channel in channels:
+        try:
+            async for message in channel.history(limit=limit, oldest_first=False):
+                content = (getattr(message, "content", None) or "").strip()
+                author = getattr(message, "author", None)
+                if not author or getattr(author, "bot", False):
+                    continue
+                if target_user_id is not None and getattr(author, "id", 0) != target_user_id:
+                    continue
+
+                is_dm = guild is None
+                mentions_bot = any(getattr(user, "id", 0) == bot_user_id for user in getattr(message, "mentions", []))
+                is_command = bool(content.startswith(("!", "/")))
+                is_reply_to_bot = False
+                if getattr(message, "reference", None):
+                    try:
+                        ref_msg = message.reference.resolved
+                        if ref_msg is None and getattr(message.reference, "message_id", None):
+                            ref_msg = await channel.fetch_message(message.reference.message_id)
+                        is_reply_to_bot = bool(ref_msg and getattr(getattr(ref_msg, "author", None), "id", 0) == bot_user_id)
+                    except Exception:
+                        is_reply_to_bot = False
+                direct_name_call = bool(content and looks_like_direct_name_call(content))
+
+                if not (is_dm or mentions_bot or is_reply_to_bot or is_command or direct_name_call):
+                    continue
+
+                user_ids.add(author.id)
+                logical_channel_id = author.id if is_dm else channel.id
+                records.append(
+                    {
+                        "user_id": author.id,
+                        "username": str(author),
+                        "display_name": getattr(author, "display_name", None) or getattr(author, "name", "user"),
+                        "channel_id": logical_channel_id,
+                        "message_id": getattr(message, "id", 0),
+                        "content": content,
+                        "created_ts": float(message.created_at.timestamp()) if getattr(message, "created_at", None) else 0.0,
+                    }
+                )
+        except Exception:
+            continue
+
+    records.sort(key=lambda item: (item["created_ts"], item["channel_id"], item["message_id"]))
+    return records, {
+        "channels_scanned": len(channels),
+        "channel_ids": [getattr(channel, "id", 0) for channel in channels],
+        "user_ids": sorted(user_ids),
+        "messages_replayed": len(records),
+        "limit_per_channel": limit,
+    }

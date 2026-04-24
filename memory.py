@@ -8,10 +8,66 @@ memory summaries, muted users, contradiction tracking, name progression.
 from __future__ import annotations
 
 import aiosqlite
+import asyncio
 import time
 import json
 import os
 import re
+import sqlite3
+
+
+_ORIGINAL_AIOSQLITE_CONNECT = aiosqlite.connect
+SQLITE_BUSY_TIMEOUT_MS = int(os.getenv("SQLITE_BUSY_TIMEOUT_MS", "10000") or "10000")
+SQLITE_CONNECT_TIMEOUT_S = float(os.getenv("SQLITE_CONNECT_TIMEOUT_S", "30") or "30")
+
+
+async def _configure_sqlite_connection(conn) -> None:
+    try:
+        await conn.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
+        await conn.execute("PRAGMA journal_mode=WAL")
+        await conn.execute("PRAGMA synchronous=NORMAL")
+        await conn.execute("PRAGMA temp_store=MEMORY")
+    except Exception as exc:
+        print(f"[DB] SQLite pragma setup skipped: {type(exc).__name__}: {exc}")
+
+
+class _HardenedAioSqliteConnection:
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault("timeout", SQLITE_CONNECT_TIMEOUT_S)
+        self._raw = _ORIGINAL_AIOSQLITE_CONNECT(*args, **kwargs)
+        self._conn = None
+
+    async def _ready(self):
+        if self._conn is None:
+            self._conn = await self._raw
+            await _configure_sqlite_connection(self._conn)
+        return self._conn
+
+    def __await__(self):
+        return self._ready().__await__()
+
+    async def __aenter__(self):
+        return await self._ready()
+
+    async def __aexit__(self, exc_type, exc, tb):
+        if self._conn is not None:
+            await self._conn.close()
+
+
+def _connect_hardened(*args, **kwargs):
+    return _HardenedAioSqliteConnection(*args, **kwargs)
+
+
+aiosqlite.connect = _connect_hardened
+
+
+def _message_milestone_for_count(count: int) -> int:
+    count = max(0, int(count or 0))
+    milestone = 0
+    for marker in (50, 100, 250, 500, 1000):
+        if count >= marker:
+            milestone = marker
+    return milestone
 
 def _resolve_data_dir() -> str:
     preferred = (os.getenv("MEMORY_DATA_DIR") or os.getenv("BOT_DATA_DIR") or "").strip()
@@ -47,6 +103,35 @@ class Memory:
 
     def _scope_db_path(self, scope: str) -> str:
         return self.shared_db_path if "::" in (scope or "") else self.db_path
+
+    async def backup_now(self, label: str | None = None) -> list[str]:
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        safe_label = re.sub(r"[^a-zA-Z0-9_.-]+", "-", (label or "auto").strip())[:32] or "auto"
+        backup_dir = os.path.join(_data_dir, "backups")
+        os.makedirs(backup_dir, exist_ok=True)
+        copied: list[str] = []
+
+        def _backup_one(src: str) -> str | None:
+            if not src or not os.path.exists(src):
+                return None
+            base = os.path.splitext(os.path.basename(src))[0]
+            dst = os.path.join(backup_dir, f"{base}-{safe_label}-{stamp}.db")
+            source = sqlite3.connect(src, timeout=SQLITE_CONNECT_TIMEOUT_S)
+            target = sqlite3.connect(dst, timeout=SQLITE_CONNECT_TIMEOUT_S)
+            try:
+                source.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
+                with target:
+                    source.backup(target)
+                return dst
+            finally:
+                source.close()
+                target.close()
+
+        for path in dict.fromkeys([self.db_path, self.shared_db_path]):
+            backed_up = await asyncio.to_thread(_backup_one, path)
+            if backed_up:
+                copied.append(backed_up)
+        return copied
 
     async def init(self):
         async with aiosqlite.connect(self.db_path) as db:
@@ -998,6 +1083,39 @@ class Memory:
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute("UPDATE users SET affection_nick=? WHERE user_id=?", (nick, user_id))
             await db.commit()
+
+    async def get_used_nicknames(self, exclude_user_id: int | None = None) -> dict[str, list[str]]:
+        async with aiosqlite.connect(DB_PATH) as db:
+            if exclude_user_id is None:
+                query = "SELECT affection_nick, grudge_nick FROM users"
+                params: tuple = ()
+            else:
+                query = "SELECT affection_nick, grudge_nick FROM users WHERE user_id != ?"
+                params = (exclude_user_id,)
+            async with db.execute(query, params) as cur:
+                rows = await cur.fetchall()
+
+        def _norm(value: str | None) -> str:
+            cleaned = re.sub(r"\s+", " ", (value or "").strip().lower())
+            cleaned = re.sub(r"^[\"'`*]+|[\"'`*]+$", "", cleaned)
+            return cleaned
+
+        used_affection: list[str] = []
+        used_grudge: list[str] = []
+        for affection_nick, grudge_nick in rows:
+            if affection_nick:
+                key = _norm(affection_nick)
+                if key:
+                    used_affection.append(key)
+            if grudge_nick:
+                key = _norm(grudge_nick)
+                if key:
+                    used_grudge.append(key)
+        return {
+            "affection": used_affection,
+            "grudge": used_grudge,
+            "all": list(dict.fromkeys(used_affection + used_grudge)),
+        }
 
     # ── Trust ─────────────────────────────────────────────────────────────────
     async def update_trust(self, user_id: int, delta: int):
@@ -2251,13 +2369,139 @@ class Memory:
                 row = await cur.fetchone()
                 if not row: return 1, False
                 count, last = row
-        for m in [50,100,250,500,1000]:
-            if count >= m and last < m:
-                async with aiosqlite.connect(DB_PATH) as db:
-                    await db.execute("UPDATE users SET milestone_last=? WHERE user_id=?", (m, user_id))
-                    await db.commit()
-                return count, True
+        milestone = _message_milestone_for_count(count)
+        if milestone and (last or 0) < milestone:
+            async with aiosqlite.connect(DB_PATH) as db:
+                await db.execute("UPDATE users SET milestone_last=? WHERE user_id=?", (milestone, user_id))
+                await db.commit()
+            return count, True
         return count, False
+
+    async def rebuild_user_rank(
+        self,
+        user_id: int,
+        username: str,
+        display_name: str,
+        message_count: int,
+        *,
+        first_seen: float = 0.0,
+        last_seen: float = 0.0,
+        replace: bool = False,
+    ) -> dict:
+        recovered_count = max(0, int(message_count or 0))
+        recovered_first = float(first_seen or 0.0)
+        recovered_last = float(last_seen or 0.0)
+        now = time.time()
+        recovered_milestone = _message_milestone_for_count(recovered_count)
+
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                "SELECT username,display_name,message_count,milestone_last,first_seen,last_seen,last_active FROM users WHERE user_id=?",
+                (user_id,),
+            ) as cur:
+                row = await cur.fetchone()
+
+            if row:
+                existing_username = row[0] or ""
+                existing_display = row[1] or ""
+                existing_count = int(row[2] or 0)
+                existing_milestone = int(row[3] or 0)
+                existing_first = float(row[4] or 0.0)
+                existing_last = float(row[5] or 0.0)
+                existing_active = float(row[6] or 0.0)
+
+                final_count = recovered_count if replace else max(existing_count, recovered_count)
+                final_milestone = _message_milestone_for_count(final_count) if replace else max(existing_milestone, _message_milestone_for_count(final_count), recovered_milestone)
+                final_first = existing_first
+                if recovered_first and (not final_first or recovered_first < final_first):
+                    final_first = recovered_first
+                if not final_first:
+                    final_first = now
+                final_last = max(existing_last, recovered_last, final_first)
+                final_active = max(existing_active, recovered_last, final_last)
+
+                await db.execute(
+                    "UPDATE users SET username=?,display_name=?,message_count=?,milestone_last=?,first_seen=?,last_seen=?,last_active=? WHERE user_id=?",
+                    (
+                        (username or existing_username or str(user_id))[:120],
+                        (display_name or existing_display or username or str(user_id))[:120],
+                        final_count,
+                        final_milestone,
+                        final_first,
+                        final_last,
+                        final_active,
+                        user_id,
+                    ),
+                )
+            else:
+                seed_first = recovered_first or now
+                seed_last = max(recovered_last, seed_first)
+                await db.execute(
+                    "INSERT INTO users (user_id,username,display_name,last_seen,last_active,first_seen,message_count,milestone_last) VALUES (?,?,?,?,?,?,?,?)",
+                    (
+                        user_id,
+                        (username or str(user_id))[:120],
+                        (display_name or username or str(user_id))[:120],
+                        seed_last,
+                        seed_last,
+                        seed_first,
+                        recovered_count,
+                        recovered_milestone,
+                    ),
+                )
+            await db.commit()
+
+        async with aiosqlite.connect(self.shared_db_path) as db:
+            async with db.execute(
+                "SELECT first_seen,last_seen,last_active FROM shared_users WHERE user_id=?",
+                (user_id,),
+            ) as cur:
+                row = await cur.fetchone()
+
+            if row:
+                existing_first = float(row[0] or 0.0)
+                existing_last = float(row[1] or 0.0)
+                existing_active = float(row[2] or 0.0)
+                shared_first = existing_first
+                if recovered_first and (not shared_first or recovered_first < shared_first):
+                    shared_first = recovered_first
+                if not shared_first:
+                    shared_first = now
+                shared_last = max(existing_last, recovered_last, shared_first)
+                shared_active = max(existing_active, recovered_last, shared_last)
+                await db.execute(
+                    "INSERT INTO shared_users (user_id,username,display_name,first_seen,last_seen,last_active) VALUES (?,?,?,?,?,?) "
+                    "ON CONFLICT(user_id) DO UPDATE SET username=excluded.username,display_name=excluded.display_name,first_seen=excluded.first_seen,last_seen=excluded.last_seen,last_active=excluded.last_active",
+                    (
+                        user_id,
+                        (username or str(user_id))[:120],
+                        (display_name or username or str(user_id))[:120],
+                        shared_first,
+                        shared_last,
+                        shared_active,
+                    ),
+                )
+            else:
+                seed_first = recovered_first or now
+                seed_last = max(recovered_last, seed_first)
+                await db.execute(
+                    "INSERT INTO shared_users (user_id,username,display_name,first_seen,last_seen,last_active) VALUES (?,?,?,?,?,?)",
+                    (
+                        user_id,
+                        (username or str(user_id))[:120],
+                        (display_name or username or str(user_id))[:120],
+                        seed_first,
+                        seed_last,
+                        seed_last,
+                    ),
+                )
+            await db.commit()
+
+        return {
+            "user_id": user_id,
+            "message_count": recovered_count,
+            "milestone_last": recovered_milestone,
+        }
 
     async def get_top_users(self, limit: int = 8) -> list[dict]:
         async with aiosqlite.connect(DB_PATH) as db:

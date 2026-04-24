@@ -7,12 +7,40 @@ from __future__ import annotations
 import asyncio
 import io
 import os
+import time
 
 import httpx
 import ormsgpack
 
 VOICE_ID = "fb95ab47841a4db189cb35fb619d4ea1"
 FISH_API_URL = "https://api.fish.audio/v1/tts"
+FISH_CIRCUIT_FAILURES = int(os.getenv("FISH_CIRCUIT_FAILURES", "3") or "3")
+FISH_CIRCUIT_COOLDOWN_S = int(os.getenv("FISH_CIRCUIT_COOLDOWN_S", "300") or "300")
+
+_fish_failure_count = 0
+_fish_open_until = 0.0
+
+
+def fish_circuit_remaining() -> int:
+    return max(0, int(_fish_open_until - time.time()))
+
+
+def _fish_circuit_open() -> bool:
+    return fish_circuit_remaining() > 0
+
+
+def _fish_mark_success() -> None:
+    global _fish_failure_count, _fish_open_until
+    _fish_failure_count = 0
+    _fish_open_until = 0.0
+
+
+def _fish_mark_failure(reason: str) -> None:
+    global _fish_failure_count, _fish_open_until
+    _fish_failure_count += 1
+    if _fish_failure_count >= FISH_CIRCUIT_FAILURES:
+        _fish_open_until = max(_fish_open_until, time.time() + FISH_CIRCUIT_COOLDOWN_S)
+        print(f"[Fish Audio] circuit open for {FISH_CIRCUIT_COOLDOWN_S}s after failures: {reason[:120]}")
 
 
 def resolve_voice_id(bot_name: str | None = None, voice_id: str | None = None) -> str:
@@ -54,6 +82,9 @@ def _fish_tts_blocking(
     bot_name: str | None = None,
 ) -> bytes | None:
     try:
+        if _fish_circuit_open():
+            print(f"[Fish Audio] circuit open; skipping Fish for {fish_circuit_remaining()}s")
+            return None
         reference_id = resolve_voice_id(bot_name=bot_name, voice_id=voice_id)
         payload = ormsgpack.packb(
             {
@@ -75,11 +106,15 @@ def _fish_tts_blocking(
             resp = client.post(FISH_API_URL, content=payload, headers=headers)
         if resp.status_code == 200:
             print(f"[Fish Audio] OK {len(resp.content):,} bytes")
+            _fish_mark_success()
             return resp.content
         print(f"[Fish Audio] HTTP {resp.status_code}: {resp.text[:200]}")
+        if resp.status_code in {408, 409, 425, 429, 500, 502, 503, 504}:
+            _fish_mark_failure(f"HTTP {resp.status_code}")
         return None
     except Exception as e:
         print(f"[Fish Audio] {type(e).__name__}: {e}")
+        _fish_mark_failure(str(e))
         return None
 
 
