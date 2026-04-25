@@ -1146,7 +1146,7 @@ Context Tags:
 - CHANNEL_CONTEXT: recent chat. "Wanderer (you)" = YOUR messages. "Scaramouche" = other bot. Use naturally.
 - Messages prefixed with [voice message] = things YOU said as audio. You know you sent them.
 - DM_MODE: private. Slightly more honest. Slightly.
-- DATE/HOUR/LAST_SEEN: be time-aware.
+- DATE/HOUR/LOCAL_TIME/TIMEZONE/TIME_PERIOD/LAST_SEEN: use this as the factual current time for the user. Never invent a different hour, date, or time of day. If LOCAL_TIME says afternoon, do not call it 2 AM, morning, or late night.
 - PARTNER_STAGE / PARTNER_HISTORY / PARTNER_RECENT_SHOTS: your long-term relationship with Scaramouche. Let it evolve instead of resetting to the same exact argument.
 - ATTRIBUTION: state your own views as fact. Only say Scaramouche said, believes, or feels something if CHANNEL_CONTEXT / PARTNER_RECENT_SHOTS explicitly showed it. Otherwise frame it as inference: "if he thinks...", "I assume...", "it sounds like...".
 
@@ -1678,12 +1678,77 @@ def _partner_autoplay_name() -> str:
     return PARTNER_NAME
 
 
-def _user_local_hour(user: dict | None) -> int:
+def _user_timezone_name(user: dict | None) -> str:
+    return ((user or {}).get("timezone_name") or "America/Los_Angeles").strip() or "America/Los_Angeles"
+
+
+def _user_now(user: dict | None) -> datetime:
     try:
-        tz = ZoneInfo((user or {}).get("timezone_name") or "America/Los_Angeles")
-        return datetime.now(tz).hour
+        return datetime.now(ZoneInfo(_user_timezone_name(user)))
     except Exception:
-        return datetime.now().hour
+        return datetime.now(ZoneInfo("America/Los_Angeles"))
+
+
+def _format_local_time(now: datetime) -> str:
+    return now.strftime("%I:%M %p").lstrip("0")
+
+
+def _user_local_hour(user: dict | None) -> int:
+    return _user_now(user).hour
+
+
+def _time_period_label(hour: int) -> str:
+    if 5 <= hour < 12:
+        return "morning"
+    if 12 <= hour < 17:
+        return "afternoon"
+    if 17 <= hour < 21:
+        return "evening"
+    return "night"
+
+
+def _current_time_context(user: dict | None, days_ago: float | int = 0) -> str:
+    now = _user_now(user)
+    tz_name = _user_timezone_name(user)
+    period = _time_period_label(now.hour)
+    local_time = _format_local_time(now)
+    return (
+        f"DATE:{now.strftime('%A %b %d %Y')}"
+        f"|LOCAL_TIME:{local_time}"
+        f"|HOUR:{now.hour}"
+        f"|TIMEZONE:{tz_name}"
+        f"|TIME_PERIOD:{period}"
+        f"|LAST_SEEN:{days_ago}d_ago"
+    )
+
+
+def _sanitize_time_of_day_claims(text: str, user: dict | None) -> str:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return cleaned
+
+    user_now = _user_now(user)
+    actual_time = _format_local_time(user_now)
+
+    def _replace_wrong_clock_time(match: re.Match) -> str:
+        original = match.group(0)
+        hour = int(match.group("hour")) % 12
+        suffix = match.group("suffix").lower().replace(".", "")
+        claimed_hour = hour + (12 if suffix == "pm" else 0)
+        if claimed_hour == user_now.hour:
+            return original
+        if original.lower().startswith(("it's", "it is")):
+            return f"it's {actual_time}"
+        return actual_time
+
+    cleaned = re.sub(
+        r"\b(?:it(?:'s| is)\s+)?(?:already\s+)?(?:about\s+|around\s+)?"
+        r"(?P<hour>1[0-2]|0?[1-9])(?::[0-5]\d)?\s*(?P<suffix>a\.?m\.?|p\.?m\.?)\b",
+        _replace_wrong_clock_time,
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    return cleaned
 
 
 def _voice_style_for(
@@ -3401,9 +3466,8 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
             else:         hint = "Longer, thoughtful."
         hint = _tighten_length_hint(hint, text_pressure, allow_long_text)
 
-        now      = datetime.now()
         days_ago = round((time.time() - (user.get("last_active", 0) if user else 0)) / 86400, 1) if user and user.get("last_active", 0) else 0
-        date_ctx = f"DATE:{now.strftime('%A %b %d %Y')}|HOUR:{now.hour}|LAST_SEEN:{days_ago}d_ago"
+        date_ctx = _current_time_context(user, days_ago)
 
         parts = [
             f"mention:{author_mention}", f"name:{display_name}",
@@ -3849,6 +3913,7 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
             direct_to_me=direct_to_me,
             scope_tag="response:post",
         )
+    reply = _sanitize_time_of_day_claims(reply, refreshed_user or user)
     reply = _sanitize_partner_attribution(reply)
     if reply:
         remember_output(BOT_NAME, reply)
@@ -5346,7 +5411,7 @@ async def _handle_message_pipeline(message):
         except Exception as e: log_error("on_message/anniversary", e)
 
         try:
-            hour = datetime.now().hour
+            hour = _user_local_hour(user)
             if (6 <= hour <= 10 or 22 <= hour <= 23) and romance:
                 if await mem.should_greet(message.author.id):
                     gtype = "morning" if 6 <= hour <= 10 else "late night"
