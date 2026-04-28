@@ -10,7 +10,7 @@ from __future__ import annotations
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
-import os, re, random, asyncio, io, time, json, traceback
+import os, re, random, asyncio, io, time, json, traceback, math
 from collections import deque
 from urllib.parse import quote_plus, urlencode
 from datetime import datetime
@@ -130,6 +130,7 @@ PARTNER_CLIENT_ID_OVERRIDE = (os.getenv("SCARAMOUCHE_CLIENT_ID") or os.getenv("P
 GROQ_EXHAUSTED_SILENCE_S = int(os.getenv("GROQ_EXHAUSTED_SILENCE_S", "600") or "600")
 PROVIDER_PAUSE_COOLDOWN_S = int(os.getenv("PROVIDER_PAUSE_COOLDOWN_S", "120") or "120")
 GROQ_EXHAUSTED_FALLBACK_COOLDOWN_S = int(os.getenv("GROQ_EXHAUSTED_FALLBACK_COOLDOWN_S", "240") or "240")
+DISCORD_SEND_MIN_INTERVAL_S = float(os.getenv("DISCORD_SEND_MIN_INTERVAL_S", "1.25") or "1.25")
 CHANNEL_CONTEXT_LIMIT_DIRECT = int(os.getenv("CHANNEL_CONTEXT_LIMIT_DIRECT", "20") or "20")
 CHANNEL_CONTEXT_LIMIT_AMBIENT = int(os.getenv("CHANNEL_CONTEXT_LIMIT_AMBIENT", "8") or "8")
 CHANNEL_CONTEXT_LIMIT_DM = int(os.getenv("CHANNEL_CONTEXT_LIMIT_DM", "16") or "16")
@@ -151,6 +152,9 @@ _owner_only_mode = False
 _dm_blocked_users: set[int] = set()
 # Banned channels: bot won't talk in these channels
 _banned_channels: set[int] = set()
+_background_tasks: dict[str, asyncio.Task] = {}
+_discord_send_lock = asyncio.Lock()
+_discord_last_send_at: dict[int, float] = {}
 
 
 def _target_channel_id(target) -> int:
@@ -171,10 +175,25 @@ def _is_banned_channel_target(target) -> bool:
     return bool(channel_id and channel_id in _banned_channels)
 
 
+async def _pace_discord_send(target) -> None:
+    if DISCORD_SEND_MIN_INTERVAL_S <= 0:
+        return
+    channel_id = _target_channel_id(target)
+    if not channel_id:
+        return
+    async with _discord_send_lock:
+        now = time.monotonic()
+        wait_for = (_discord_last_send_at.get(channel_id, 0.0) + DISCORD_SEND_MIN_INTERVAL_S) - now
+        if wait_for > 0:
+            await asyncio.sleep(min(wait_for, 5.0))
+        _discord_last_send_at[channel_id] = time.monotonic()
+
+
 async def _guarded_channel_send(channel, *args, **kwargs) -> bool:
     if _is_banned_channel_target(channel):
         return False
     try:
+        await _pace_discord_send(channel)
         sent = await channel.send(*args, **kwargs)
         cache = globals().get("_remember_recent_message")
         if cache:
@@ -189,6 +208,7 @@ async def _guarded_message_reply(message, *args, **kwargs) -> bool:
     if _is_banned_channel_target(message):
         return False
     try:
+        await _pace_discord_send(message)
         sent = await message.reply(*args, **kwargs)
         cache = globals().get("_remember_recent_message")
         if cache:
@@ -203,6 +223,7 @@ async def _guarded_add_reaction(message, emoji) -> bool:
     if _is_banned_channel_target(message):
         return False
     try:
+        await _pace_discord_send(message)
         await message.add_reaction(emoji)
         return True
     except Exception as e:
@@ -4740,6 +4761,13 @@ class ResetView(discord.ui.View):
 # Cross-bot: no command coordination needed — each bot responds independently
 
 
+def _ensure_background_task(name: str, factory) -> None:
+    task = _background_tasks.get(name)
+    if task and not task.done():
+        return
+    _background_tasks[name] = bot.loop.create_task(factory())
+
+
 @bot.event
 async def on_ready():
     global PARTNER_BOT_ID, _TREE_SYNCED, _dm_blocked_users, _banned_channels
@@ -4758,10 +4786,10 @@ async def on_ready():
               memory_backup_loop]:
         try: t.start()
         except: pass
-    bot.loop.create_task(_proactive_loop())
-    bot.loop.create_task(_voluntary_dm_loop())
-    bot.loop.create_task(_duo_autoplay_loop())
-    bot.loop.create_task(_rival_event_loop())
+    _ensure_background_task("proactive", _proactive_loop)
+    _ensure_background_task("voluntary_dm", _voluntary_dm_loop)
+    _ensure_background_task("duo_autoplay", _duo_autoplay_loop)
+    _ensure_background_task("rival_event", _rival_event_loop)
     if not _TREE_SYNCED:
         try:
             synced = await bot.tree.sync()
@@ -5180,7 +5208,8 @@ async def _message_pipeline_worker(key: tuple[str, int]):
 
 def _pipeline_health_line() -> str:
     queued = sum(q.qsize() for q in _message_pipeline_queues.values())
-    latency_ms = int((getattr(bot, "latency", 0.0) or 0.0) * 1000)
+    latency = float(getattr(bot, "latency", 0.0) or 0.0)
+    latency_ms = int(latency * 1000) if math.isfinite(latency) else -1
     return (
         f"queues={len(_message_pipeline_queues)} queued={queued} "
         f"workers={len(_message_pipeline_workers)} processed={_message_pipeline_processed} "
