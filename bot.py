@@ -1743,6 +1743,47 @@ def _current_time_context(user: dict | None, days_ago: float | int = 0) -> str:
     )
 
 
+def _parse_birthday_input(raw: str, user: dict | None = None) -> tuple[int, int, int | None]:
+    text = (raw or "").strip().replace(",", " ")
+    text = re.sub(r"\s+", " ", text)
+    if not text:
+        raise ValueError("missing")
+    numeric = re.fullmatch(r"(\d{1,4})[/-](\d{1,2})(?:[/-](\d{1,4}))?", text)
+    if numeric:
+        a, b, c = numeric.groups()
+        if c and len(a) == 4:
+            year, month, day = int(a), int(b), int(c)
+        elif c:
+            month, day, year = int(a), int(b), int(c)
+        else:
+            month, day, year = int(a), int(b), None
+        _validate_birthday_parts(month, day, year, user)
+        return month, day, year
+    for fmt in ("%B %d %Y", "%b %d %Y", "%B %d", "%b %d"):
+        try:
+            parsed = datetime.strptime(text, fmt)
+            year = parsed.year if "%Y" in fmt else None
+            month, day = parsed.month, parsed.day
+            _validate_birthday_parts(month, day, year, user)
+            return month, day, year
+        except ValueError:
+            continue
+    raise ValueError("invalid")
+
+
+def _validate_birthday_parts(month: int, day: int, year: int | None, user: dict | None = None) -> None:
+    current_year = _user_now(user).year
+    if year is not None and (year < 1900 or year > current_year):
+        raise ValueError("year")
+    datetime(year or 2000, month, day)
+
+
+def _birthday_display(month: int, day: int, year: int | None = None) -> str:
+    if year:
+        return datetime(year, month, day).strftime("%B %-d, %Y") if os.name != "nt" else datetime(year, month, day).strftime("%B %#d, %Y")
+    return datetime(2000, month, day).strftime("%B %-d") if os.name != "nt" else datetime(2000, month, day).strftime("%B %#d")
+
+
 def _sanitize_time_of_day_claims(text: str, user: dict | None) -> str:
     cleaned = (text or "").strip()
     if not cleaned:
@@ -4781,6 +4822,7 @@ async def on_ready():
     print(f"💨 Wanderer — online. {bot.user} (ID: {bot.user.id})")
     if PARTNER_BOT_ID: print(f"   Partner bot ID: {PARTNER_BOT_ID}")
     for t in [status_rotation, reminder_checker, daily_reset,
+              birthday_checker_loop,
               absence_checker, lore_drop_loop, conversation_starter_loop,
               existential_loop, mood_swing_loop, health_watchdog_loop,
               memory_backup_loop]:
@@ -4825,6 +4867,36 @@ async def reminder_checker():
 async def daily_reset():
     try: await mem.reset_daily_greetings()
     except Exception as e: log_error("daily_reset", e)
+
+
+@tasks.loop(hours=1)
+async def birthday_checker_loop():
+    try:
+        for bd in await mem.get_birthdays_due():
+            try:
+                uid = int(bd["user_id"])
+                channel_id = await mem.get_user_last_channel(uid)
+                ch = bot.get_channel(channel_id) if channel_id else None
+                if not ch or not getattr(ch, "guild", None) or channel_id in _banned_channels:
+                    continue
+                member = ch.guild.get_member(uid)
+                mention = member.mention if member else f"<@{uid}>"
+                name = (member.display_name if member else bd.get("display_name")) or "them"
+                age = bd.get("age")
+                age_line = f"They are turning {age}." if age is not None else "Their age is unknown."
+                msg = await qai(
+                    f"It is {name}'s birthday today. {age_line} "
+                    f"Congratulate them as Wanderer in one short server message. "
+                    f"Be dry, funny, slightly reluctant, and oddly sincere. Mention the age if known.",
+                    140,
+                )
+                if await _guarded_channel_send(ch, f"{mention} {msg}"):
+                    await mem.mark_birthday_sent(uid, int(bd["year"]))
+            except Exception as e:
+                log_error("birthday_send", e)
+    except Exception as e:
+        log_error("birthday_checker_loop", e)
+
 
 @tasks.loop(hours=1)
 async def absence_checker():
@@ -7724,6 +7796,46 @@ async def rpdepth_cmd(ctx, depth: str = None):
         await mem.set_user_preference(ctx.author.id, "rp_depth", normalized)
         await safe_reply(ctx, f"...Alright. RP depth is `{normalized}` now.")
     except Exception as e: log_error("rpdepth_cmd", e)
+
+@bot.command(name="birthday", aliases=["dob", "birthdate", "setbirthday"])
+async def birthday_cmd(ctx, *, birthday: str = None):
+    try:
+        target = ctx.author
+        raw = (birthday or "").strip()
+        can_set_other = bool(
+            OWNER_ID and ctx.author.id == OWNER_ID
+            or getattr(getattr(ctx.author, "guild_permissions", None), "manage_guild", False)
+        )
+        if raw and ctx.message.mentions and can_set_other:
+            target = ctx.message.mentions[0]
+            raw = raw.replace(f"<@{target.id}>", "").replace(f"<@!{target.id}>", "").strip()
+
+        user = await _setup_user(target)
+        if not raw:
+            if user and user.get("birth_month") and user.get("birth_day"):
+                display = _birthday_display(user["birth_month"], user["birth_day"], user.get("birth_year") or None)
+                age_note = " Age will be announced." if user.get("birth_year") else " Add a birth year if you want age announced."
+                await safe_reply(ctx, f"{target.display_name}'s birthday: `{display}`.{age_note}")
+            else:
+                await safe_reply(ctx, "Use `!birthday YYYY-MM-DD`, `!birthday MM-DD`, or `!birthday March 14`. Add a year if you want age announced.")
+            return
+
+        if raw.lower() in {"clear", "remove", "delete", "forget"}:
+            await mem.clear_birthday(target.id)
+            await safe_reply(ctx, f"...Alright. I forgot {target.display_name}'s birthday.")
+            return
+
+        month, day, year = _parse_birthday_input(raw, user)
+        await mem.set_birthday(target.id, month, day, year)
+        display = _birthday_display(month, day, year)
+        age_note = " I'll mention the age too." if year else " I will not mention age unless you add a birth year."
+        await safe_reply(ctx, f"Birthday set to `{display}` for {target.display_name}.{age_note}")
+    except ValueError:
+        await safe_reply(ctx, "Use `!birthday YYYY-MM-DD`, `!birthday MM-DD`, or `!birthday March 14`. Example: `!birthday 2005-04-28`.")
+    except Exception as e:
+        log_error("birthday_cmd", e)
+        await safe_reply(ctx, "Birthday setup failed.")
+
 
 @bot.command(name="timezone")
 async def timezone_cmd(ctx, *, timezone_name: str = None):

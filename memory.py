@@ -14,6 +14,8 @@ import json
 import os
 import re
 import sqlite3
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 
 _ORIGINAL_AIOSQLITE_CONNECT = aiosqlite.connect
@@ -184,7 +186,11 @@ class Memory:
                     repair_progress  INTEGER DEFAULT 0,
                     callback_memory  TEXT    DEFAULT NULL,
                     callback_ts      REAL    DEFAULT 0,
-                    repair_count     INTEGER DEFAULT 0
+                    repair_count     INTEGER DEFAULT 0,
+                    birth_month      INTEGER DEFAULT 0,
+                    birth_day        INTEGER DEFAULT 0,
+                    birth_year       INTEGER DEFAULT 0,
+                    birthday_last_sent_year INTEGER DEFAULT 0
                 );
                 CREATE TABLE IF NOT EXISTS messages (
                     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -398,6 +404,10 @@ class Memory:
                 ("callback_memory",    "TEXT DEFAULT NULL"),
                 ("callback_ts",        "REAL DEFAULT 0"),
                 ("repair_count",       "INTEGER DEFAULT 0"),
+                ("birth_month",        "INTEGER DEFAULT 0"),
+                ("birth_day",          "INTEGER DEFAULT 0"),
+                ("birth_year",         "INTEGER DEFAULT 0"),
+                ("birthday_last_sent_year", "INTEGER DEFAULT 0"),
             ]
             for col, default in migrations:
                 try:
@@ -629,7 +639,7 @@ class Memory:
                        milestone_last,first_seen,last_seen,last_active,greeted_today,anniversary_last,
                        slow_burn,slow_burn_fired,drift_score,memory_summary,last_statement,
                        style_profile,emotional_arc,conflict_open,conflict_summary,last_conflict_ts,repair_progress,
-                       callback_memory,callback_ts,repair_count
+                       callback_memory,callback_ts,repair_count,birth_month,birth_day,birth_year,birthday_last_sent_year
                 FROM users WHERE user_id=?
             """, (user_id,)) as cur:
                 row = await cur.fetchone()
@@ -668,6 +678,10 @@ class Memory:
                     "callback_memory": row[43],
                     "callback_ts": row[44] or 0,
                     "repair_count": row[45] or 0,
+                    "birth_month": row[46] or 0,
+                    "birth_day": row[47] or 0,
+                    "birth_year": row[48] or 0,
+                    "birthday_last_sent_year": row[49] or 0,
                 }
         prefs = await self.get_user_preferences(user_id)
         user.update(prefs)
@@ -3110,6 +3124,68 @@ class Memory:
                 row = await cur.fetchone(); return row[0] if row else None
 
     # ── DM cooldown ───────────────────────────────────────────────────────────
+    # Birthday helpers
+    async def set_birthday(self, user_id: int, month: int, day: int, year: int | None = None):
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "UPDATE users SET birth_month=?,birth_day=?,birth_year=? WHERE user_id=?",
+                (int(month), int(day), int(year or 0), user_id),
+            )
+            await db.commit()
+
+    async def clear_birthday(self, user_id: int):
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "UPDATE users SET birth_month=0,birth_day=0,birth_year=0,birthday_last_sent_year=0 WHERE user_id=?",
+                (user_id,),
+            )
+            await db.commit()
+
+    async def get_birthdays_due(self) -> list[dict]:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute("""
+                SELECT user_id,display_name,timezone_name,birth_month,birth_day,birth_year,birthday_last_sent_year
+                FROM users
+                WHERE birth_month>0 AND birth_day>0
+            """) as cur:
+                rows = await cur.fetchall()
+
+        due: list[dict] = []
+        for user_id, display_name, timezone_name, month, day, birth_year, last_sent_year in rows:
+            try:
+                tz = ZoneInfo(timezone_name or "America/Los_Angeles")
+            except Exception:
+                tz = ZoneInfo("America/Los_Angeles")
+            now = datetime.now(tz)
+            if int(month) != now.month or int(day) != now.day:
+                continue
+            if int(last_sent_year or 0) >= now.year:
+                continue
+            if not (8 <= now.hour <= 22):
+                continue
+            age = None
+            if int(birth_year or 0) > 0 and int(birth_year) <= now.year:
+                age = now.year - int(birth_year)
+            due.append({
+                "user_id": int(user_id),
+                "display_name": display_name or "someone",
+                "timezone_name": timezone_name or "America/Los_Angeles",
+                "birth_month": int(month),
+                "birth_day": int(day),
+                "birth_year": int(birth_year or 0),
+                "age": age,
+                "year": now.year,
+            })
+        return due
+
+    async def mark_birthday_sent(self, user_id: int, year: int):
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute(
+                "UPDATE users SET birthday_last_sent_year=? WHERE user_id=?",
+                (int(year), user_id),
+            )
+            await db.commit()
+
     async def can_dm_user(self, user_id: int, cooldown: int = 7200) -> bool:
         async with aiosqlite.connect(DB_PATH) as db:
             async with db.execute("SELECT last_sent FROM dm_cooldown WHERE user_id=?", (user_id,)) as cur:
