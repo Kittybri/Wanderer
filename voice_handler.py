@@ -16,6 +16,7 @@ VOICE_ID = "fb95ab47841a4db189cb35fb619d4ea1"
 FISH_API_URL = "https://api.fish.audio/v1/tts"
 FISH_CIRCUIT_FAILURES = int(os.getenv("FISH_CIRCUIT_FAILURES", "3") or "3")
 FISH_CIRCUIT_COOLDOWN_S = int(os.getenv("FISH_CIRCUIT_COOLDOWN_S", "300") or "300")
+ALLOW_GTTS_FALLBACK = (os.getenv("FISH_ALLOW_GTTS_FALLBACK", "").strip().lower() in {"1", "true", "yes", "on"})
 
 _fish_failure_count = 0
 _fish_open_until = 0.0
@@ -157,7 +158,14 @@ async def get_audio(
         audio = await generate_tts_fish_audio(text, fish_audio_key, voice_id=voice_id, bot_name=bot_name)
         if audio:
             return audio
-    return await generate_tts_gtts(text)
+        print("[Fish Audio] Fish failed; refusing generic gTTS fallback")
+        if ALLOW_GTTS_FALLBACK:
+            return await generate_tts_gtts(text)
+        return None
+    print("[Fish Audio] FISH_AUDIO_API_KEY is not set; refusing generic gTTS fallback")
+    if ALLOW_GTTS_FALLBACK:
+        return await generate_tts_gtts(text)
+    return None
 
 
 def _style_tts_text(text: str, style: str = "guarded") -> str:
@@ -195,7 +203,10 @@ async def get_audio_mooded(
     bot_name: str | None = None,
 ) -> bytes | None:
     if not fish_audio_key:
-        return await generate_tts_gtts(text)
+        print("[Fish Audio] FISH_AUDIO_API_KEY is not set; refusing generic gTTS fallback")
+        if ALLOW_GTTS_FALLBACK:
+            return await generate_tts_gtts(text)
+        return None
 
     if mood <= -6:
         chunk = 140
@@ -234,7 +245,12 @@ async def get_audio_mooded(
         audio = await asyncio.get_event_loop().run_in_executor(None, _blocking)
         if audio:
             return audio
-        return await generate_tts_gtts(text)
+        print("[Fish Audio] Fish failed; refusing generic gTTS fallback")
+        if ALLOW_GTTS_FALLBACK:
+            return await generate_tts_gtts(text)
+        return None
     except Exception as e:
         print(f"[Fish Mooded] {e}")
-        return await generate_tts_gtts(text)
+        if ALLOW_GTTS_FALLBACK:
+            return await generate_tts_gtts(text)
+        return None
