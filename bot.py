@@ -5341,9 +5341,64 @@ async def _handle_message_pipeline(message):
         if message.author.bot:
             # Allow partner bot messages through for cross-bot interaction
             if PARTNER_BOT_ID and message.author.id == PARTNER_BOT_ID:
-                pass  # Let it through
+                rpg_text = (message.content or "").lower()
+                # A full-clear announcement is the one RPG message worth answering.
+                if "conquered all 11 fatui harbingers" in rpg_text and "scaramouche" in rpg_text:
+                    try:
+                        comment = await qai(
+                            "Someone just beat all 11 Fatui Harbingers in Scaramouche's RPG game. "
+                            "As the Wanderer, make a short comment acknowledging it — something like "
+                            "'seems like you were able to take the game brought by my other me with no problem' "
+                            "but in your own words. Stay in character. 1-2 sentences.",
+                            100,
+                        )
+                        if comment:
+                            await message.channel.send(comment)
+                    except Exception as e:
+                        log_error("partner_rpg_victory", e)
+                    return
+
+                # Don't respond to the partner's ordinary RPG game messages.
+                rpg_titles = (
+                    "harbinger", "arena battle", "round", "gauntlet", "dice roll",
+                    "defeated", "victory", "smart move", "could be worse", "terrible choice",
+                    "continuing quest", "vision holder", "transmigrated", "horror world", "takeover world",
+                )
+                if message.embeds and any(
+                    embed.title and any(marker in (embed.title or "").lower() for marker in rpg_titles)
+                    for embed in message.embeds
+                ):
+                    return
+                if (
+                    "!rpg" in rpg_text
+                    or "!fire" in rpg_text
+                    or "!quest" in rpg_text
+                    or "harbinger gauntlet" in rpg_text
+                ):
+                    return
             else:
                 return
+
+        # Keep only one bot's RPG active in a channel at a time.
+        if PARTNER_BOT_ID and not message.author.bot:
+            try:
+                rpg_titles = (
+                    "harbinger", "round", "dice roll", "defeated", "victory",
+                    "continuing quest", "gauntlet", "smart move", "could be worse", "terrible choice",
+                )
+                recent = [recent_message async for recent_message in message.channel.history(limit=8)]
+                if any(
+                    recent_message.author.id == PARTNER_BOT_ID
+                    and recent_message.embeds
+                    and any(
+                        embed.title and any(marker in (embed.title or "").lower() for marker in rpg_titles)
+                        for embed in recent_message.embeds
+                    )
+                    for recent_message in recent
+                ):
+                    return
+            except Exception as e:
+                log_error("partner_rpg_suppression", e)
 
         # Owner-only mode: ignore everyone except the owner
         if _owner_only_mode and OWNER_ID and message.author.id != OWNER_ID:
@@ -6677,6 +6732,893 @@ async def _do_teachvideo(ctx, attachment, topic, msg_id=None):
 
 # ── All other commands (same as Scaramouche but Wanderer-voiced) ──────────────
 
+# ══════════════════════════════════════════════════════════════════════════════
+# RPG SYSTEM — Post-Apocalyptic Genshin Fatui Harbinger Gauntlet
+# ══════════════════════════════════════════════════════════════════════════════
+
+HARBINGERS_HORROR = [
+    {"rank": 11, "name": "Tartaglia",   "title": "Childe",       "pts": 12, "theme": "a flooded battlefield where black Hydro oozes from the ground — Tartaglia's body is fused with an Abyssal parasite, his face split into a permanent grin of teeth and void, laughing as he drowns in his own corrupted delusion"},
+    {"rank": 10, "name": "Capitano's Shadow", "title": "The Unknown", "pts": 14, "theme": "a fog that breathes — Capitano's armor walks without a body inside, leaking black mist from every joint, his voice echoing from nowhere and everywhere, the fog itself is his rotting consciousness spread thin"},
+    {"rank": 9,  "name": "Pantalone",   "title": "Regrator",      "pts": 16, "theme": "a merchant city where Mora has fused with flesh — Pantalone's skin is gold and cracking, coins grow from his spine like tumors, his smile never changes because his face is frozen mid-transaction, and the walls are papered with human-skin ledgers"},
+    {"rank": 8,  "name": "La Signora",  "title": "Fair Lady",     "pts": 17, "theme": "a field of cryo-fire where La Signora burns eternally — her body is half-ash half-ice, reforming and crumbling in an endless loop of agony, her screams have become the wind itself, and moth-like creatures made of ember circle her broken form"},
+    {"rank": 7,  "name": "Sandrone",    "title": "Marionette",    "pts": 18, "theme": "a factory of flesh and gears — Sandrone has stitched herself into her greatest puppet, her organs visible through glass panels in its chest, the other puppets are made from harvested bodies that still twitch and whisper the names of people they used to be"},
+    {"rank": 6,  "name": "The Wanderer's Echo", "title": "Balladeer", "pts": 20, "theme": "a sky domain that screams — the Wanderer's abandoned past echoes through crackling Anemo, a hollow puppet body hangs from strings of wind, its mouth moving with no sound except when you look away — then it whispers things only you would know, things you never told anyone"},
+    {"rank": 5,  "name": "Pulcinella",  "title": "Rooster",       "pts": 21, "theme": "the halls of Snezhnaya's government, wallpapered with smiling portraits whose eyes follow you — Pulcinella has merged with the bureaucracy itself, his face appears in every document, every stamp, his laughter comes from the walls and the children who serve him have no eyes, just smooth skin where eyes should be"},
+    {"rank": 4,  "name": "Arlecchino",  "title": "The Knave",     "pts": 23, "theme": "the House of the Hearth, still burning after years — Arlecchino's cross-shaped pupils now cover her entire eyes, black fire drips from her hands like blood, her 'children' patrol the halls as hollow-eyed soldiers whose bodies crack like porcelain when struck, revealing nothing inside"},
+    {"rank": 3,  "name": "Columbina",   "title": "Damselette",    "pts": 25, "theme": "a cathedral of sleep where no one wakes up — Columbina floats above a sea of dreaming bodies, her lullaby physically visible as threads that sew people's eyes shut, her wings are made of compressed human whispers, and smiling is the only expression the dreamers can make as they slowly stop breathing"},
+    {"rank": 2,  "name": "Il Dottore",  "title": "The Doctor",    "pts": 27, "theme": "a laboratory that IS Il Dottore — the walls are his clones fused together into architecture, faces emerging from the ceiling to observe you, every door handle is a reaching hand, his 'segments' crawl along the floor as incomplete bodies, and the air tastes like formaldehyde and wrong"},
+    {"rank": 1,  "name": "Pierro",      "title": "The Jester",    "pts": 28, "theme": "the Tsaritsa's frozen throne room — but the Tsaritsa is gone and Pierro sits in her place, half his face is Khaenri'ah ruins that move, his one visible eye contains a dying star, the throne is made of every failed plan crystallized into ice, and reality bends around him — corners that shouldn't exist, shadows that arrive before the objects casting them"},
+]
+
+HARBINGERS_TAKEOVER = [
+    {"rank": 11, "name": "Tartaglia",   "title": "Childe",       "pts": 12, "theme": "the conquered shores of Liyue — Tartaglia commands a Hydro army from the flooded harbor, warships patrol the coast, civilians are forced into gladiator arenas for his entertainment, and anyone who resists is swept into the Abyss"},
+    {"rank": 10, "name": "Capitano",    "title": "The Captain",   "pts": 14, "theme": "the occupied frontier between Natlan and Fontaine — Capitano's elite military has turned the borderlands into a fortress, war camps stretch to the horizon, conquered soldiers march in formation with dead eyes, and his undefeated reputation makes armies surrender before fighting"},
+    {"rank": 9,  "name": "Pantalone",   "title": "Regrator",      "pts": 16, "theme": "the financial district of a conquered Fontaine — Pantalone has bought every nation's debt, Mora flows only through him, entire cities starve unless they kneel, and his merchant empire runs on indentured servitude disguised as commerce"},
+    {"rank": 8,  "name": "La Signora",  "title": "Fair Lady",     "pts": 17, "theme": "the scorched remains of Mondstadt — La Signora burned it out of spite before her death, but her loyal followers keep her Cryo-Pyro legacy alive, a cult that worships her ashes and terrorizes the resistance with fire and ice"},
+    {"rank": 7,  "name": "Sandrone",    "title": "Marionette",    "pts": 18, "theme": "a massive automaton factory built over Inazuma's ruins — Sandrone's mechanical army patrols every street, her puppets replaced the Shogunate, surveillance dolls watch from every rooftop, and human workers toil endlessly to build more machines"},
+    {"rank": 6,  "name": "The Wanderer's Echo", "title": "Balladeer", "pts": 20, "theme": "a stolen sky domain above Sumeru — the Wanderer's abandoned throne still crackles with Anemo, his loyalists guard the floating fortress, the Akasha Terminal has been weaponized to control thoughts, and the people below live under an artificial sky that watches them"},
+    {"rank": 5,  "name": "Pulcinella",  "title": "Rooster",       "pts": 21, "theme": "the political heart of Snezhnaya — Pulcinella controls the government through manipulation, his spies are in every nation, children are conscripted from orphanages into his intelligence network, and dissent is crushed through bureaucratic erasure — you simply stop existing on paper"},
+    {"rank": 4,  "name": "Arlecchino",  "title": "The Knave",     "pts": 23, "theme": "the expanded House of the Hearth, now a military academy spanning all of Fontaine — Arlecchino's 'children' are elite assassin-soldiers raised from birth, loyalty is absolute, the weak are discarded, and her black flames mark every territory she claims"},
+    {"rank": 3,  "name": "Columbina",   "title": "Damselette",    "pts": 25, "theme": "a 'peaceful' sanctuary where resistance fighters are brought to be 'calmed' — Columbina's lullabies erase memories and will, her domain appears beautiful but everyone inside has given up fighting, smiling blankly as they serve the Fatui willingly, forgetting they ever had a cause"},
+    {"rank": 2,  "name": "Il Dottore",  "title": "The Doctor",    "pts": 27, "theme": "a sprawling research complex built over Sumeru's Akademiya — Il Dottore experiments on Vision holders to extract and weaponize their power, his clone-segments govern different sectors simultaneously, and the conquered scholars are forced to advance Fatui technology or become test subjects"},
+    {"rank": 1,  "name": "Pierro",      "title": "The Jester",    "pts": 28, "theme": "the Tsaritsa's throne room in Zapolyarny Palace — Pierro is the architect of everything, the mastermind who orchestrated the fall of every nation, he sits beside the Cryo Archon as her right hand, and defeating him means challenging the entire might of the Fatui at its source"},
+]
+
+def _get_harbingers(world_type: str) -> list:
+    if world_type == "horror":
+        return HARBINGERS_HORROR
+    return HARBINGERS_TAKEOVER
+
+def _get_harbinger(boss_index: int, world_type: str = "horror") -> dict:
+    harbs = _get_harbingers(world_type)
+    if 0 <= boss_index < len(harbs):
+        return harbs[boss_index]
+    return harbs[-1]
+
+# ── RPG Dice Roll Encounter (Round 10) ────────────────────────────────────────
+
+FIVE_STAR_CHARS = [
+    {"name": "Zhongli", "element": "Geo", "line": "Every journey has its final day. Don't rush... but don't hesitate either."},
+    {"name": "Raiden Shogun", "element": "Electro", "line": "Inazuma shines eternal. Take this strength — you will need it where you're going."},
+    {"name": "Nahida", "element": "Dendro", "line": "I've been watching your progress through the Irminsul. You're doing better than you think!"},
+    {"name": "Hu Tao", "element": "Pyro", "line": "Hehe~ You're not on my client list yet! Here, take some luck from the Wangsheng Funeral Parlor!"},
+    {"name": "Venti", "element": "Anemo", "line": "Ehe~ A bard's blessing for a brave soul! May the wind guide your steps, friend!"},
+    {"name": "Xiao", "element": "Anemo", "line": "...I don't do this for just anyone. Take this — and don't waste it."},
+    {"name": "Ayaka", "element": "Cryo", "line": "The Kamisato Clan stands with you. Please, take this as proof of our support."},
+    {"name": "Ganyu", "element": "Cryo", "line": "I've calculated a 73.6% increase in your survival odds with this blessing. Good luck!"},
+    {"name": "Neuvillette", "element": "Hydro", "line": "The waters of justice flow in your favor today. I shall lend you my authority."},
+    {"name": "Furina", "element": "Hydro", "line": "A star performance deserves a standing ovation! Take this gift from the Hydro Archon herself~"},
+    {"name": "Kazuha", "element": "Anemo", "line": "The maple leaves told me you'd be here. Walk forward — the wind is at your back."},
+    {"name": "Alhaitham", "element": "Dendro", "line": "Statistically, you'll need this. Don't bother thanking me — it's simply logical."},
+    {"name": "Yelan", "element": "Hydro", "line": "Consider this an investment. I expect a good return — survive, and we're even."},
+    {"name": "Cyno", "element": "Electro", "line": "As General Mahamatra, I decree: you shall not fall here. ...Was that intimidating enough?"},
+]
+
+FOUR_STAR_CHARS = [
+    {"name": "Bennett", "element": "Pyro", "line": "Adventure time! I know my luck is terrible, but maybe it'll rub off as GOOD luck for you!"},
+    {"name": "Xiangling", "element": "Pyro", "line": "Here, try this! It's my special energy-boosting dish! ...Don't ask what's in it."},
+    {"name": "Fischl", "element": "Electro", "line": "The Prinzessin der Verurteilung bestows upon thee the blessing of the Immernachtreich!"},
+    {"name": "Barbara", "element": "Hydro", "line": "Go, Barbara, go! Here's a healing song to keep you fighting! ♪"},
+    {"name": "Noelle", "element": "Geo", "line": "As a maid of the Knights of Favonius, it's my duty to help! Take this shield!"},
+    {"name": "Xingqiu", "element": "Hydro", "line": "A true hero always arrives in the nick of time. Shall I lend you a page from my book?"},
+    {"name": "Sucrose", "element": "Anemo", "line": "O-oh! My experiment worked! This should give you a 12.7% combat boost... probably!"},
+    {"name": "Beidou", "element": "Electro", "line": "Hah! You've got guts, kid. The Crux Fleet has your back — take this and hit 'em hard!"},
+    {"name": "Ningguang", "element": "Geo", "line": "Consider this a business arrangement. Survive, and you owe me a favor."},
+    {"name": "Rosaria", "element": "Cryo", "line": "...Don't read into this. I just happened to be passing by. Take it and go."},
+    {"name": "Thoma", "element": "Pyro", "line": "A friend in need, right? Here, I've got your back. That's what a housekeeper does!"},
+    {"name": "Collei", "element": "Dendro", "line": "I-I'm not that strong, but I want to help! Take this — Amber taught me to never give up!"},
+]
+
+MONSTERS = [
+    {"name": "Ruin Guard", "sound": "*WHIRRRR-CLANK-CLANK-CLANK*", "attack": "slams its massive fist into you, sending you flying into a wall"},
+    {"name": "Abyss Mage", "sound": "*Muhe~ AHAHAHA!*", "attack": "traps you in a bubble of dark energy that drains your strength"},
+    {"name": "Lawachurl", "sound": "*GRAAAAAAGH!*", "attack": "charges at you like a freight train and body-slams you into the dirt"},
+    {"name": "Riftwolf", "sound": "*AWOOOOO— krkrkrkr...*", "attack": "phases through your guard and bites into your essence, leaving a wound that won't heal right"},
+    {"name": "Bathysmal Vishap", "sound": "*SHREEEEEEK!*", "attack": "fires a beam of corrupted energy straight through your defenses"},
+    {"name": "Geovishap Hatchling", "sound": "*skreeee skree SKREE!*", "attack": "rolls into you at full speed like a spinning boulder of teeth and scales"},
+    {"name": "Mirror Maiden", "sound": "*You cannot escape...*", "attack": "locks you in a mirror prison and drains your resolve through the reflection"},
+    {"name": "Consecrated Beast", "sound": "*RRRRRRRGH— crack— CRACK*", "attack": "tears through reality itself to claw at you from an impossible angle"},
+]
+
+FORBIDDEN_ROLL = 13  # unlucky number
+
+async def _rpg_dice_roll(channel, user_id: int, boss_index: int, boss_points: int, total_points: int):
+    """Round 10 special: dice roll encounter before boss fight."""
+    state = await mem.get_rpg_state(user_id)
+    world_type = state.get("world_type", "horror") if state else "horror"
+    boss = _get_harbinger(boss_index, world_type)
+
+    roll = random.randint(1, 20)
+
+    if roll == FORBIDDEN_ROLL:
+        # MONSTER ENCOUNTER — lose 1 point
+        monster = random.choice(MONSTERS)
+        bonus = -1
+        new_boss_points = max(0, boss_points + bonus)
+        new_total = max(0, total_points + bonus)
+
+        embed = discord.Embed(
+            title=f"🎲 Dice Roll: **{roll}** — FORBIDDEN NUMBER!",
+            description=f"💀 A wild **{monster['name']}** ambushes you!\n\n{monster['sound']}\n\nIt {monster['attack']}!",
+            color=0x1a1a2e,
+        )
+        embed.add_field(name="Penalty", value="🔴 **-1 skill point**", inline=True)
+        embed.add_field(name="Points", value=f"**{new_boss_points}** / {boss['pts']} needed", inline=True)
+        embed.set_footer(text=f"The {monster['name']} vanishes into the dark... but the pain remains.")
+
+    elif roll >= 16:
+        # 5-STAR CHARACTER — +4 points
+        char = random.choice(FIVE_STAR_CHARS)
+        bonus = 4
+        new_boss_points = boss_points + bonus
+        new_total = total_points + bonus
+
+        embed = discord.Embed(
+            title=f"🎲 Dice Roll: **{roll}** — ⭐⭐⭐⭐⭐ ENCOUNTER!",
+            description=f"✨ You encounter **{char['name']}** ({char['element']})!\n\n> *\"{char['line']}\"*",
+            color=0xFFD700,
+        )
+        embed.add_field(name="Bonus", value="🌟 **+4 skill points!**", inline=True)
+        embed.add_field(name="Points", value=f"**{new_boss_points}** / {boss['pts']} needed", inline=True)
+        embed.set_footer(text=f"{char['name']} empowers you and disappears in a flash of {char['element']} energy.")
+
+    else:
+        # 4-STAR CHARACTER — +2 points
+        char = random.choice(FOUR_STAR_CHARS)
+        bonus = 2
+        new_boss_points = boss_points + bonus
+        new_total = total_points + bonus
+
+        embed = discord.Embed(
+            title=f"🎲 Dice Roll: **{roll}** — ⭐⭐⭐⭐ Encounter!",
+            description=f"💫 You encounter **{char['name']}** ({char['element']})!\n\n> *\"{char['line']}\"*",
+            color=0xC0C0C0,
+        )
+        embed.add_field(name="Bonus", value="✨ **+2 skill points!**", inline=True)
+        embed.add_field(name="Points", value=f"**{new_boss_points}** / {boss['pts']} needed", inline=True)
+        embed.set_footer(text=f"{char['name']} wishes you luck and heads off on their own journey.")
+
+    await mem.save_rpg_state(user_id, boss_points=new_boss_points, total_points=new_total, current_round=11, scenario_data={})
+    await channel.send(embed=embed)
+    await asyncio.sleep(2)
+    # Now proceed to boss fight
+    await _rpg_boss_fight(channel, user_id, boss_index, new_boss_points, new_total)
+
+async def _rpg_generate_scenario(user_name: str, boss: dict, round_num: int, boss_points: int,
+                                  world_type: str = "horror", char_type: str = "teyvat", element: str = ""):
+    """Generate a scenario with 3 choices. Returns parsed dict or None."""
+    if char_type == "transmigrated":
+        char_line = f"Player: {user_name} — a person from Earth with NO powers, NO Vision. Must use wits, stealth, and improvisation to survive/escape."
+    elif element:
+        char_line = f"Player: {user_name} — a {element.title()} Vision holder from Teyvat. Can use {element.title()} abilities."
+    else:
+        char_line = f"Player: {user_name}"
+
+    if world_type == "horror":
+        world_line = "POST-APOCALYPTIC HORROR GENSHIN IMPACT RPG. Teyvat is dead. The Harbingers are corrupted — twisted, body-horror abominations fused with their own Delusions."
+        tone_line = "Generate a HORROR survival scenario. Be creepy, unsettling, visceral. Describe corrupted environments, wrong sounds, things that shouldn't move but do. The player faces something disturbing."
+    else:
+        world_line = "POST-APOCALYPTIC GENSHIN IMPACT RPG. The Fatui Harbingers have conquered every nation. Military occupation, oppression, and tyranny."
+        tone_line = "Generate a tense survival scenario. Describe occupied territories, Fatui patrols, oppressed civilians, military checkpoints. The player faces a dangerous situation under Harbinger rule."
+
+    if char_type == "transmigrated":
+        tone_line += " The player has NO combat abilities — choices should involve stealth, deception, problem-solving, and desperate improvisation. NOT direct combat."
+
+    prompt = (
+        f"{world_line}\n"
+        f"{char_line}\n"
+        f"Approaching Harbinger #{boss['rank']}: {boss['name']} ({boss['title']})\n"
+        f"Round {round_num}/10 | Current skill points this boss: {boss_points}/30\n"
+        f"Setting: {boss['theme']}\n\n"
+        f"{tone_line}\n"
+        f"Give exactly 3 choices. One is the BEST tactical choice (3 pts), one is OKAY (1 pt), one is BAD (0 pts).\n"
+        f"Randomize which letter is best — don't always make A the best.\n"
+        f"Reply in EXACTLY this format:\n"
+        f"SCENARIO: <2-3 sentence vivid scenario>\n"
+        f"A) <choice text under 60 chars> | PTS: <0 or 1 or 3> | RESULT: <1 sentence outcome>\n"
+        f"B) <choice text under 60 chars> | PTS: <0 or 1 or 3> | RESULT: <1 sentence outcome>\n"
+        f"C) <choice text under 60 chars> | PTS: <0 or 1 or 3> | RESULT: <1 sentence outcome>"
+    )
+    # Use raw AI call — qai() post-processing (self-edit, strip_narration, diversify)
+    # destroys the structured SCENARIO/A)/B)/C) format
+    loop = asyncio.get_event_loop()
+    raw = await loop.run_in_executor(None, _groq_quick_blocking, prompt, 400)
+    if not raw:
+        return None
+    scenario_match = re.search(r"SCENARIO:\s*(.+?)(?=\s*\n\s*A[\)\.])", raw, re.DOTALL)
+    if not scenario_match:
+        scenario_match = re.search(r"SCENARIO:\s*(.+?)(?=\n[A-C][\)\.])", raw, re.DOTALL)
+    if not scenario_match:
+        scenario_match = re.search(r"^(.+?)(?=\n\s*A[\)\.])", raw, re.DOTALL)
+    choices = []
+    for letter in ("A", "B", "C"):
+        m = re.search(rf"{letter}[\)\.\:]\s*(.+?)\s*\|\s*PTS:\s*(\d+)\s*\|\s*RESULT:\s*(.+?)(?=\n\s*[A-C][\)\.\:]|\Z)", raw, re.DOTALL)
+        if not m:
+            m = re.search(rf"{letter}[\)\.\:]\s*(.+?)\s*\|\s*(?:PTS|POINTS?):\s*(\d+)\s*\|\s*(?:RESULT:)?\s*(.+?)(?=\n\s*[A-C][\)\.\:]|\Z)", raw, re.DOTALL | re.IGNORECASE)
+        if m:
+            choices.append({"label": m.group(1).strip()[:80], "points": max(0, min(3, int(m.group(2)))), "result": m.group(3).strip()})
+    if len(choices) < 3 and scenario_match:
+        pts_order = [3, 1, 0]
+        random.shuffle(pts_order)
+        choices = [
+            {"label": "Press forward aggressively", "points": pts_order[0], "result": "Bold move." if pts_order[0] == 3 else "Reckless." if pts_order[0] == 0 else "Could work."},
+            {"label": "Take a cautious approach", "points": pts_order[1], "result": "Smart." if pts_order[1] == 3 else "Too slow." if pts_order[1] == 0 else "Reasonable."},
+            {"label": "Fall back and regroup", "points": pts_order[2], "result": "Wise retreat." if pts_order[2] == 3 else "Cowardly." if pts_order[2] == 0 else "Safe enough."},
+        ]
+    if not scenario_match:
+        return None
+    return {"scenario": scenario_match.group(1).strip(), "choices": choices}
+
+# ── RPG Character Creation Views ──────────────────────────────────────────────
+
+ELEMENTS = ["🔥 Pyro", "💧 Hydro", "⚡ Electro", "🍃 Dendro", "❄️ Cryo", "🌪️ Anemo", "🪨 Geo"]
+_rpg_setup_tokens: dict[int, int] = {}
+
+class RPGWorldView(discord.ui.View):
+    """Step 1: Choose world type — horror or takeover."""
+    def __init__(self, user_id: int):
+        super().__init__(timeout=120)
+        self.user_id = user_id
+        self._claimed = False
+        self._setup_token = time.time_ns()
+        _rpg_setup_tokens[user_id] = self._setup_token
+
+    @discord.ui.button(label="🩸 Corrupted Horror World", style=discord.ButtonStyle.danger, row=0)
+    async def horror(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("This isn't your quest.", ephemeral=True); return
+        if _rpg_setup_tokens.get(self.user_id) != self._setup_token:
+            await interaction.response.send_message("That character-creation menu is outdated.", ephemeral=True); return
+        if self._claimed:
+            await interaction.response.send_message("That choice is already locked in.", ephemeral=True); return
+        self._claimed = True
+        await mem.save_rpg_state(self.user_id, world_type="horror", active=False)
+        for item in self.children: item.disabled = True
+        await interaction.response.edit_message(view=self)
+        embed = discord.Embed(title="🩸 Corrupted Horror World", description=(
+            "Teyvat is dead. The Harbingers have been twisted into body-horror abominations, "
+            "fused with their own Delusions. The land itself is wrong — corrupted, rotting, alive.\n\n"
+            "**Now choose your origin...**"
+        ), color=0x8B0000)
+        await interaction.followup.send(embed=embed, view=RPGCharTypeView(self.user_id))
+        self.stop()
+
+    @discord.ui.button(label="⚔️ Harbinger Takeover World", style=discord.ButtonStyle.primary, row=0)
+    async def takeover(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("This isn't your quest.", ephemeral=True); return
+        if _rpg_setup_tokens.get(self.user_id) != self._setup_token:
+            await interaction.response.send_message("That character-creation menu is outdated.", ephemeral=True); return
+        if self._claimed:
+            await interaction.response.send_message("That choice is already locked in.", ephemeral=True); return
+        self._claimed = True
+        await mem.save_rpg_state(self.user_id, world_type="takeover", active=False)
+        for item in self.children: item.disabled = True
+        await interaction.response.edit_message(view=self)
+        embed = discord.Embed(title="⚔️ Harbinger Takeover World", description=(
+            "The Fatui Harbingers have conquered every nation in Teyvat. Each one rules their "
+            "territory with an iron fist. The resistance is scattered. Hope is a luxury.\n\n"
+            "**Now choose your origin...**"
+        ), color=0x2F3136)
+        await interaction.followup.send(embed=embed, view=RPGCharTypeView(self.user_id))
+        self.stop()
+
+    async def on_timeout(self):
+        if _rpg_setup_tokens.get(self.user_id) == self._setup_token:
+            _rpg_setup_tokens.pop(self.user_id, None)
+
+class RPGCharTypeView(discord.ui.View):
+    """Step 2: Choose character type — transmigrated (no powers) or Teyvat-born (choose element)."""
+    def __init__(self, user_id: int):
+        super().__init__(timeout=120)
+        self.user_id = user_id
+        self._claimed = False
+        self._setup_token = time.time_ns()
+        _rpg_setup_tokens[user_id] = self._setup_token
+
+    @discord.ui.button(label="🌍 Transmigrated (From Earth)", style=discord.ButtonStyle.secondary, row=0)
+    async def transmigrated(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("This isn't your quest.", ephemeral=True); return
+        if _rpg_setup_tokens.get(self.user_id) != self._setup_token:
+            await interaction.response.send_message("That character-creation menu is outdated.", ephemeral=True); return
+        if self._claimed:
+            await interaction.response.send_message("That choice is already locked in.", ephemeral=True); return
+        self._claimed = True
+        await mem.save_rpg_state(self.user_id, char_type="transmigrated", element="none")
+        for item in self.children: item.disabled = True
+        await interaction.response.edit_message(view=self)
+        embed = discord.Embed(title="🌍 Transmigrated — No Powers", description=(
+            "You fell into Teyvat from Earth. No Vision. No abilities. No knowledge of this world.\n"
+            "You survive on **wits, stealth, and desperation** alone.\n"
+            "Your goal: **escape each Harbinger alive** — you can't fight them, only outsmart them.\n\n"
+            "*Starting your quest...*"
+        ), color=0x95A5A6)
+        await interaction.followup.send(embed=embed)
+        _rpg_setup_tokens.pop(self.user_id, None)
+        await asyncio.sleep(2)
+        await _rpg_start_game(interaction.channel, self.user_id, interaction.user.display_name)
+        self.stop()
+
+    @discord.ui.button(label="✨ Born in Teyvat (Vision Holder)", style=discord.ButtonStyle.success, row=0)
+    async def teyvat_born(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("This isn't your quest.", ephemeral=True); return
+        if _rpg_setup_tokens.get(self.user_id) != self._setup_token:
+            await interaction.response.send_message("That character-creation menu is outdated.", ephemeral=True); return
+        if self._claimed:
+            await interaction.response.send_message("That choice is already locked in.", ephemeral=True); return
+        self._claimed = True
+        await mem.save_rpg_state(self.user_id, char_type="teyvat")
+        for item in self.children: item.disabled = True
+        await interaction.response.edit_message(view=self)
+        embed = discord.Embed(title="✨ Born in Teyvat — Choose Your Element", description=(
+            "You are a Vision holder, born in this world. Your element defines how you fight.\n\n"
+            "**Choose your Vision:**"
+        ), color=0xF1C40F)
+        await interaction.followup.send(embed=embed, view=RPGElementView(self.user_id))
+        self.stop()
+
+    async def on_timeout(self):
+        if _rpg_setup_tokens.get(self.user_id) == self._setup_token:
+            _rpg_setup_tokens.pop(self.user_id, None)
+
+class RPGElementView(discord.ui.View):
+    """Step 3 (Teyvat-born only): Choose element."""
+    def __init__(self, user_id: int):
+        super().__init__(timeout=120)
+        self.user_id = user_id
+        self._claimed = False
+        self._setup_token = time.time_ns()
+        _rpg_setup_tokens[user_id] = self._setup_token
+        styles = [discord.ButtonStyle.danger, discord.ButtonStyle.primary, discord.ButtonStyle.secondary,
+                  discord.ButtonStyle.success, discord.ButtonStyle.primary, discord.ButtonStyle.secondary,
+                  discord.ButtonStyle.secondary]
+        for i, elem in enumerate(ELEMENTS):
+            btn = discord.ui.Button(label=elem, style=styles[i], custom_id=f"rpg_elem_{user_id}_{i}", row=i // 4)
+            btn.callback = self._make_callback(elem)
+            self.add_item(btn)
+
+    def _make_callback(self, element_label: str):
+        async def callback(interaction: discord.Interaction):
+            if interaction.user.id != self.user_id:
+                await interaction.response.send_message("This isn't your quest.", ephemeral=True); return
+            if _rpg_setup_tokens.get(self.user_id) != self._setup_token:
+                await interaction.response.send_message("That character-creation menu is outdated.", ephemeral=True); return
+            if self._claimed:
+                await interaction.response.send_message("That choice is already locked in.", ephemeral=True); return
+            self._claimed = True
+            element_name = element_label.split(" ", 1)[1]  # "🔥 Pyro" -> "Pyro"
+            await mem.save_rpg_state(self.user_id, element=element_name.lower())
+            for item in self.children: item.disabled = True
+            await interaction.response.edit_message(view=self)
+            embed = discord.Embed(title=f"{element_label} Vision Holder", description=(
+                f"Your {element_name} Vision blazes to life. You are a warrior of this world.\n"
+                f"Your element shapes your choices and your combat style.\n\n"
+                f"*Starting your quest...*"
+            ), color=0xF1C40F)
+            await interaction.followup.send(embed=embed)
+            _rpg_setup_tokens.pop(self.user_id, None)
+            await asyncio.sleep(2)
+            await _rpg_start_game(interaction.channel, self.user_id, interaction.user.display_name)
+            self.stop()
+        return callback
+
+    async def on_timeout(self):
+        if _rpg_setup_tokens.get(self.user_id) == self._setup_token:
+            _rpg_setup_tokens.pop(self.user_id, None)
+
+async def _rpg_start_game(channel, user_id: int, display_name: str):
+    """After character creation, generate intro and start first scenario."""
+    state = await mem.get_rpg_state(user_id)
+    world_type = state.get("world_type", "horror") if state else "horror"
+    char_type = state.get("char_type", "teyvat") if state else "teyvat"
+    element = state.get("element", "") if state else ""
+
+    harbs = _get_harbingers(world_type)
+    boss = harbs[0]
+
+    if char_type == "transmigrated":
+        char_desc = (f"{display_name} is a person from Earth who fell into Teyvat. They have NO powers, "
+                     "NO Vision, NO combat abilities. They must rely on intelligence, stealth, and improvisation. "
+                     "They need to ESCAPE or OUTSMART each Harbinger, not fight them.")
+    else:
+        char_desc = (f"{display_name} is a Teyvat-born {element.title()} Vision holder. "
+                     f"They can use {element.title()} abilities in combat and survival situations.")
+
+    if world_type == "horror":
+        world_desc = ("post-apocalyptic HORROR Genshin Impact RPG. Teyvat is dead. "
+                      "The Fatui Harbingers have been corrupted — twisted into body-horror abominations fused with their own Delusions. "
+                      "They rule the wasteland as nightmares made flesh.")
+        tone = "horror, dread, corruption, something deeply wrong with the world"
+    else:
+        world_desc = ("post-apocalyptic Genshin Impact RPG. The Fatui Harbingers have conquered every nation. "
+                      "Each Harbinger rules their territory with military might and fear. The resistance is broken.")
+        tone = "oppression, danger, military occupation, a world under the boot of tyrants"
+
+    intro = await qai(
+        f"You're the narrator of a {world_desc} "
+        f"Character: {char_desc} "
+        f"{display_name} must {'escape from' if char_type == 'transmigrated' else 'defeat'} all 11 Harbingers, "
+        f"starting from #11 Tartaglia to #1 Pierro. "
+        f"Give a terrifying 3-4 sentence opening. Set the tone: {tone}.",
+        250,
+    )
+
+    if char_type == "transmigrated":
+        mission_text = "Escape all 11 Fatui Harbingers alive. No powers. Only your mind."
+    else:
+        mission_text = "Defeat all 11 Fatui Harbingers to save Teyvat."
+
+    embed = discord.Embed(
+        title="⚔️ HARBINGER GAUNTLET — The Fall of Teyvat",
+        description=intro or "The world has ended. The Harbingers remain. You must rise.",
+        color=0x8B0000 if world_type == "horror" else 0x2F3136,
+    )
+    embed.add_field(name="Your Mission", value=mission_text, inline=False)
+    embed.add_field(name="Your Character", value=(
+        f"**Type:** {'🌍 Transmigrated (No Powers)' if char_type == 'transmigrated' else f'✨ {element.title()} Vision Holder'}\n"
+        f"**World:** {'🩸 Corrupted Horror' if world_type == 'horror' else '⚔️ Harbinger Takeover'}"
+    ), inline=False)
+    embed.add_field(name="How It Works", value=(
+        "• 10 rounds of choices per boss\n"
+        "• Each choice earns 0, 1, or 3 skill points\n"
+        f"• Need enough points to {'escape' if char_type == 'transmigrated' else 'beat'} each boss\n"
+        "• Bosses get harder as you climb the ranks"
+    ), inline=False)
+    embed.add_field(name="First Boss", value=f"Harbinger #{boss['rank']}: **{boss['name']}** ({boss['title']})\nPoints needed: **{boss['pts']}**/30", inline=False)
+
+    await mem.save_rpg_state(user_id, current_boss=0, current_round=0, boss_points=0,
+                             total_points=0, bosses_beaten=[], scenario_data={}, active=True)
+    await channel.send(embed=embed)
+    await asyncio.sleep(2)
+    await _rpg_send_scenario(channel, user_id, 0, 1, 0)
+
+class RPGChoiceView(discord.ui.View):
+    def __init__(self, user_id: int, scenario_data: dict):
+        super().__init__(timeout=300)
+        self.user_id = user_id
+        self._claimed = False
+        self.scenario_token = scenario_data.get("_token")
+        styles = [discord.ButtonStyle.primary, discord.ButtonStyle.secondary, discord.ButtonStyle.success]
+        labels = ["A", "B", "C"]
+        for i, choice in enumerate(scenario_data.get("choices", [])):
+            btn = discord.ui.Button(label=f"{labels[i]}) {choice['label'][:70]}", style=styles[i], custom_id=f"rpg_{user_id}_{i}", row=i)
+            btn.callback = self._make_callback(i)
+            self.add_item(btn)
+
+    def _make_callback(self, index: int):
+        async def callback(interaction: discord.Interaction):
+            if interaction.user.id != self.user_id:
+                await interaction.response.send_message("This isn't your quest.", ephemeral=True)
+                return
+            if self._claimed:
+                await interaction.response.send_message("That choice is already locked in.", ephemeral=True)
+                return
+            self._claimed = True
+            await _rpg_handle_choice(interaction, self.user_id, index, self.scenario_token)
+            self.stop()
+        return callback
+
+    async def on_timeout(self):
+        pass
+
+async def _rpg_handle_choice(
+    interaction: discord.Interaction,
+    user_id: int,
+    choice_index: int,
+    scenario_token: int | None = None,
+):
+    """Process a player's RPG choice."""
+    try:
+        state = await mem.get_rpg_state(user_id)
+        if not state or not state["active"]:
+            await interaction.response.send_message("No active quest. Use `!rpg0` to start.", ephemeral=True)
+            return
+
+        scenario_data = state["scenario_data"]
+        if scenario_token is not None and scenario_data.get("_token") != scenario_token:
+            await interaction.response.send_message(
+                "That choice is from an older round. Use the RPG command to continue.",
+                ephemeral=True,
+            )
+            return
+        choices = scenario_data.get("choices", [])
+        if choice_index >= len(choices):
+            await interaction.response.send_message("Invalid choice.", ephemeral=True)
+            return
+
+        chosen = choices[choice_index]
+        points = chosen["points"]
+        result_text = chosen["result"]
+        new_boss_points = state["boss_points"] + points
+        new_total = state["total_points"] + points
+        new_round = state["current_round"] + 1
+        world_type = state.get("world_type", "horror")
+        boss = _get_harbinger(state["current_boss"], world_type)
+
+        pt_emoji = "🟢 +3" if points == 3 else ("🟡 +1" if points == 1 else "🔴 +0")
+
+        # Disable buttons
+        disabled_view = discord.ui.View()
+        labels = ["A", "B", "C"]
+        for i, c in enumerate(choices):
+            btn = discord.ui.Button(
+                label=f"{labels[i]}) {c['label'][:70]}",
+                style=discord.ButtonStyle.danger if i == choice_index and points == 0 else (discord.ButtonStyle.success if i == choice_index else discord.ButtonStyle.secondary),
+                disabled=True, row=i,
+            )
+            disabled_view.add_item(btn)
+        await interaction.response.edit_message(view=disabled_view)
+
+        comment = await qai(
+            f"Player chose: '{chosen['label']}' in a post-apocalyptic Genshin RPG scenario. "
+            f"Result: {result_text}. They got {points}/3 points. "
+            f"Give a SHORT 1-sentence comment as the Wanderer judging their decision.",
+            60,
+        )
+        comment = strip_narration(comment) if comment else "...Noted."
+
+        result_embed = discord.Embed(
+            title=f"{'✅ Smart move.' if points == 3 else ('⚠️ Could be worse.' if points == 1 else '❌ Terrible choice.')}",
+            description=f"> {chosen['label']}\n\n{result_text}",
+            color=0x2ECC71 if points == 3 else (0xF39C12 if points == 1 else 0xE74C3C),
+        )
+        result_embed.add_field(name="Points", value=f"{pt_emoji} ({new_boss_points}/{boss['pts']} needed)", inline=True)
+        result_embed.add_field(name="Round", value=f"{state['current_round']}/10", inline=True)
+        result_embed.set_footer(text=comment)
+        channel = interaction.channel
+
+        if new_round > 10:
+            await mem.save_rpg_state(user_id, boss_points=new_boss_points, total_points=new_total, current_round=new_round, scenario_data={})
+            await channel.send(embed=result_embed)
+            await asyncio.sleep(1.5)
+            await _rpg_boss_fight(channel, user_id, state["current_boss"], new_boss_points, new_total)
+        else:
+            await mem.save_rpg_state(user_id, boss_points=new_boss_points, total_points=new_total, current_round=new_round, scenario_data={})
+            await channel.send(embed=result_embed)
+            await asyncio.sleep(1.5)
+            await _rpg_send_scenario(channel, user_id, state["current_boss"], new_round, new_boss_points)
+
+    except Exception as e:
+        log_error("rpg_handle_choice", e)
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send("Something went wrong. Use the RPG command to continue.", ephemeral=True)
+            else:
+                await interaction.response.send_message("Something went wrong. Use the RPG command to continue.", ephemeral=True)
+        except Exception:
+            pass
+
+async def _rpg_send_scenario(channel, user_id: int, boss_index: int, round_num: int, boss_points: int):
+    """Generate and send a new scenario with buttons."""
+    # Round 10 is the dice roll encounter — skip normal scenario
+    if round_num == 10:
+        state = await mem.get_rpg_state(user_id)
+        total_points = state.get("total_points", 0) if state else 0
+        await _rpg_dice_roll(channel, user_id, boss_index, boss_points, total_points)
+        return
+    state = await mem.get_rpg_state(user_id)
+    world_type = state.get("world_type", "horror") if state else "horror"
+    char_type = state.get("char_type", "teyvat") if state else "teyvat"
+    element = state.get("element", "") if state else ""
+    boss = _get_harbinger(boss_index, world_type)
+    guild = channel.guild if hasattr(channel, "guild") else None
+    user_name = guild.get_member(user_id).display_name if guild and guild.get_member(user_id) else "Traveler"
+
+    scenario = await _rpg_generate_scenario(user_name, boss, round_num, boss_points, world_type, char_type, element)
+    if not scenario:
+        await channel.send("*The path ahead is unclear... try `!rpg0` again.*")
+        return
+
+    scenario["_token"] = time.time_ns()
+    await mem.save_rpg_state(user_id, scenario_data=scenario, current_round=round_num)
+
+    embed = discord.Embed(
+        title=f"⚔️ Harbinger #{boss['rank']}: {boss['name']} — Round {round_num}/10",
+        description=scenario["scenario"],
+        color=0x8B0000,
+    )
+    embed.add_field(name="Skill Points", value=f"**{boss_points}** / {boss['pts']} needed to beat boss", inline=True)
+    embed.add_field(name="Total Points", value=f"**{(await mem.get_rpg_state(user_id) or {}).get('total_points', 0)}**", inline=True)
+    embed.set_footer(text=f"Choose wisely. {boss['title']} is watching.")
+
+    view = RPGChoiceView(user_id, scenario)
+    await channel.send(embed=embed, view=view)
+
+async def _rpg_boss_fight(channel, user_id: int, boss_index: int, boss_points: int, total_points: int):
+    """Resolve boss fight based on accumulated points."""
+    state = await mem.get_rpg_state(user_id)
+    world_type = state.get("world_type", "horror") if state else "horror"
+    char_type = state.get("char_type", "teyvat") if state else "teyvat"
+    element = state.get("element", "") if state else ""
+    boss = _get_harbinger(boss_index, world_type)
+    needed = boss["pts"]
+    won = boss_points >= needed
+    beaten = state.get("bosses_beaten", []) if state else []
+
+    if char_type == "transmigrated":
+        char_desc = "The player is from Earth with NO powers — they must escape, not fight."
+        win_verb, lose_verb = "outsmarts and escapes", "is caught by"
+    elif element:
+        char_desc = f"The player is a {element.title()} Vision holder."
+        win_verb, lose_verb = "defeats", "is overpowered by"
+    else:
+        char_desc = "The player is a warrior."
+        win_verb, lose_verb = "defeats", "is overpowered by"
+
+    if world_type == "horror":
+        style = "Post-apocalyptic horror Genshin style."
+        win_prompt = (f"Narrate a horrifying 3-4 sentence battle. Describe the corrupted Harbinger's monstrous form. "
+                      f"The player {win_verb} them. " + ("The escape should be desperate and clever." if char_type == "transmigrated" else "The kill should be visceral — the corruption dies screaming."))
+        lose_prompt = (f"Narrate a horrifying 3-4 sentence DEATH scene. The corrupted Harbinger overwhelms the player completely. "
+                       f"Describe in visceral detail how the player DIES — their gruesome, terrible end. "
+                       f"Be dark, graphic, and final. This is a BAD END. The corruption consumes them.")
+    else:
+        style = "Post-apocalyptic military Genshin style."
+        win_prompt = (f"Narrate a dramatic 3-4 sentence battle against the Harbinger's forces. "
+                      f"The player {win_verb} them. " + ("The escape is desperate but brilliant." if char_type == "transmigrated" else "The victory is hard-won and decisive."))
+        lose_prompt = (f"Narrate a dramatic 2-3 sentence defeat. The Harbinger's forces overwhelm the player. "
+                       f"They are captured and their fate is sealed — describe their grim ending under Harbinger rule.")
+
+    if won:
+        beaten.append(boss["rank"])
+        next_boss = boss_index + 1
+
+        fight_prompt = (
+            f"{'HORROR ' if world_type == 'horror' else ''}RPG boss fight narration. "
+            f"The player faces {'CORRUPTED ' if world_type == 'horror' else ''}Fatui Harbinger #{boss['rank']} {boss['name']} ({boss['title']}).\n"
+            f"{char_desc}\nSetting: {boss['theme']}\n"
+            f"The player had {boss_points} skill points (needed {needed}). They WIN.\n"
+            f"{win_prompt} {style}"
+        )
+        narration = await qai(fight_prompt, 300)
+
+        embed = discord.Embed(
+            title=f"🏆 VICTORY — Harbinger #{boss['rank']} {boss['name']} DEFEATED!",
+            description=narration or "The Harbinger falls.",
+            color=0xFFD700,
+        )
+        embed.add_field(name="Your Points", value=f"**{boss_points}** / {needed} needed", inline=True)
+        embed.add_field(name="Harbingers Beaten", value=f"**{len(beaten)}** / 11", inline=True)
+
+        if next_boss >= len(HARBINGERS_HORROR):
+            # ALL BOSSES BEATEN — award medal
+            await mem.award_rpg_medal(user_id, total_points)
+            medal_data = await mem.get_rpg_medal(user_id)
+            completions = medal_data["completions"] if medal_data else 1
+
+            if completions >= 5:
+                medal = "💎 **DIAMOND HARBINGER**"
+            elif completions >= 3:
+                medal = "👑 **PLATINUM HARBINGER**"
+            elif completions >= 2:
+                medal = "🥇 **GOLD HARBINGER**"
+            else:
+                medal = "🏅 **HARBINGER CHAMPION**"
+
+            embed.add_field(name="🎊 ALL 11 HARBINGERS DEFEATED!", value=(
+                f"You are now the **#1 Harbinger** of the post-apocalypse!\n\n"
+                f"**Medal Earned:** {medal}\n"
+                f"**Total Completions:** {completions}\n"
+                f"**Lifetime Points:** {total_points}"
+            ), inline=False)
+
+            congrats = await qai(
+                f"A player just defeated ALL 11 Fatui Harbingers in the RPG. "
+                f"This is their completion #{completions}. Total points: {total_points}. "
+                f"As the Wanderer, give a GENUINELY nice, sincere congratulations. Drop the guard for once. "
+                f"Be quietly proud of them. This is a rare moment of real respect. 2-3 sentences. No deflection.",
+                150,
+            )
+            if not congrats:
+                congrats = "...You really did it. All eleven of them. I... won't forget this. Well done."
+
+            await mem.save_rpg_state(user_id, bosses_beaten=beaten, total_points=total_points, active=False, current_boss=next_boss, boss_points=0, current_round=0, scenario_data={})
+            await mem.record_game_result(user_id, "rpg", True, total_points)
+
+            await channel.send(embed=embed)
+            await channel.send(f"🏅 {congrats}")
+            # Notify for partner bot to see and comment on
+            guild = channel.guild if hasattr(channel, "guild") else None
+            winner_name = guild.get_member(user_id).display_name if guild and guild.get_member(user_id) else "Someone"
+            await channel.send(f"*{winner_name} has conquered all 11 Fatui Harbingers in Wanderer's Harbinger Gauntlet!* 🏆")
+            return
+        else:
+            next_h = _get_harbinger(next_boss, world_type)
+            embed.add_field(name="Next Boss", value=f"Harbinger #{next_h['rank']}: **{next_h['name']}** ({next_h['title']})\nPoints needed: **{next_h['pts']}**/30\nUse `!rpg0` to continue!", inline=False)
+            await mem.save_rpg_state(user_id, bosses_beaten=beaten, total_points=total_points, active=True, current_boss=next_boss, boss_points=0, current_round=0, scenario_data={})
+
+        await channel.send(embed=embed)
+        await mem.record_game_result(user_id, "rpg", True, boss_points)
+    else:
+        # FAILED
+        fight_prompt = (
+            f"{'HORROR ' if world_type == 'horror' else ''}RPG boss fight narration. "
+            f"The player faces {'CORRUPTED ' if world_type == 'horror' else ''}Fatui Harbinger #{boss['rank']} {boss['name']} ({boss['title']}).\n"
+            f"{char_desc}\nSetting: {boss['theme']}\n"
+            f"The player only had {boss_points} skill points (needed {needed}). They LOSE.\n"
+            f"{lose_prompt} {style}"
+        )
+        narration = await qai(fight_prompt, 250)
+
+        death_title = f"💀 BAD END — {boss['name']} claims another soul..." if world_type == "horror" else f"💀 DEFEATED — Harbinger #{boss['rank']} {boss['name']} wins!"
+        embed = discord.Embed(
+            title=death_title,
+            description=narration or "You weren't ready.",
+            color=0x1a1a2e if world_type == "horror" else 0xE74C3C,
+        )
+        embed.add_field(name="Your Points", value=f"**{boss_points}** / {needed} needed", inline=True)
+        embed.add_field(name="Try Again", value="Use `!rpg0` to start a new run from the beginning!", inline=False)
+        # Check consecutive losses before resetting
+        prev_stats = await mem.get_game_stats(user_id)
+        prev_losses = 0
+        for s in prev_stats:
+            if s["game"] == "rpg":
+                prev_losses = s["losses"]
+                break
+        # Full reset on defeat — wipe everything so they start fresh
+        await mem.reset_rpg(user_id)
+        await channel.send(embed=embed)
+        await mem.record_game_result(user_id, "rpg", False, boss_points)
+        # Taunt the loser — escalate mockery based on consecutive losses
+        guild = channel.guild if hasattr(channel, "guild") else None
+        loser_name = guild.get_member(user_id).display_name if guild and guild.get_member(user_id) else "you"
+        if prev_losses >= 4:
+            streak_note = f"This is their {prev_losses + 1}th loss IN A ROW. They keep dying over and over. This is beyond pathetic — it's comedic. Be absolutely BRUTAL and reference how many times they've failed."
+        elif prev_losses >= 2:
+            streak_note = f"This is their {prev_losses + 1}th loss. They got defeated AGAIN. Mock them for being a repeat failure who keeps coming back just to lose."
+        elif prev_losses >= 1:
+            streak_note = "They already lost once before. They came back and lost AGAIN. Say something about how embarrassing it is to lose twice."
+        else:
+            streak_note = "This is their first loss."
+        taunt = await qai(
+            f"A player named {loser_name} just LOST to Harbinger #{boss['rank']} {boss['name']} in the RPG. "
+            f"They only had {boss_points} points out of {needed} needed. Pathetic. "
+            f"{streak_note} "
+            f"As the Wanderer, mock them with cold disdain. Be dismissive, call them stupid/weak/pathetic. "
+            f"Short and cutting — 1-2 sentences max. No encouragement.",
+            120,
+        )
+        if taunt:
+            await channel.send(taunt)
+
+
+@bot.command(name="rpg0", aliases=["rpg", "quest0", "harbinger0"])
+async def rpg_cmd(ctx):
+    try:
+        state = await mem.get_rpg_state(ctx.author.id)
+
+        if not state:
+            # Brand new player — start character creation
+            embed = discord.Embed(
+                title="⚔️ HARBINGER GAUNTLET — The Fall of Teyvat",
+                description=(
+                    "Before your journey begins, you must choose your fate.\n\n"
+                    "**Choose the world you will enter:**"
+                ),
+                color=0x8B0000,
+            )
+            embed.add_field(name="🩸 Corrupted Horror World", value="Teyvat is dead. The Harbingers are twisted body-horror abominations fused with their Delusions. Nightmares made flesh.", inline=False)
+            embed.add_field(name="⚔️ Harbinger Takeover World", value="The Harbingers conquered every nation. Military occupation, oppression, and iron-fisted rule. A world under tyrants.", inline=False)
+            await ctx.send(embed=embed, view=RPGWorldView(ctx.author.id))
+            return
+
+        if not state["active"]:
+            # Check if mid-character-creation
+            if state.get("world_type") and not state.get("char_type"):
+                embed = discord.Embed(title="Continue Character Creation", description="You chose a world but haven't picked your character yet.\n**Choose your origin:**", color=0x8B0000)
+                await ctx.send(embed=embed, view=RPGCharTypeView(ctx.author.id))
+                return
+            if state.get("char_type") == "teyvat" and not state.get("element"):
+                embed = discord.Embed(title="Continue Character Creation", description="You're a Teyvat-born character but haven't chosen your element.\n**Choose your Vision:**", color=0xF1C40F)
+                await ctx.send(embed=embed, view=RPGElementView(ctx.author.id))
+                return
+            if state["current_boss"] >= len(HARBINGERS_HORROR):
+                await safe_reply(ctx, "You've already conquered all 11 Harbingers. Use `!rpg0reset` to play again.")
+            else:
+                await safe_reply(ctx, "Your quest was interrupted. Use `!rpg0reset` to start fresh.")
+            return
+
+        # Continue existing quest
+        world_type = state.get("world_type", "horror")
+        boss_index = state["current_boss"]
+        round_num = state["current_round"]
+        boss_points = state["boss_points"]
+
+        if round_num == 0 or round_num > 10:
+            round_num = 1
+            boss_points = 0
+            await mem.save_rpg_state(ctx.author.id, current_round=1, boss_points=0, scenario_data={})
+
+        boss = _get_harbinger(boss_index, world_type)
+        embed = discord.Embed(
+            title=f"⚔️ Continuing Quest — Harbinger #{boss['rank']}: {boss['name']}",
+            description=f"Round {round_num}/10 | Points: {boss_points}/{boss['pts']} needed",
+            color=0x8B0000 if world_type == "horror" else 0x2F3136,
+        )
+        embed.add_field(name="Bosses Beaten", value=f"**{len(state['bosses_beaten'])}** / 11", inline=True)
+        embed.add_field(name="Total Points", value=f"**{state['total_points']}**", inline=True)
+        await ctx.send(embed=embed)
+        await asyncio.sleep(1)
+        await _rpg_send_scenario(ctx.channel, ctx.author.id, boss_index, round_num, boss_points)
+
+    except Exception as e: log_error("rpg_cmd", e)
+
+@bot.command(name="rpgstats0", aliases=["queststats0", "rpgstats"])
+async def rpgstats_cmd(ctx, member: discord.Member = None):
+    try:
+        target = member or ctx.author
+        state = await mem.get_rpg_state(target.id)
+        if not state:
+            await safe_reply(ctx, f"{'They haven' if member else 'You haven'}'t started the Harbinger Gauntlet yet. Use `!rpg0` to begin."); return
+
+        beaten = state["bosses_beaten"]
+        wt = state.get("world_type", "horror")
+        current = _get_harbinger(state["current_boss"], wt) if state["current_boss"] < len(HARBINGERS_HORROR) else None
+
+        embed = discord.Embed(title=f"📊 {target.display_name}'s Harbinger Gauntlet", color=0x8B0000)
+
+        if beaten:
+            beaten_str = "\n".join(f"✅ #{r} — {_get_harbinger(11-r, wt)['name']}" for r in sorted(beaten, reverse=True))
+        else:
+            beaten_str = "None yet"
+        embed.add_field(name=f"Bosses Defeated ({len(beaten)}/11)", value=beaten_str[:1024], inline=False)
+
+        if current and state["active"]:
+            embed.add_field(name="Current Boss", value=f"#{current['rank']} {current['name']} ({current['title']})", inline=True)
+            embed.add_field(name="Progress", value=f"Round {state['current_round']}/10 | {state['boss_points']}/{current['pts']} pts", inline=True)
+
+        embed.add_field(name="Total Lifetime Points", value=f"**{state['total_points']}**", inline=True)
+
+        if state["current_boss"] >= len(HARBINGERS_HORROR):
+            embed.set_footer(text="🏆 ALL HARBINGERS DEFEATED — You are the #1 Harbinger!")
+        await ctx.send(embed=embed)
+    except Exception as e: log_error("rpgstats_cmd", e)
+
+@bot.command(name="rpg0reset", aliases=["rpgreset0", "rpgreset"])
+async def rpgreset_cmd(ctx):
+    try:
+        state = await mem.get_rpg_state(ctx.author.id)
+        if not state:
+            await safe_reply(ctx, "Nothing to reset. Use `!rpg0` to start."); return
+        await mem.reset_rpg(ctx.author.id)
+        await safe_reply(ctx, "Your Harbinger Gauntlet progress has been reset. Use `!rpg0` to start fresh.")
+    except Exception as e: log_error("rpgreset_cmd", e)
+
+@bot.command(name="gamerank0", aliases=["gamerank", "rpgrank", "medals"])
+async def gamerank_cmd(ctx):
+    try:
+        board = await mem.get_rpg_leaderboard(15)
+        if not board:
+            await safe_reply(ctx, "No one has conquered the Harbinger Gauntlet yet. Use `!rpg0` to start."); return
+
+        lines = []
+        for i, entry in enumerate(board):
+            member_obj = ctx.guild.get_member(entry["user_id"]) if ctx.guild else None
+            name = member_obj.display_name if member_obj else f"User {entry['user_id']}"
+            c = entry["completions"]
+            if c >= 5:
+                medal = "💎"
+            elif c >= 3:
+                medal = "👑"
+            elif c >= 2:
+                medal = "🥇"
+            else:
+                medal = "🏅"
+            rank_medal = {0: "🥇", 1: "🥈", 2: "🥉"}.get(i, f"`{i+1}.`")
+            lines.append(f"{rank_medal} {medal} **{name}** — {c}x cleared | Best: {entry['best_points']} pts")
+
+        embed = discord.Embed(
+            title="🏆 Harbinger Gauntlet — Hall of Champions",
+            description="\n".join(lines),
+            color=0xFFD700,
+        )
+        embed.set_footer(text="💎 = 5+ clears | 👑 = 3+ | 🥇 = 2+ | 🏅 = 1 clear")
+        await ctx.send(embed=embed)
+    except Exception as e: log_error("gamerank_cmd", e)
+
+
 @bot.command(name="fixdoc", aliases=["docfix", "gdocfix", "editdoc"])
 async def fixdoc_cmd(ctx, *, doc_and_instructions: str = ""):
     try:
@@ -8000,6 +8942,7 @@ async def help_cmd(ctx):
             ("⚡ `!arena [@user]`", "Dramatic mock Genshin battle"),
             ("🎯 `!dare`", "A real challenge"),
             ("🧩 `!riddle`", "A cryptic Genshin riddle"),
+            ("🎮 RPG — `!rpg` / `!rpg0`", "Harbinger Gauntlet · `!rpgstats0` · `!rpg0reset` · `!gamerank`"),
             ("🥠 `!fortune`", "A fortune in his voice"),
             ("💭 `!opinion <char>`", "His honest take on any Genshin character"),
             ("📜 `!lore <topic>`", "Genshin lore from his perspective"),

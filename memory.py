@@ -280,6 +280,36 @@ class Memory:
                     active      INTEGER DEFAULT 1,
                     ts          REAL
                 );
+                CREATE TABLE IF NOT EXISTS game_scores (
+                    user_id      INTEGER,
+                    game_type    TEXT,
+                    wins         INTEGER DEFAULT 0,
+                    losses       INTEGER DEFAULT 0,
+                    draws        INTEGER DEFAULT 0,
+                    total_points INTEGER DEFAULT 0,
+                    PRIMARY KEY (user_id, game_type)
+                );
+                CREATE TABLE IF NOT EXISTS rpg_medals (
+                    user_id        INTEGER PRIMARY KEY,
+                    completions    INTEGER DEFAULT 0,
+                    best_points    INTEGER DEFAULT 0,
+                    first_clear_ts REAL DEFAULT 0,
+                    last_clear_ts  REAL DEFAULT 0
+                );
+                CREATE TABLE IF NOT EXISTS rpg_state (
+                    user_id        INTEGER PRIMARY KEY,
+                    current_boss   INTEGER DEFAULT 0,
+                    current_round  INTEGER DEFAULT 0,
+                    boss_points    INTEGER DEFAULT 0,
+                    total_points   INTEGER DEFAULT 0,
+                    bosses_beaten  TEXT DEFAULT '[]',
+                    scenario_data  TEXT DEFAULT '{}',
+                    active         INTEGER DEFAULT 0,
+                    last_updated   REAL DEFAULT 0,
+                    world_type     TEXT DEFAULT '',
+                    char_type      TEXT DEFAULT '',
+                    element        TEXT DEFAULT ''
+                );
                 CREATE TABLE IF NOT EXISTS phrase_cooldowns (
                     scope       TEXT,
                     phrase_key  TEXT,
@@ -412,6 +442,18 @@ class Memory:
             for col, default in migrations:
                 try:
                     await db.execute(f"ALTER TABLE users ADD COLUMN {col} {default}")
+                except Exception:
+                    pass
+            # Game and RPG migrations for databases created by older bot versions.
+            for stmt in (
+                "ALTER TABLE roast_battles ADD COLUMN turn_user INTEGER DEFAULT 0",
+                "CREATE TABLE IF NOT EXISTS game_scores (user_id INTEGER, game_type TEXT, wins INTEGER DEFAULT 0, losses INTEGER DEFAULT 0, draws INTEGER DEFAULT 0, total_points INTEGER DEFAULT 0, PRIMARY KEY (user_id, game_type))",
+                "ALTER TABLE rpg_state ADD COLUMN world_type TEXT DEFAULT ''",
+                "ALTER TABLE rpg_state ADD COLUMN char_type TEXT DEFAULT ''",
+                "ALTER TABLE rpg_state ADD COLUMN element TEXT DEFAULT ''",
+            ):
+                try:
+                    await db.execute(stmt)
                 except Exception:
                     pass
             await db.commit()
@@ -3045,6 +3087,131 @@ class Memory:
                 (json.dumps(scores, ensure_ascii=True), battle_id),
             )
             await db.commit()
+
+    # ── Game scores (persistent leaderboard) ──────────────────────────────────
+    async def record_game_result(self, user_id: int, game_type: str, won: bool | None, points: int = 0):
+        """Record a game result. won=True/False/None(draw)."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "INSERT INTO game_scores (user_id, game_type, wins, losses, draws, total_points) "
+                "VALUES (?,?,?,?,?,?) "
+                "ON CONFLICT(user_id, game_type) DO UPDATE SET "
+                "wins=wins+excluded.wins, losses=losses+excluded.losses, "
+                "draws=draws+excluded.draws, total_points=total_points+excluded.total_points",
+                (user_id, game_type,
+                 1 if won is True else 0,
+                 1 if won is False else 0,
+                 1 if won is None else 0,
+                 points),
+            )
+            await db.commit()
+
+    async def get_game_stats(self, user_id: int) -> list[dict]:
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(
+                "SELECT game_type, wins, losses, draws, total_points FROM game_scores WHERE user_id=? ORDER BY wins DESC",
+                (user_id,),
+            ) as cur:
+                rows = await cur.fetchall()
+        return [{"game": r[0], "wins": r[1], "losses": r[2], "draws": r[3], "points": r[4]} for r in rows]
+
+    async def get_leaderboard(self, game_type: str = None, limit: int = 10) -> list[dict]:
+        async with aiosqlite.connect(self.db_path) as db:
+            if game_type:
+                async with db.execute(
+                    "SELECT user_id, wins, losses, draws, total_points FROM game_scores WHERE game_type=? ORDER BY wins DESC, total_points DESC LIMIT ?",
+                    (game_type, limit),
+                ) as cur:
+                    rows = await cur.fetchall()
+            else:
+                async with db.execute(
+                    "SELECT user_id, SUM(wins) as w, SUM(losses) as l, SUM(draws) as d, SUM(total_points) as p "
+                    "FROM game_scores GROUP BY user_id ORDER BY w DESC, p DESC LIMIT ?",
+                    (limit,),
+                ) as cur:
+                    rows = await cur.fetchall()
+        return [{"user_id": r[0], "wins": r[1], "losses": r[2], "draws": r[3], "points": r[4]} for r in rows]
+
+    # ── RPG System ─────────────────────────────────────────────────────────────
+    async def get_rpg_state(self, user_id: int) -> dict | None:
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(
+                "SELECT current_boss, current_round, boss_points, total_points, bosses_beaten, scenario_data, active, "
+                "world_type, char_type, element "
+                "FROM rpg_state WHERE user_id=?", (user_id,)
+            ) as cur:
+                row = await cur.fetchone()
+        if not row:
+            return None
+        return {
+            "current_boss": row[0], "current_round": row[1], "boss_points": row[2],
+            "total_points": row[3], "bosses_beaten": json.loads(row[4] or "[]"),
+            "scenario_data": json.loads(row[5] or "{}"), "active": bool(row[6]),
+            "world_type": row[7] or "", "char_type": row[8] or "", "element": row[9] or "",
+        }
+
+    async def save_rpg_state(self, user_id: int, **kwargs):
+        allowed_fields = {
+            "current_boss", "current_round", "boss_points", "total_points",
+            "bosses_beaten", "scenario_data", "active", "world_type",
+            "char_type", "element",
+        }
+        updates = {key: value for key, value in kwargs.items() if key in allowed_fields}
+        now = time.time()
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "INSERT OR IGNORE INTO rpg_state (user_id, last_updated) VALUES (?,?)",
+                (user_id, now),
+            )
+            sets, vals = [], []
+            for key, value in updates.items():
+                if key in ("bosses_beaten", "scenario_data"):
+                    value = json.dumps(value)
+                elif key == "active":
+                    value = 1 if value else 0
+                sets.append(f"{key}=?")
+                vals.append(value)
+            sets.append("last_updated=?")
+            vals.extend((now, user_id))
+            await db.execute(f"UPDATE rpg_state SET {','.join(sets)} WHERE user_id=?", vals)
+            await db.commit()
+
+    async def reset_rpg(self, user_id: int):
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("DELETE FROM rpg_state WHERE user_id=?", (user_id,))
+            await db.commit()
+
+    async def award_rpg_medal(self, user_id: int, total_points: int):
+        async with aiosqlite.connect(self.db_path) as db:
+            now = time.time()
+            await db.execute(
+                "INSERT INTO rpg_medals "
+                "(user_id, completions, best_points, first_clear_ts, last_clear_ts) "
+                "VALUES (?,1,?,?,?) "
+                "ON CONFLICT(user_id) DO UPDATE SET "
+                "completions=rpg_medals.completions+1, "
+                "best_points=MAX(rpg_medals.best_points, excluded.best_points), "
+                "last_clear_ts=excluded.last_clear_ts",
+                (user_id, total_points, now, now),
+            )
+            await db.commit()
+
+    async def get_rpg_medal(self, user_id: int) -> dict | None:
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute("SELECT completions, best_points, first_clear_ts FROM rpg_medals WHERE user_id=?", (user_id,)) as cur:
+                row = await cur.fetchone()
+        if not row:
+            return None
+        return {"completions": row[0], "best_points": row[1], "first_clear_ts": row[2]}
+
+    async def get_rpg_leaderboard(self, limit: int = 15) -> list[dict]:
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(
+                "SELECT user_id, completions, best_points, first_clear_ts FROM rpg_medals ORDER BY completions DESC, best_points DESC LIMIT ?",
+                (limit,),
+            ) as cur:
+                rows = await cur.fetchall()
+        return [{"user_id": r[0], "completions": r[1], "best_points": r[2], "first_clear_ts": r[3]} for r in rows]
 
     async def list_inside_jokes(self, user_id: int, limit: int = 6) -> list[str]:
         async with aiosqlite.connect(DB_PATH) as db:
