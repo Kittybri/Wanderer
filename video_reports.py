@@ -5,6 +5,7 @@ import json
 import os
 import sys
 import tempfile
+import inspect
 from pathlib import Path
 from urllib.parse import urljoin
 
@@ -276,7 +277,20 @@ async def _run_render_script(
     return summary
 
 
-async def _submit_remote_job_once(base_url: str, payload: dict) -> dict:
+async def _notify_render_progress(callback, payload: dict) -> None:
+    if not callback:
+        return
+    try:
+        result = callback(payload)
+        if inspect.isawaitable(result):
+            await result
+    except Exception:
+        # A Discord notice is optional and must never duplicate/fail over a job
+        # that the worker already accepted.
+        return
+
+
+async def _submit_remote_job_once(base_url: str, payload: dict, progress_callback=None) -> dict:
     aiohttp = _aiohttp()
     timeout = aiohttp.ClientTimeout(total=45)
     async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -292,8 +306,10 @@ async def _submit_remote_job_once(base_url: str, payload: dict) -> dict:
             job_id = (body.get("job_id") or "").strip()
             if not job_id:
                 raise RuntimeError("Remote render worker did not return a job id.")
+            await _notify_render_progress(progress_callback, body)
 
         deadline = asyncio.get_running_loop().time() + VIDEO_RENDER_REMOTE_TIMEOUT_S
+        last_position = body.get("queue_position")
         while asyncio.get_running_loop().time() < deadline:
             await asyncio.sleep(VIDEO_RENDER_POLL_S)
             async with session.get(
@@ -306,6 +322,10 @@ async def _submit_remote_job_once(base_url: str, payload: dict) -> dict:
                 body = json.loads(body_text or "{}")
                 status = (body.get("status") or "").strip().lower()
                 if status in {"queued", "running"}:
+                    position = body.get("queue_position")
+                    if position != last_position and position == 0:
+                        last_position = position
+                        await _notify_render_progress(progress_callback, body)
                     continue
                 if status in {"failed", "error"}:
                     raise RuntimeError(body.get("error") or "Remote render worker failed the job.")
@@ -323,7 +343,7 @@ async def _submit_remote_job_once(base_url: str, payload: dict) -> dict:
     raise RuntimeError("Remote video rendering timed out while waiting for the worker.")
 
 
-async def _submit_remote_job(payload: dict) -> dict:
+async def _submit_remote_job(payload: dict, progress_callback=None) -> dict:
     base_urls = _remote_base_urls()
     if not base_urls:
         raise RuntimeError("VIDEO_RENDER_BASE_URL or VIDEO_RENDER_BASE_URLS is not set.")
@@ -331,7 +351,7 @@ async def _submit_remote_job(payload: dict) -> dict:
     errors: list[str] = []
     for index, base_url in enumerate(base_urls, start=1):
         try:
-            return await _submit_remote_job_once(base_url, payload)
+            return await _submit_remote_job_once(base_url, payload, progress_callback=progress_callback)
         except Exception as exc:
             errors.append(f"[{index}] {base_url} -> {exc}")
             if not _can_failover_remote(exc) or index == len(base_urls):
@@ -340,7 +360,7 @@ async def _submit_remote_job(payload: dict) -> dict:
     raise RuntimeError("Remote render failed across all configured workers.\n" + "\n".join(errors[:4]))
 
 
-async def render_teaching_video(bot_name: str, notes_text: str, *, title: str = "") -> dict:
+async def render_teaching_video(bot_name: str, notes_text: str, *, title: str = "", progress_callback=None) -> dict:
     if _remote_requested():
         return await _submit_remote_job(
             {
@@ -349,12 +369,12 @@ async def render_teaching_video(bot_name: str, notes_text: str, *, title: str = 
                 "notes_text": notes_text,
                 "title": title,
                 "env_overrides": _render_env_overrides(),
-            }
+            }, progress_callback=progress_callback
         )
     return await _run_render_script(_script_for_bot(bot_name), notes_text, title=title)
 
 
-async def render_duo_debate_video(notes_text: str, *, title: str = "") -> dict:
+async def render_duo_debate_video(notes_text: str, *, title: str = "", progress_callback=None) -> dict:
     if _remote_requested():
         return await _submit_remote_job(
             {
@@ -363,7 +383,7 @@ async def render_duo_debate_video(notes_text: str, *, title: str = "") -> dict:
                 "notes_text": notes_text,
                 "title": title,
                 "env_overrides": _render_env_overrides(),
-            }
+            }, progress_callback=progress_callback
         )
     return await _run_render_script(DUO_VIDEO_SCRIPT, notes_text, title=title)
 

@@ -164,13 +164,13 @@ def _style_tts_text(text: str, style: str = "guarded") -> str:
     cleaned = (text or "").strip()
     if not cleaned:
         return ""
-    if style == "soft":
+    if style in {"soft", "concerned", "reconciliation", "restrained_vulnerability"}:
         return cleaned.replace("...", ".  ").replace(" - ", ". ")
     if style == "late_night":
         return cleaned.replace("...", ", ").replace(" - ", ", ").replace(";", ", ")
     if style == "repair":
         return cleaned.replace("...", ". ").replace(" but ", ", but ")
-    if style == "tense":
+    if style in {"tense", "heated"}:
         return cleaned.replace(",", ". ").replace(";", ". ")
     if style == "combat":
         return cleaned.replace(",", ". ").replace(" and ", ". ").replace(" but ", ". ")
@@ -178,7 +178,7 @@ def _style_tts_text(text: str, style: str = "guarded") -> str:
         return cleaned.replace("...", ". ").replace(";", ". ").replace(" and ", ", ")
     if style == "jealous":
         return cleaned.replace(",", ". ").replace("...", ". ").replace(" and ", ". ")
-    if style in {"cutting", "distant"}:
+    if style in {"cutting", "distant", "cold"}:
         return cleaned.replace(" and ", ". ").replace(" but ", ". ")
     if style in {"measured", "curious"}:
         return cleaned.replace("...", ", ")
@@ -197,33 +197,8 @@ async def get_audio_mooded(
     if not fish_audio_key:
         return await generate_tts_gtts(text)
 
-    if mood <= -6:
-        chunk = 140
-    elif mood <= -1:
-        chunk = 190
-    elif mood <= 5:
-        chunk = 220
-    else:
-        chunk = 260
-
-    if style == "soft":
-        chunk += 35
-    elif style == "late_night":
-        chunk += 45
-    elif style == "repair":
-        chunk += 20
-    elif style == "tense":
-        chunk = max(120, chunk - 30)
-    elif style == "combat":
-        chunk = max(110, chunk - 45)
-    elif style == "duo_teasing":
-        chunk = max(125, chunk - 15)
-    elif style == "jealous":
-        chunk = max(120, chunk - 25)
-    elif style in {"cutting", "distant"}:
-        chunk = max(130, chunk - 20)
-    elif style in {"measured", "curious"}:
-        chunk += 10
+    # chunk_length controls generation/buffering, not real speech speed.
+    chunk = 220
 
     styled_text = _style_tts_text(text, style)
 

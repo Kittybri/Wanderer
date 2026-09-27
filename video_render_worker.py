@@ -10,6 +10,8 @@ import threading
 import time
 import traceback
 import uuid
+import hashlib
+from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
@@ -43,6 +45,38 @@ JOB_QUEUE: "queue.Queue[str]" = queue.Queue()
 JOBS: dict[str, dict] = {}
 JOBS_LOCK = threading.Lock()
 ACTIVE_JOB_ID: str | None = None
+ACTIVE_FINGERPRINTS: dict[str, str] = {}
+SUCCESS_DURATIONS: "deque[float]" = deque(maxlen=12)
+
+
+def _job_fingerprint(job_type: str, bot_name: str, title: str, notes_text: str) -> str:
+    payload = "\0".join((job_type, bot_name, title.strip(), notes_text.strip())).encode("utf-8", "ignore")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _queue_position_locked(job: dict) -> int | None:
+    if job.get("status") == "running":
+        return 0
+    if job.get("status") != "queued":
+        return None
+    queued = sorted(
+        (item for item in JOBS.values() if item.get("status") == "queued"),
+        key=lambda item: (item.get("created_at", 0), item.get("job_id", "")),
+    )
+    return next((index for index, item in enumerate(queued, 1) if item["job_id"] == job["job_id"]), None)
+
+
+def _wait_estimate_locked(job: dict) -> dict | None:
+    position = _queue_position_locked(job)
+    if position is None or len(SUCCESS_DURATIONS) < 3:
+        return None
+    jobs_ahead = position if ACTIVE_JOB_ID and position > 0 else max(0, position - 1)
+    average = sum(SUCCESS_DURATIONS) / len(SUCCESS_DURATIONS)
+    center = jobs_ahead * average
+    # Intentionally coarse: rolling history is informative, not a promise.
+    rounded = max(60, round(center / 60) * 60) if center else 0
+    return {"low_seconds": max(0, rounded - 60), "high_seconds": rounded + 60,
+            "based_on_completed_jobs": len(SUCCESS_DURATIONS)}
 
 
 def _load_groq_keys() -> list[str]:
@@ -165,6 +199,38 @@ def _make_job_dir(job_id: str) -> Path:
     return path
 
 
+def _recover_job_state() -> int:
+    """Recover terminal job visibility after a worker restart; never re-run work."""
+    recovered = 0
+    root = _video_root()
+    directories = sorted((p for p in root.iterdir() if p.is_dir()), key=lambda p: p.stat().st_mtime, reverse=True)[:100]
+    with JOBS_LOCK:
+        for path in directories:
+            payload_path = path / "job_payload.json"
+            if not payload_path.exists():
+                continue
+            try:
+                metadata = json.loads(payload_path.read_text(encoding="utf-8"))
+                summary_path = path / "run_summary.json"
+                summary = json.loads(summary_path.read_text(encoding="utf-8")) if summary_path.exists() else {}
+                script = str(metadata.get("script") or "").casefold()
+                job_type = "duo" if "duo" in script else "teaching"
+                bot_name = "wanderer" if "wanderer" in script else "scaramouche"
+                status = "done" if summary and os.path.exists(str(summary.get("final_video") or "")) else "failed"
+                stamp = path.stat().st_mtime
+                JOBS[path.name] = {
+                    "job_id": path.name, "job_type": job_type, "bot_name": bot_name,
+                    "title": metadata.get("title") or f"{bot_name.title()} Video",
+                    "notes_text": "", "status": status, "created_at": stamp, "updated_at": stamp,
+                    "summary": summary, "error": "" if status == "done" else "Worker restarted before this render completed.",
+                    "traceback": "", "env_overrides": {}, "fingerprint": "",
+                }
+                recovered += 1
+            except (OSError, ValueError, TypeError):
+                continue
+    return recovered
+
+
 def _run_render_script(
     script_path: Path,
     notes_text: str,
@@ -251,8 +317,14 @@ def _public_job_payload(job: dict) -> dict:
         "title": job["title"],
         "created_at": job["created_at"],
         "updated_at": job["updated_at"],
-        "error": job.get("error", ""),
+        "error": "Render failed. Check worker logs." if job.get("status") == "failed" else "",
     }
+    position = _queue_position_locked(job)
+    if position is not None:
+        payload["queue_position"] = position
+    estimate = _wait_estimate_locked(job)
+    if estimate:
+        payload["estimated_wait"] = estimate
     if job["status"] == "done" and final_video and os.path.exists(final_video):
         payload["download_url"] = f"/jobs/{job['job_id']}/file"
         payload["final_video_name"] = Path(final_video).name
@@ -263,17 +335,21 @@ def _public_job_payload(job: dict) -> dict:
     return payload
 
 
-def _worker_loop():
+def _process_next_job() -> str | None:
+    """Process one FIFO item. Split out so queue failure behavior is testable."""
     global ACTIVE_JOB_ID
-    while True:
-        job_id = JOB_QUEUE.get()
+    job_id = JOB_QUEUE.get()
+    try:
         with JOBS_LOCK:
             job = JOBS.get(job_id)
             if not job:
-                JOB_QUEUE.task_done()
-                continue
+                return None
+            if job.get("status") == "cancelled":
+                ACTIVE_FINGERPRINTS.pop(job.get("fingerprint", ""), None)
+                return job_id
             ACTIVE_JOB_ID = job_id
             job["status"] = "running"
+            job["started_at"] = time.time()
             job["updated_at"] = time.time()
 
         try:
@@ -289,6 +365,7 @@ def _worker_loop():
                 job["summary"] = summary
                 job["status"] = "done"
                 job["error"] = ""
+                SUCCESS_DURATIONS.append(max(0.0, time.time() - job.get("started_at", time.time())))
         except Exception as exc:
             with JOBS_LOCK:
                 job["status"] = "failed"
@@ -297,8 +374,16 @@ def _worker_loop():
         finally:
             with JOBS_LOCK:
                 job["updated_at"] = time.time()
+                ACTIVE_FINGERPRINTS.pop(job.get("fingerprint", ""), None)
                 ACTIVE_JOB_ID = None
-            JOB_QUEUE.task_done()
+        return job_id
+    finally:
+        JOB_QUEUE.task_done()
+
+
+def _worker_loop():
+    while True:
+        _process_next_job()
 
 
 class RenderRequestHandler(BaseHTTPRequestHandler):
@@ -413,10 +498,6 @@ class RenderRequestHandler(BaseHTTPRequestHandler):
         if parsed.path != "/jobs":
             self._send_json({"ok": False, "error": "Not found"}, status=404)
             return
-        if JOB_QUEUE.qsize() >= VIDEO_RENDER_MAX_QUEUE:
-            self._send_json({"ok": False, "error": "Render queue is full. Try again later."}, status=429)
-            return
-
         try:
             body = self._read_json()
         except Exception:
@@ -448,6 +529,7 @@ class RenderRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"ok": False, "error": "notes_text is required."}, status=400)
             return
 
+        fingerprint = _job_fingerprint(job_type, bot_name, title, notes_text)
         job_id = uuid.uuid4().hex[:12]
         now = time.time()
         job = {
@@ -463,11 +545,47 @@ class RenderRequestHandler(BaseHTTPRequestHandler):
             "error": "",
             "traceback": "",
             "env_overrides": clean_overrides,
+            "fingerprint": fingerprint,
         }
         with JOBS_LOCK:
+            duplicate_id = ACTIVE_FINGERPRINTS.get(fingerprint)
+            if duplicate_id:
+                existing = JOBS.get(duplicate_id)
+                payload = _public_job_payload(existing) if existing else {"job_id": duplicate_id, "status": "queued"}
+                payload.update({"ok": True, "duplicate": True})
+                self._send_json(payload, status=200)
+                return
+            queued_count = sum(1 for item in JOBS.values() if item.get("status") == "queued")
+            if queued_count >= VIDEO_RENDER_MAX_QUEUE:
+                self._send_json({"ok": False, "error": "Render queue is full. Try again later."}, status=429)
+                return
             JOBS[job_id] = job
+            ACTIVE_FINGERPRINTS[fingerprint] = job_id
+            response = _public_job_payload(job)
         JOB_QUEUE.put(job_id)
-        self._send_json({"ok": True, "job_id": job_id, "status": "queued"}, status=202)
+        response["ok"] = True
+        self._send_json(response, status=202)
+
+    def do_DELETE(self):
+        if not _authorized(self.headers):
+            self._send_json({"ok": False, "error": "Unauthorized"}, status=401)
+            return
+        parts = [part for part in urlparse(self.path).path.split("/") if part]
+        if len(parts) != 2 or parts[0] != "jobs":
+            self._send_json({"ok": False, "error": "Not found"}, status=404)
+            return
+        with JOBS_LOCK:
+            job = JOBS.get(parts[1])
+            if not job:
+                self._send_json({"ok": False, "error": "Unknown job id."}, status=404)
+                return
+            if job.get("status") != "queued":
+                self._send_json({"ok": False, "error": "Only queued jobs can be cancelled."}, status=409)
+                return
+            job["status"] = "cancelled"
+            job["updated_at"] = time.time()
+            ACTIVE_FINGERPRINTS.pop(job.get("fingerprint", ""), None)
+            self._send_json({"ok": True, "job_id": job["job_id"], "status": "cancelled"})
 
     def log_message(self, format, *args):
         print(f"[video-worker] {self.address_string()} - {format % args}")
@@ -475,9 +593,11 @@ class RenderRequestHandler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     _load_worker_env()
+    recovered = _recover_job_state()
     print(f"[video-worker] Starting on http://{VIDEO_RENDER_HOST}:{VIDEO_RENDER_PORT}")
     print(f"[video-worker] Queue size limit: {VIDEO_RENDER_MAX_QUEUE}")
     print(f"[video-worker] Secret protection: {'enabled' if VIDEO_RENDER_SECRET else 'disabled'}")
+    print(f"[video-worker] Recovered terminal jobs: {recovered}")
     worker_thread = threading.Thread(target=_worker_loop, daemon=True)
     worker_thread.start()
     server = ThreadingHTTPServer((VIDEO_RENDER_HOST, VIDEO_RENDER_PORT), RenderRequestHandler)
