@@ -392,6 +392,14 @@ class Memory:
                     last_seen   REAL DEFAULT 0
                 );
             """)
+            # Idempotent preference migration; preserves existing rows and defaults.
+            await db.execute("BEGIN IMMEDIATE")
+            columns = {row[1] for row in await (await db.execute("PRAGMA table_info(user_preferences)")).fetchall()}
+            for field, definition in (("grudge_enabled", "INTEGER DEFAULT 1"),
+                                      ("lullaby_enabled", "INTEGER DEFAULT 0"),
+                                      ("lullaby_start_hour", "INTEGER DEFAULT 23")):
+                if field not in columns:
+                    await db.execute(f"ALTER TABLE user_preferences ADD COLUMN {field} {definition}")
             migrations = [
                 ("allow_dms",          "INTEGER DEFAULT 1"),
                 ("timezone_name",      "TEXT DEFAULT 'America/Los_Angeles'"),
@@ -741,7 +749,7 @@ class Memory:
             )
             await db.commit()
             async with db.execute(
-                "SELECT voice_enabled,utility_mode,duo_autoplay,rp_depth FROM user_preferences WHERE user_id=?",
+                "SELECT voice_enabled,utility_mode,duo_autoplay,rp_depth,grudge_enabled,lullaby_enabled,lullaby_start_hour FROM user_preferences WHERE user_id=?",
                 (user_id,),
             ) as cur:
                 row = await cur.fetchone()
@@ -750,10 +758,14 @@ class Memory:
             "utility_mode": bool(row[1]) if row else True,
             "duo_autoplay": bool(row[2]) if row else True,
             "rp_depth": (row[3] or "medium") if row else "medium",
+            "grudge_enabled": bool(row[4]) if row else True,
+            "lullaby_enabled": bool(row[5]) if row else False,
+            "lullaby_start_hour": int(row[6]) if row and row[6] is not None else 23,
         }
 
     async def set_user_preference(self, user_id: int, field: str, value):
-        allowed = {"voice_enabled", "utility_mode", "duo_autoplay", "rp_depth"}
+        allowed = {"voice_enabled", "utility_mode", "duo_autoplay", "rp_depth",
+                   "grudge_enabled", "lullaby_enabled", "lullaby_start_hour"}
         if field not in allowed:
             raise ValueError(f"Unknown preference: {field}")
         async with aiosqlite.connect(DB_PATH) as db:
@@ -1375,6 +1387,16 @@ class Memory:
             "last_exchange": row[4] or 0,
             "last_theme": row[5] or "",
         }
+
+    async def adjust_bot_relationship(self, pair_key: str, *, respect_delta: int = 0, tension_delta: int = 0):
+        """Small atomic background effects; preserve concurrent stage/history changes."""
+        await self.get_bot_relationship(pair_key)
+        async with aiosqlite.connect(self.shared_db_path, timeout=15.0) as db:
+            await db.execute("BEGIN IMMEDIATE")
+            await db.execute(
+                "UPDATE bot_relationships SET respect=MAX(0,MIN(100,respect+?)), tension=MAX(0,MIN(100,tension+?)) WHERE pair_key=?",
+                (max(-2,min(2,int(respect_delta))),max(-2,min(2,int(tension_delta))),pair_key))
+            await db.commit()
 
     async def update_bot_relationship(
         self,

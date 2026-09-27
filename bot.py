@@ -3608,6 +3608,8 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
     search_sources = ""
     rate_limited = False
     try:
+        user, world_context = await WORLD.response_context(user_id, channel_id, user_message, user)
+        extra_context += "\n" + world_context
         history_limit = _history_limit_for_reply(is_dm=is_dm, direct_to_me=direct_to_me)
         history = await mem.get_history(user_id, channel_id, limit=history_limit)
         mood      = user.get("mood", 0) if user else 0
@@ -4926,6 +4928,9 @@ class ResetView(discord.ui.View):
             if interaction.user.id != self.uid:
                 await interaction.response.send_message("That's not yours.", ephemeral=True); return
             await mem.reset_user(self.uid)
+            await WORLD.forget(self.uid)
+            await FACE_PROFILES.init()
+            await FACE_PROFILES.delete(self.uid)
             button.disabled = True; button.label = "✓ Memory Wiped"
             await interaction.response.edit_message(content="...Gone. Fine.", view=self)
         except Exception as e: log_error("ResetView", e)
@@ -5005,6 +5010,7 @@ async def daily_reset():
 @tasks.loop(hours=1)
 async def birthday_checker_loop():
     try:
+        await WORLD.tick(bot, _world_generate, _world_lullaby_line if WORLD.config.get("lullaby", {}).get("final_line") else None)
         for bd in await mem.get_birthdays_due():
             try:
                 uid = int(bd["user_id"])
@@ -5787,6 +5793,10 @@ async def _handle_message_pipeline(message):
             return
 
         content = message.content.strip()
+        try:
+            await WORLD.observe(message, user)
+        except Exception as exc:
+            log_error("world_observe", type(exc).__name__)
         if not content and not message.attachments:
             return
         try:
@@ -5846,7 +5856,7 @@ async def _handle_message_pipeline(message):
             img, vid = await _load_face_attachment(message)
             enroll_face_now = bool(is_owner and (img or vid) and is_face_enroll_request(content))
             face_check_now = bool(is_owner and (img or vid) and is_face_check_request(content))
-            owner_face_profile = await mem.get_face_profile(FACE_PROFILE_KEY) if is_owner else None
+            owner_face_profile = None  # Recognition is private and explicit through !recognizeface.
 
             # ── Video handling ──
             if vid:
@@ -8477,6 +8487,7 @@ async def forget_cmd(ctx, *, topic: str = None):
             return
         await _setup(ctx)
         result = await mem.forget_memory_matches(ctx.author.id, topic)
+        result["world"] = await WORLD.forget(ctx.author.id, topic)
         removed = sum(result.values())
         if removed:
             await safe_reply(ctx, f"...Fine. I let go of {removed} thing{'s' if removed != 1 else ''} tied to '{topic}'.")
@@ -9289,67 +9300,7 @@ async def whoami_cmd(ctx):
         await safe_reply(ctx, reply)
     except Exception as e: log_error("whoami_cmd", e)
 
-@bot.command(name="enrollface", aliases=["rememberface"])
-async def enrollface_cmd(ctx):
-    try:
-        if not OWNER_ID or ctx.author.id != OWNER_ID:
-            await safe_reply(ctx, "That's not for you.")
-            return
-        if not face_support_ready():
-            await safe_reply(ctx, _face_feature_unavailable_text())
-            return
-        img, vid = await _command_face_media(ctx)
-        if not img and not vid:
-            await safe_reply(ctx, "Attach or reply to an image or video and use `!enrollface`.")
-            return
-        profile = await mem.get_face_profile(FACE_PROFILE_KEY)
-        import aiohttp as _ah
-        if vid:
-            async with _ah.ClientSession() as s:
-                async with s.get(vid.url) as r:
-                    video_bytes = await r.read()
-            frames = await asyncio.get_event_loop().run_in_executor(None, _extract_frames_blocking, video_bytes, 5)
-            enrolled = enroll_face_profile_from_frames(profile, frames)
-        else:
-            async with _ah.ClientSession() as s:
-                async with s.get(img.url) as r:
-                    img_bytes = await r.read()
-            enrolled = enroll_face_profile(profile, img_bytes)
-        if not enrolled.get("ok"):
-            await safe_reply(ctx, _face_enroll_failure_text(enrolled.get("reason", "")))
-            return
-        await mem.save_face_profile(FACE_PROFILE_KEY, ctx.author.id, ctx.author.display_name, enrolled["profile"])
-        await safe_reply(ctx, _face_enroll_success_text(enrolled.get("sample_count", 0)))
-    except Exception as e:
-        log_error("enrollface_cmd", e)
-
-@bot.command(name="faceinfo")
-async def faceinfo_cmd(ctx):
-    try:
-        if not OWNER_ID or ctx.author.id != OWNER_ID:
-            await safe_reply(ctx, "That's not for you.")
-            return
-        profile = await mem.get_face_profile(FACE_PROFILE_KEY)
-        if not profile:
-            await safe_reply(ctx, "No enrolled face profile yet.")
-            return
-        sample_count = int(profile.get("sample_count", 0) or 0)
-        updated_ts = float(profile.get("updated_ts", 0) or 0)
-        updated_label = datetime.fromtimestamp(updated_ts).strftime("%Y-%m-%d %H:%M") if updated_ts else "unknown"
-        await safe_reply(ctx, f"`Face memory: enrolled` — {sample_count} sample(s), updated {updated_label}.")
-    except Exception as e:
-        log_error("faceinfo_cmd", e)
-
-@bot.command(name="deleteface", aliases=["forgetface"])
-async def deleteface_cmd(ctx):
-    try:
-        if not OWNER_ID or ctx.author.id != OWNER_ID:
-            await safe_reply(ctx, "That's not for you.")
-            return
-        await mem.delete_face_profile(FACE_PROFILE_KEY)
-        await safe_reply(ctx, _face_delete_text())
-    except Exception as e:
-        log_error("deleteface_cmd", e)
+# Private user-scoped face commands are installed by face_controls below.
 
 async def help_cmd(ctx):
     try:
@@ -10187,6 +10138,33 @@ async def on_command_error(ctx, error):
         elif isinstance(error, commands.MissingRequiredArgument): await safe_reply(ctx, "Missing something.")
         else: log_error("on_command_error", error)
     except: pass
+
+async def _world_generate(prompt):
+    return await asyncio.to_thread(_groq_quick_blocking, prompt, 180)
+
+async def _world_lullaby_line(voice):
+    listeners = {m.id for m in voice.channel.members if not m.bot}
+    audio = await get_audio_with_mood("Go to sleep.", 3, delivery_intent="gentle")
+    if not audio or len(voice.channel.members) != 2 or {m.id for m in voice.channel.members if not m.bot} != listeners:
+        return
+    import io
+    source = discord.FFmpegPCMAudio(io.BytesIO(audio), pipe=True)
+    try:
+        voice.play(source)
+        while voice.is_playing():
+            if len(voice.channel.members) != 2 or {m.id for m in voice.channel.members if not m.bot} != listeners:
+                voice.stop()
+                break
+            await asyncio.sleep(0.5)
+    finally:
+        voice.stop()
+        source.cleanup()
+
+from persistent_world import PersistentWorld
+WORLD = PersistentWorld(BOT_NAME, mem, INTEGRATION_CONFIG.section("persistent_world"), GITHUB_ISSUES)
+WORLD.install_commands(bot)
+from face_controls import install_face_commands
+FACE_PROFILES = install_face_commands(bot, mem.shared_db_path)
 
 if __name__ == "__main__":
     if not DISCORD_TOKEN: raise SystemExit("❌ DISCORD_TOKEN not set")
