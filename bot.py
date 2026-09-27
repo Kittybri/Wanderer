@@ -4098,6 +4098,9 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
     reply = _sanitize_partner_attribution(reply)
     if reply:
         remember_output(BOT_NAME, reply)
+    if is_dm and HOME.client.enabled:
+        try: await HOME.roommate(user_id, reply, user or {})
+        except Exception: pass
     return reply
 
 
@@ -4991,6 +4994,7 @@ async def status_rotation():
 @tasks.loop(seconds=30)
 async def reminder_checker():
     try:
+        await HOME.tick()
         for r in await mem.get_due_reminders():
             try:
                 ch = bot.get_channel(r["channel_id"]); u = await bot.fetch_user(r["user_id"])
@@ -10165,6 +10169,9 @@ WORLD = PersistentWorld(BOT_NAME, mem, INTEGRATION_CONFIG.section("persistent_wo
 WORLD.install_commands(bot)
 from face_controls import install_face_commands
 FACE_PROFILES = install_face_commands(bot, mem.shared_db_path)
+from home.bot_integration import HomeBot
+HOME = HomeBot(BOT_NAME, bot, mem, INTEGRATION_CONFIG.section("home"), get_audio_with_mood, OWNER_ID)
+HOME.install()
 
 if __name__ == "__main__":
     if not DISCORD_TOKEN: raise SystemExit("❌ DISCORD_TOKEN not set")

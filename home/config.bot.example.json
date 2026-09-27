@@ -1,0 +1,17 @@
+{
+  "home": {
+    "enabled": false,
+    "url": "https://home.example.com",
+    "secret": "REPLACE_WITH_THIS_BOTS_RANDOM_SECRET",
+    "users": {
+      "123456789": {
+        "rules": [
+          {"signal": "irritated", "device": "bedroom_lamp", "action": "color", "parameters": {"name": "purple"}},
+          {"signal": "calm_night", "device": "bedroom_lamp", "action": "brightness", "parameters": {"value": 20}},
+          {"signal": "birthday", "device": "bedroom_lamp", "action": "scene", "parameters": {"name": "calm"}}
+        ],
+        "alarms": [{"time": "08:00", "device": "bedroom_clock"}]
+      }
+    }
+  }
+}

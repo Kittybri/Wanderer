@@ -397,7 +397,11 @@ class Memory:
             columns = {row[1] for row in await (await db.execute("PRAGMA table_info(user_preferences)")).fetchall()}
             for field, definition in (("grudge_enabled", "INTEGER DEFAULT 1"),
                                       ("lullaby_enabled", "INTEGER DEFAULT 0"),
-                                      ("lullaby_start_hour", "INTEGER DEFAULT 23")):
+                                      ("lullaby_start_hour", "INTEGER DEFAULT 23"),
+                                      ("home_presence_enabled", "INTEGER DEFAULT 0"),
+                                      ("home_actions_enabled", "INTEGER DEFAULT 0"),
+                                      ("home_alarms_enabled", "INTEGER DEFAULT 0"),
+                                      ("voice_output_target", "TEXT DEFAULT ''")):
                 if field not in columns:
                     await db.execute(f"ALTER TABLE user_preferences ADD COLUMN {field} {definition}")
             migrations = [
@@ -749,7 +753,7 @@ class Memory:
             )
             await db.commit()
             async with db.execute(
-                "SELECT voice_enabled,utility_mode,duo_autoplay,rp_depth,grudge_enabled,lullaby_enabled,lullaby_start_hour FROM user_preferences WHERE user_id=?",
+                "SELECT voice_enabled,utility_mode,duo_autoplay,rp_depth,grudge_enabled,lullaby_enabled,lullaby_start_hour,home_presence_enabled,home_actions_enabled,home_alarms_enabled,voice_output_target FROM user_preferences WHERE user_id=?",
                 (user_id,),
             ) as cur:
                 row = await cur.fetchone()
@@ -761,11 +765,16 @@ class Memory:
             "grudge_enabled": bool(row[4]) if row else True,
             "lullaby_enabled": bool(row[5]) if row else False,
             "lullaby_start_hour": int(row[6]) if row and row[6] is not None else 23,
+            "home_presence_enabled": bool(row[7]) if row else False,
+            "home_actions_enabled": bool(row[8]) if row else False,
+            "home_alarms_enabled": bool(row[9]) if row else False,
+            "voice_output_target": (row[10] or "") if row else "",
         }
 
     async def set_user_preference(self, user_id: int, field: str, value):
         allowed = {"voice_enabled", "utility_mode", "duo_autoplay", "rp_depth",
-                   "grudge_enabled", "lullaby_enabled", "lullaby_start_hour"}
+                   "grudge_enabled", "lullaby_enabled", "lullaby_start_hour",
+                   "home_presence_enabled", "home_actions_enabled", "home_alarms_enabled", "voice_output_target"}
         if field not in allowed:
             raise ValueError(f"Unknown preference: {field}")
         async with aiosqlite.connect(DB_PATH) as db:
