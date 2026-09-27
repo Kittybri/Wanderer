@@ -28,7 +28,7 @@ class HomeClient:
                 dict(values, op=operation, user_id=int(user_id)),
             )
             async with aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=40)
+                timeout=aiohttp.ClientTimeout(total=8 if operation.startswith("pc_") else 40)
             ) as session:
                 async with session.post(
                     base + "/rpc/" + self.name, json=envelope, allow_redirects=False
