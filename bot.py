@@ -2518,6 +2518,10 @@ def _duo_autoplay_prompt(session: dict) -> str:
         return f"The two-bot mission planning scene is active. Add your own role or warning about: {topic}. {stage_note} One or two sentences.{silent_note} {outro}"
     if mode == "truthdare":
         return f"The two-bot truth-or-dare game is active. Continue it with one pointed challenge about: {topic}. {stage_note} One or two sentences.{silent_note} {outro}"
+    if mode == "intervention":
+        return f"You already intervened while Scaramouche was needlessly argumentative about: {topic}. Give one brief closing line only if needed, then stop. {outro}"
+    if mode == "finish":
+        return f"Scaramouche completed the SAME thought you deliberately left unfinished about: {topic}. Give one brief final reaction, then stop. {outro}"
     return f"The shared duo mode is active. Follow up after the other bot about: {topic}. One or two sentences.{silent_note} {outro}"
 
 
@@ -3078,6 +3082,10 @@ async def _handle_partner_message(message, target_info: dict | None = None) -> b
             return True
 
         duo = await mem.get_duo_session(message.channel.id)
+        if duo and duo.get("mode") in {"intervention", "finish"}:
+            # The bounded autoplay worker owns this handoff; do not also reply
+            # immediately and accidentally double the coordinated turn.
+            return True
         silent_active = bool(
             duo
             and (duo.get("silent_bot", "") or "").strip().lower() == BOT_NAME
@@ -3097,7 +3105,10 @@ async def _handle_partner_message(message, target_info: dict | None = None) -> b
 
         if intervention_reason:
             cooldown_open = float((duo or {}).get("intervention_cooldown", 0) or 0)
+            shared_allowed = False
             if cooldown_open <= time.time() and random.random() < 0.62:
+                shared_allowed, _ = await mem.consume_shared_cooldown(f"wanderer_intervention:{message.channel.id}", 21600)
+            if shared_allowed:
                 partner_context = describe_bot_relationship(BOT_NAME, relation, recent_banter)
                 contradiction = await _contradictory_memory_context(
                     message.channel.id,
@@ -3123,6 +3134,13 @@ async def _handle_partner_message(message, target_info: dict | None = None) -> b
                     partner_name=getattr(message.author, "display_name", PARTNER_NAME.title()),
                 )
                 if reply:
+                    if not duo:
+                        await mem.set_duo_session(
+                            message.channel.id, "intervention",
+                            _event_topic_from_text(message.content, fallback="an unnecessary argument"),
+                            BOT_NAME, awaiting_bot=PARTNER_NAME, autoplay_turns=1,
+                            autoplay_delay=4, ttl_seconds=120,
+                        )
                     await _guarded_message_reply(
                         message,
                         reply,
@@ -3143,6 +3161,8 @@ async def _handle_partner_message(message, target_info: dict | None = None) -> b
                         silent_until=float((duo or {}).get("silent_until", 0) or 0),
                         intervention_cooldown=time.time() + 240,
                     )
+                    if not duo:
+                        await mem.bump_duo_session(message.channel.id, BOT_NAME, partner_bot=PARTNER_NAME, ttl_seconds=120, autoplay_delay=4)
                     return True
 
         if random.random() >= chance:
@@ -4471,6 +4491,21 @@ async def _run_docfix_request(ctx, doc_and_instructions: str = ""):
 
 def _weathervideo_time_hint(use_duo: bool) -> str:
     return "Give us about 3-6 minutes." if use_duo else "Give me about 2-4 minutes."
+
+
+async def _send_render_queue_notice(ctx, payload: dict) -> None:
+    position = payload.get("queue_position")
+    if position is None:
+        return
+    if position == 0:
+        await ctx.send("Your render has started.")
+        return
+    text = f"Your render is **#{position}** in the queue."
+    estimate = payload.get("estimated_wait") or {}
+    low, high = estimate.get("low_seconds"), estimate.get("high_seconds")
+    if isinstance(low, (int, float)) and isinstance(high, (int, float)):
+        text += f" Based on recent jobs, roughly {max(0, round(low / 60))}–{max(1, round(high / 60))} minutes before it starts."
+    await ctx.send(text)
 
 
 def _silence_reply_pool(user: dict | None) -> list[str]:
@@ -6277,6 +6312,26 @@ async def _rival_event_loop():
                     if not allowed:
                         debug_event("relationship", f"{BOT_NAME} rival_event_cooldown channel={channel_id} remaining={remaining}s")
                         continue
+                    if random.random() < 0.22:
+                        finish_allowed, _ = await mem.consume_shared_cooldown(f"finish_sentence:{channel_id}", 3 * 86400)
+                        if finish_allowed:
+                            opener = random.choice([
+                                "The thing about your argument is—",
+                                "What you never understand about this is—",
+                                "The reason everyone stops listening is—",
+                            ])
+                            await mem.set_duo_session(
+                                channel_id, "finish", topic, BOT_NAME,
+                                awaiting_bot=PARTNER_NAME, autoplay_turns=2,
+                                autoplay_delay=random.randint(3, 6), ttl_seconds=180,
+                            )
+                            if not await _guarded_channel_send(channel, opener):
+                                await mem.clear_duo_session(channel_id)
+                                continue
+                            await mem.record_bot_banter(PARTNER_PAIR_KEY, BOT_NAME, opener, "finish")
+                            await mem.bump_duo_session(channel_id, BOT_NAME, partner_bot=PARTNER_NAME, ttl_seconds=180, autoplay_delay=4)
+                            debug_event("relationship", f"{BOT_NAME} finish_sentence channel={channel_id}")
+                            break
                     opener = await qai(
                         f"Users were discussing: '{topic}'. Start a spontaneous disagreement with {PARTNER_NAME}. "
                         "One or two sentences. Sound dry, thoughtful, and mildly irritated that they are oversimplifying it.",
@@ -6712,7 +6767,10 @@ async def _do_teachvideo(ctx, attachment, topic, msg_id=None):
         material_content = await extract_teaching_material(attachment, topic=topic or "", bot_name=BOT_NAME)
         if not material_content.strip():
             await ctx.send("There was nothing usable in that material."); return
-        summary = await render_teaching_video(BOT_NAME, material_content, title=_teaching_video_title(topic, attachment))
+        summary = await render_teaching_video(
+            BOT_NAME, material_content, title=_teaching_video_title(topic, attachment),
+            progress_callback=lambda payload: _send_render_queue_notice(ctx, payload),
+        )
         await _send_video_summary(
             ctx,
             summary,
@@ -8069,7 +8127,11 @@ async def _do_weathervideo(ctx, location: str, use_duo: bool, msg_id=None):
         news_results = await search_web(f"{data['place']} weather news", max_results=3)
         notes = build_weather_video_notes(data["place"], data, news_results, duo=use_duo)
         title = f"{data['place']} Weather Report"
-        summary = await (render_duo_debate_video(notes, title=title) if use_duo else render_teaching_video(BOT_NAME, notes, title=title))
+        summary = await (
+            render_duo_debate_video(notes, title=title, progress_callback=lambda payload: _send_render_queue_notice(ctx, payload))
+            if use_duo else
+            render_teaching_video(BOT_NAME, notes, title=title, progress_callback=lambda payload: _send_render_queue_notice(ctx, payload))
+        )
         sources = "Weather source: api.weather.gov"
         search_sources = format_search_sources(news_results, max_results=3)
         if search_sources:
