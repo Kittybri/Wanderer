@@ -16,6 +16,11 @@ class Rejected(ValueError):
 
 
 ACTIONS = {
+    "notify",
+    "lock",
+    "launch_app",
+    "open_url",
+    "screen",
     "power",
     "brightness",
     "color",
@@ -29,6 +34,11 @@ ACTIONS = {
     "test",
 }
 PARAMS = {
+    "notify": {"template"},
+    "lock": set(),
+    "launch_app": {"name"},
+    "open_url": {"name"},
+    "screen": set(),
     "power": {"on"},
     "brightness": {"value"},
     "color": {"name"},
@@ -213,4 +223,9 @@ def validate(value, now=None):
             raise Rejected("invalid_reference")
     if action == "print_note" and p["template"] not in NOTES:
         raise Rejected("unsupported_document")
+    if action == "notify":
+        from .companion import NOTIFICATIONS
+
+        if p["template"] not in NOTIFICATIONS:
+            raise Rejected("unsupported_notification")
     return dict(value, parameters=dict(p))

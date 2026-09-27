@@ -157,6 +157,8 @@ class HomeBot:
             await self.speak(uid, device, text[:240], user or {}, "roommate")
 
     async def tick(self):
+        if hasattr(self, "companion"):
+            await self.companion.tick()
         if (
             not self.client.enabled
             or self.tick_running
