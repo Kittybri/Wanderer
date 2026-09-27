@@ -1,6 +1,9 @@
 .env
 deploy/oracle-free/*.env
 *.db
+*.db-wal
+*.db-shm
+*.onnx
 __pycache__/
 *.pyc
 *.pyo
