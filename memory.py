@@ -1537,6 +1537,8 @@ class Memory:
     async def bump_duo_session(self, channel_id: int, speaker_bot: str, partner_bot: str = "", ttl_seconds: int = 900, autoplay_delay: int = 6, *, voice_turn: bool = False):
         now = time.time()
         current = await self.get_duo_session(channel_id)
+        if current and current.get("mode", "").startswith("server:"):
+            return  # The transactional server-game coordinator consumes this turn.
         if current and current.get("mode", "").startswith("vc:") and not voice_turn:
             return  # Text replies cannot consume structured voice turns.
         awaiting_bot = current.get("awaiting_bot", "") if current else ""

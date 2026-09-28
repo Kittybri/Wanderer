@@ -8,8 +8,10 @@ def birthday_window(now, timezone_name):
     local = now.astimezone(ZoneInfo(timezone_name))
     return local.month == 1 and local.day == 3, local
 
-async def restore_decorations(bot, store, now):
+async def restore_decorations(bot, store, now, *, guild_id=None, keys=None):
     for key, record in await store.recent("birthday_restore",100,oldest=True):
+        if (guild_id is not None and record["guild_id"] != guild_id) or (keys is not None and key not in keys):
+            continue
         if record["restore_at"] > now.timestamp():
             continue
         guild = bot.get_guild(record["guild_id"])
