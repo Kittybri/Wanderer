@@ -113,6 +113,48 @@ class Session:
         self.last_speech, self.started = 0.0, time.monotonic()
         self.reported_failures = set()
         self.recent_outputs = deque(maxlen=4)
+        self.feature_router = None
+
+    def busy(self):
+        return bool(self.response_task and not self.response_task.done())
+
+    async def feature_event(self, kind, uid=0, text="", data=None):
+        if not self.feature_router:
+            return {}
+        from .personality import VoiceEvent
+
+        try:
+            return (
+                await self.feature_router.handle_event(
+                    VoiceEvent(kind, uid, text, data)
+                )
+                or {}
+            )
+        except Exception:
+            self.metrics["feature_errors"] += 1
+            return {}
+
+    async def submit(
+        self, uid, text, *, context="", reply=None, audio=None, feature_kind=""
+    ):
+        """Structured feature output uses the SAME generation/playback lifecycle."""
+        if not self.active or uid not in self.participants or self.busy():
+            return False
+        self.current_user = uid
+        self.generation += 1
+        self.response_task = asyncio.create_task(
+            self.answer(
+                uid,
+                text,
+                self.generation,
+                self.epochs[uid],
+                feature_context=context,
+                reply_override=reply,
+                audio_override=audio,
+                feature_kind=feature_kind,
+            )
+        )
+        return True
 
     def consent(self, uid, enabled):
         if enabled:
@@ -126,6 +168,8 @@ class Session:
                 self.backend.grant(uid)
         else:
             self.participants.discard(uid)
+            if self.feature_router:
+                self.feature_router.revoke(uid)
             self.user_interrupt.pop(uid, None)
             self.epochs[uid] += 1
             self.segmenter.users.pop(uid, None)
@@ -297,8 +341,6 @@ class Session:
             )
             if mode == "KEYWORD" and keyword and uid == self.focus:
                 await self.interrupt(uid, utterance.started)
-            if not self.relevant(uid, text):
-                continue
             continuing = bool(
                 re.search(r"(?:maybe|because|and|but|so|\.\.\.)\s*$", text, re.I)
             )
@@ -343,6 +385,21 @@ class Session:
                         await self.failure("stt_unavailable")
                     finally:
                         follow.pcm = b""
+            # Route the FINAL same-speaker text, never a partial sentence whose
+            # continuation may be urgent/sensitive. No feature repeats STT.
+            if (
+                not self.active
+                or uid not in self.participants
+                or epoch != self.epochs[uid]
+            ):
+                continue
+            plan = await self.feature_event("utterance_completed", uid, text)
+            if (
+                not self.relevant(uid, text)
+                and "reply" not in plan
+                and not plan.get("force_reply")
+            ):
+                continue
             # OFF/background input does not cancel a response already in progress.
             if self.response_task and not self.response_task.done():
                 with contextlib.suppress(asyncio.CancelledError):
@@ -358,7 +415,15 @@ class Session:
             self.current_user = uid
             self.generation += 1
             self.response_task = asyncio.create_task(
-                self.answer(uid, text, self.generation, epoch)
+                self.answer(
+                    uid,
+                    text,
+                    self.generation,
+                    epoch,
+                    feature_context=plan.get("context", ""),
+                    reply_override=plan.get("reply"),
+                    feature_kind=plan.get("feature", ""),
+                )
             )
 
     def current(self, generation, uid, epoch):
@@ -392,10 +457,22 @@ class Session:
         task.add_done_callback(finished)
         return await asyncio.wait_for(asyncio.shield(task), 90)
 
-    async def answer(self, uid, text, generation, epoch):
+    async def answer(
+        self,
+        uid,
+        text,
+        generation,
+        epoch,
+        *,
+        feature_context="",
+        reply_override=None,
+        audio_override=None,
+        feature_kind="",
+    ):
         start = time.monotonic()
         self.completed, self.total = 0, 0
         context = "Voice conversation: output spoken dialogue only; no narration or stage directions. No artificial sentence limit."
+        context += " " + feature_context
         if self.interruption and self.interruption["user_id"] == uid:
             context += (
                 " You were interrupted; only completed chunks were heard. Respond to the new utterance naturally. "
@@ -406,9 +483,25 @@ class Session:
             )
             self.interruption = None
         try:
+            if feature_kind and (
+                not self.feature_router
+                or not await self.feature_router.permit(uid, feature_kind)
+            ):
+                return
+            if audio_override is not None:
+                if self.current(generation, uid, epoch):
+                    self.state = State.BOT_SPEAKING
+                    await asyncio.wait_for(self.playback.play(audio_override), 2.5)
+                return
             self.state = State.THINKING
             tick = time.monotonic()
-            reply = await self.provider("llm", lambda: self.respond(uid, text, context))
+            reply = (
+                reply_override
+                if reply_override is not None
+                else await self.provider(
+                    "llm", lambda: self.respond(uid, text, context)
+                )
+            )
             self.metrics["response_latency_ms"] = round(
                 (time.monotonic() - tick) * 1000
             )
@@ -427,6 +520,10 @@ class Session:
                 if not self.current(generation, uid, epoch):
                     self.metrics["dropped_stale_jobs"] += 1
                     return
+                if feature_kind and not await self.feature_router.permit(
+                    uid, feature_kind
+                ):
+                    return
                 if not audio:
                     raise RuntimeError("tts_unavailable")
                 self.state = State.BOT_SPEAKING
@@ -434,7 +531,10 @@ class Session:
                     self.metrics["first_audio_ms"] = round(
                         (time.monotonic() - start) * 1000
                     )
-                delivered = await self.playback.play(audio)
+                if reply_override is not None:
+                    delivered = await asyncio.wait_for(self.playback.play(audio), 12)
+                else:
+                    delivered = await self.playback.play(audio)
                 audio = None
                 if not delivered or not self.current(generation, uid, epoch):
                     return
@@ -442,9 +542,18 @@ class Session:
                 self.metrics["spoken_chunks"] += 1
                 self.recent_outputs.append(re.sub(r"\W+", " ", part.lower()).strip())
                 await self.remember(uid, part)
+                await self.feature_event(
+                    "bot_spoken",
+                    uid,
+                    part,
+                    {"duo": feature_context.startswith("STRUCTURED VOICE DUO:")},
+                )
         except asyncio.CancelledError:
             raise
         except Exception:
+            if audio_override is not None or reply_override is not None:
+                with contextlib.suppress(Exception):
+                    await self.playback.stop()
             await self.failure("response_or_playback_unavailable")
         finally:
             if generation == self.generation and self.active:
@@ -479,6 +588,7 @@ class Session:
             "playback_stopped_at": actually_stopped,
         }
         self.events.append(dict(self.interruption))
+        await self.feature_event("bot_interrupted", uid, data=dict(self.interruption))
         self.metrics["cancelled_responses"] += 1
         self.metrics["detection_ms"] = round((confirmed - speech_started) * 1000)
         self.metrics["stop_call_ms"] = round((actually_stopped - stopped_at) * 1000)
@@ -497,6 +607,7 @@ class Session:
 
     async def stop(self):
         self.active = False
+        await self.feature_event("session_stopped")
         self.state = State.CANCELLED
         self.participants.clear()
         with contextlib.suppress(Exception):

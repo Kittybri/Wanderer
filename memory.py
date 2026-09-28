@@ -1534,9 +1534,11 @@ class Memory:
             "intervention_cooldown": row[12] or 0,
         }
 
-    async def bump_duo_session(self, channel_id: int, speaker_bot: str, partner_bot: str = "", ttl_seconds: int = 900, autoplay_delay: int = 6):
+    async def bump_duo_session(self, channel_id: int, speaker_bot: str, partner_bot: str = "", ttl_seconds: int = 900, autoplay_delay: int = 6, *, voice_turn: bool = False):
         now = time.time()
         current = await self.get_duo_session(channel_id)
+        if current and current.get("mode", "").startswith("vc:") and not voice_turn:
+            return  # Text replies cannot consume structured voice turns.
         awaiting_bot = current.get("awaiting_bot", "") if current else ""
         autoplay_remaining = current.get("autoplay_remaining", 0) if current else 0
         next_autoplay_ts = current.get("next_autoplay_ts", 0) if current else 0

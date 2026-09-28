@@ -1658,7 +1658,7 @@ async def _partner_prompt_context(user_message: str, channel_id: int = 0) -> str
 
 async def _duo_prompt_context(channel_id: int, user_message: str = "") -> str:
     session = await mem.get_duo_session(channel_id)
-    if not session:
+    if not session or session.get("mode", "").startswith("vc:"):
         return ""
     mode = session.get("mode", "both")
     topic = session.get("topic", "")
@@ -3038,6 +3038,7 @@ async def _rebuild_from_history(ctx, *, target_user_id: int | None = None):
     for user_id in user_ids:
         if user_id:
             await mem.reset_user_for_rebuild(user_id)
+            await VOICE_CONVERSATION.features.forget_user(user_id)
             await PC.require_forget(user_id)
 
     if target_user_id is None:
@@ -4935,6 +4936,7 @@ class ResetView(discord.ui.View):
             await WORLD.forget(self.uid)
             await FACE_PROFILES.init()
             await FACE_PROFILES.delete(self.uid)
+            await VOICE_CONVERSATION.features.forget_user(self.uid)
             await PC.require_forget(self.uid)
             button.disabled = True; button.label = "✓ Memory Wiped"
             await interaction.response.edit_message(content="...Gone. Fine.", view=self)
@@ -6480,6 +6482,8 @@ async def _duo_autoplay_loop():
                 await asyncio.sleep(60)
                 continue
             for session in await mem.get_due_duo_sessions(BOT_NAME):
+                if session.get("mode", "").startswith("vc:"):
+                    continue  # Structured VC turns belong to the existing voice controller.
                 try:
                     if session["channel_id"] in _banned_channels:
                         await mem.clear_duo_session(session["channel_id"])
@@ -8497,6 +8501,7 @@ async def forget_cmd(ctx, *, topic: str = None):
             return
         await _setup(ctx)
         result = await mem.forget_memory_matches(ctx.author.id, topic)
+        await VOICE_CONVERSATION.features.forget_user(ctx.author.id)
         await PC.require_forget(ctx.author.id)
         result["world"] = await WORLD.forget(ctx.author.id, topic)
         removed = sum(result.values())
@@ -9398,7 +9403,7 @@ async def help_cmd(ctx):
             ("!relationship / !arc", "See arc, progression, and conflict aftermath"),
             ("!duostate / !speaker", "Inspect duo mode or set the active speaker for this channel"),
             ("!pinpromise / !pinwound / !pincomfort / !pinjoke", "Pin more precise memories"),
-            ("!utility / !duoauto / !rpdepth", "Tune output; games: `!report`, `!trade`, `!jointinterview`, `!stopinterview`, `!sound`; owner: `!integrations`, `!githubissue`"),
+            ("!utility / !duoauto / !rpdepth", "Tune output; games: `!report`, `!trade`, `!jointinterview`, `!stopinterview`, `!sound`; opt-in VC: `!vcparty help`, `!vcgame help`; owner: `!integrations`, `!githubissue`"),
         ]: e3.add_field(name=n, value=v, inline=False)
         e3.add_field(name="💡 Hidden Systems",
             value=("• Be kind 7 days → something rare happens once\n"
@@ -10193,6 +10198,9 @@ async def _record_delivered_reply(user_id, reply):
     remember_output(BOT_NAME, reply)
 VOICE_CONVERSATION = VoiceConversation(bot, mem, BOT_NAME, get_response, get_audio_with_mood, GROQ_API_KEY, OWNER_ID, _record_delivered_reply)
 VOICE_CONVERSATION.install()
+from voice_conversation.features import AdvancedVC
+VOICE_CONVERSATION.features = AdvancedVC(VOICE_CONVERSATION, INTEGRATION_CONFIG.section("advanced_vc"), _soundboard_assets, SOUNDBOARD_GUILD_IDS)
+VOICE_CONVERSATION.features.install()
 
 if __name__ == "__main__":
     if not DISCORD_TOKEN: raise SystemExit("❌ DISCORD_TOKEN not set")
