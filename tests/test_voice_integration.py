@@ -1,0 +1,283 @@
+import asyncio
+import io
+import json
+import math
+import os
+import struct
+from types import SimpleNamespace as NS
+from unittest.mock import AsyncMock, Mock
+
+import pytest
+import discord
+from discord.ext import commands
+
+from voice_conversation.integration import VoiceConversation
+from voice_conversation.speech import GroqSTT
+from voice_conversation.smoke import evaluate
+
+
+def setup(monkeypatch):
+    monkeypatch.setenv("VOICE_ALLOWED_CHANNEL_IDS", "10")
+    bot = commands.Bot(command_prefix="!", intents=discord.Intents.none())
+    mem = NS(
+        get_user_preferences=AsyncMock(return_value={"voice_enabled": True}),
+        get_user=AsyncMock(return_value={}),
+        upsert_user=AsyncMock(),
+        add_message=AsyncMock(),
+    )
+    service = VoiceConversation(
+        bot,
+        mem,
+        "scaramouche",
+        AsyncMock(return_value="Dialogue."),
+        AsyncMock(return_value=b"audio"),
+        "test",
+        1,
+    )
+    channel = NS(
+        id=10,
+        send=AsyncMock(),
+        permissions_for=lambda m: NS(connect=True, speak=True, view_channel=True),
+    )
+    author = NS(
+        id=1,
+        bot=False,
+        voice=NS(channel=channel),
+        guild_permissions=NS(manage_guild=False),
+        send=AsyncMock(),
+        display_name="Test",
+        mention="<@1>",
+    )
+    guild = NS(id=5, voice_client=None, me=NS(), get_member=lambda uid: author)
+    ctx = NS(author=author, guild=guild, reply=AsyncMock())
+    return service, ctx, channel
+
+
+def test_legacy_dispatch_and_disabled_channel(monkeypatch):
+    async def check():
+        service, ctx, channel = setup(monkeypatch)
+        for text in ("hello", "on", "off", None):
+            assert not await service.command(ctx, text)
+        assert not await service.command(ctx, "status")
+        service.allowed = set()
+        assert await service.command(ctx, "start")
+        channel.send.assert_not_awaited()
+        assert not service.sessions
+        await service.bot.close()
+
+    asyncio.run(check())
+
+
+def test_start_consent_preferences_and_backend_unavailable(monkeypatch):
+    async def check():
+        service, ctx, channel = setup(monkeypatch)
+        service.mem.get_user_preferences.return_value = {"voice_enabled": False}
+        await service.command(ctx, "start")
+        assert not service.sessions
+        service.mem.get_user_preferences.return_value = {"voice_enabled": True}
+        monkeypatch.setattr(
+            "voice_conversation.integration.shutil.which", lambda n: "/test/ffmpeg"
+        )
+        monkeypatch.setattr(
+            "voice_conversation.integration.ReceiveBackend.client_class",
+            Mock(side_effect=RuntimeError("secret provider error")),
+        )
+        await service.command(ctx, "start")
+        assert "secret" not in str(ctx.reply.call_args_list)
+        channel.send.assert_not_awaited()
+        await service.bot.close()
+
+    asyncio.run(check())
+
+
+def test_start_callbacks_and_optout_shutdown(monkeypatch):
+    async def check():
+        service, ctx, channel = setup(monkeypatch)
+        vc = NS(
+            channel=channel,
+            disconnect=AsyncMock(),
+            listen=Mock(),
+            is_listening=lambda: False,
+        )
+        channel.connect = AsyncMock(return_value=vc)
+        monkeypatch.setattr(
+            "voice_conversation.integration.shutil.which", lambda n: "/test/ffmpeg"
+        )
+        monkeypatch.setattr(
+            "voice_conversation.integration.ReceiveBackend.client_class",
+            lambda s: object,
+        )
+
+        async def start(backend, client):
+            backend.vc, backend.active = client, True
+
+        monkeypatch.setattr(
+            "voice_conversation.integration.ReceiveBackend.start", start
+        )
+        monkeypatch.setattr("voice_conversation.integration.Session.start", AsyncMock())
+        monkeypatch.setattr(
+            "voice_conversation.session.Segmenter", lambda *a: NS(users={})
+        )
+        await service.command(ctx, "start")
+        assert channel.send.await_count == 1
+        session = service.sessions[5]
+        session.active = True
+        assert session.participants == {1}
+        reply = await session.respond(
+            1, "Scaramouche, I can't breathe", "Voice context"
+        )
+        assert reply == "Dialogue."
+        extra = service.respond.call_args.kwargs["extra_context"]
+        assert "PROTECTIVE_OVERRIDE" in extra
+        await session.synthesize(1, "Dialogue.")
+        assert service.tts.call_args.kwargs["voice_key"] == 1
+        await session.remember(1, "Spoken part")
+        service.mem.add_message.assert_awaited_with(
+            1, 10, "assistant", "[voice spoken] Spoken part"
+        )
+        await service.command(ctx, "mode conversation")
+        assert session.mode == "CONVERSATION"
+        await service.command(ctx, "interrupt me natural")
+        assert session.user_interrupt[1] == "NATURAL"
+        await service.command(ctx, "off")
+        assert not session.participants
+        await service.command(ctx, "listen on")
+        assert session.participants == {1}
+        service.install()
+        await service.bot.close()
+        assert not service.sessions
+        vc.disconnect.assert_awaited_once()
+
+    asyncio.run(check())
+
+
+def test_permissions_and_diagnostics(monkeypatch):
+    async def check():
+        service, ctx, channel = setup(monkeypatch)
+        session = NS(
+            initiator=1,
+            active=True,
+            channel_id=10,
+            participants={1},
+            consent=Mock(),
+            user_interrupt={},
+            status=lambda: {"state": "LISTENING", "metrics": {}},
+            events=[],
+        )
+        service.sessions[5] = session
+        ctx.author.id = 2
+        await service.command(ctx, "stop")
+        assert service.sessions
+        await service.command(ctx, "diagnostics")
+        ctx.author.send.assert_not_awaited()
+        await service.command(ctx, "listen off")
+        session.consent.assert_called_with(2, False)
+        ctx.author.id = 1
+        await service.command(ctx, "diagnostics")
+        file = ctx.author.send.call_args.kwargs["file"]
+        assert json.load(file.fp)["state"] == "LISTENING"
+        service.sessions.clear()
+        await service.bot.close()
+
+    asyncio.run(check())
+
+
+def test_disconnect_and_channel_delete_cleanup(monkeypatch):
+    async def check():
+        service, ctx, channel = setup(monkeypatch)
+        service.bot._connection.user = NS(id=9)
+        session = NS(channel_id=10, consent=Mock())
+        service.sessions[5] = session
+        ctx.author.guild = ctx.guild
+        await service.voice_state(ctx.author, NS(channel=channel), NS(channel=None))
+        session.consent.assert_called_with(1, False)
+        service.leave = AsyncMock()
+        await service.channel_deleted(NS(id=10, guild=ctx.guild))
+        service.leave.assert_awaited_with(5)
+        ctx.author.id = 9
+        await service.voice_state(ctx.author, NS(channel=channel), NS(channel=None))
+        assert service.leave.await_count == 2
+        service.sessions.clear()
+        await service.bot.close()
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize(
+    "status,body,expected",
+    [
+        (200, b'{"text":"hello"}', "hello"),
+        (200, b'{"text":""}', ""),
+        (429, b"private details", None),
+        (200, b"not json", None),
+        (200, b"x" * 17000, None),
+    ],
+)
+def test_stt_http_path(monkeypatch, status, body, expected):
+    class CM:
+        def __init__(self, value):
+            self.value = value
+
+        async def __aenter__(self):
+            return self.value
+
+        async def __aexit__(self, *args):
+            pass
+
+    response = NS(status=status, content=NS(read=AsyncMock(return_value=body)))
+    client = NS(post=Mock(return_value=CM(response)))
+    monkeypatch.setattr("aiohttp.ClientSession", lambda **kwargs: CM(client))
+
+    async def check():
+        if expected is None:
+            with pytest.raises((ValueError, RuntimeError)):
+                await GroqSTT("test").transcribe(bytes(640))
+        else:
+            assert await GroqSTT("test").transcribe(bytes(640)) == expected
+
+    asyncio.run(check())
+    assert client.post.call_count == 1
+
+
+def test_smoke_requires_codec_and_human_evidence():
+    snapshot = {
+        "listening": True,
+        "metrics": {
+            key: 1
+            for key in (
+                "packets",
+                "dave_frames",
+                "pcm_frames",
+                "vad_segments",
+                "stt_success",
+                "spoken_chunks",
+                "cancelled_responses",
+            )
+        },
+    }
+    snapshot["metrics"]["rms_peak"] = 1000
+    assert evaluate(snapshot)
+    assert not evaluate(snapshot, True, True)
+    del snapshot["metrics"]["dave_frames"]
+    assert evaluate(snapshot, True, True)
+
+
+def test_real_opus_roundtrip_optional():
+    library = os.getenv("VOICE_OPUS_LIBRARY")
+    if not library:
+        pytest.skip("Set VOICE_OPUS_LIBRARY to test real Opus encode/decode")
+    discord.opus.load_opus(library)
+    pcm = b"".join(
+        struct.pack(
+            "<hh",
+            int(8000 * math.sin(i * 2 * math.pi * 440 / 48000)),
+            int(8000 * math.sin(i * 2 * math.pi * 440 / 48000)),
+        )
+        for i in range(960)
+    )
+    packet = discord.opus.Encoder().encode(pcm, 960)
+    decoded = discord.opus.Decoder().decode(packet)
+    assert len(decoded) == 3840
+    import audioop
+
+    assert 20 < audioop.rms(decoded, 2) < 32767
