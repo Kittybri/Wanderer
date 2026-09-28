@@ -1,5 +1,9 @@
 # Full-duplex voice foundation
 
+Optional character/party features layered on this controller are documented in
+[ADVANCED_VC_FEATURES.md](ADVANCED_VC_FEATURES.md). They do not waive the live
+receive smoke-test release gate below or introduce another audio pipeline.
+
 This is an **opt-in experimental receive path**, not a claim of live Discord validation.
 Existing text, voice-note commands, Fish voice IDs, emotion/VoiceState, home audio,
 lullaby and deliberate duo orchestration remain in place. Nothing autojoins a VC.

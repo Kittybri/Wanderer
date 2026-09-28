@@ -26,6 +26,7 @@ class VoiceConversation:
         self.owner_id = owner_id
         self.on_spoken = on_spoken
         self.sessions = {}
+        self.features = None
         self.lock = None
         self.allowed = frozenset(
             int(x)
@@ -45,6 +46,8 @@ class VoiceConversation:
         self.bot.close = close
 
     async def close(self):
+        if self.features:
+            await self.features.close()
         for gid in list(self.sessions):
             await self.leave(gid)
 
@@ -62,6 +65,11 @@ class VoiceConversation:
                 )
 
     async def voice_state(self, member, before, after):
+        if self.features:
+            # A social-feature DB failure must never prevent receive consent
+            # being revoked or the foundation disconnecting a moved bot.
+            with contextlib.suppress(Exception):
+                await self.features.voice_state(member, before, after)
         session = self.sessions.get(member.guild.id)
         if not session:
             return
@@ -165,8 +173,26 @@ class VoiceConversation:
                 await self.send(ctx, "Detailed voice diagnostics are owner-only.")
                 return
             result = session.status() if session else {"state": "IDLE"}
+            if self.features:
+                result["advanced_features"] = {
+                    "maintenance_error_seen": self.features.reported_error,
+                    "pending_duo_turns": len(self.features.duo_pending),
+                    "mockingbird_mode": getattr(
+                        getattr(session, "feature_router", None), "mock_mode", "OFF"
+                    ),
+                }
             if session:
                 result["events"] = list(session.events)[-5:]
+                from .personality import priority_status
+
+                result["priority_speaker"] = priority_status(
+                    getattr(
+                        getattr(getattr(session, "backend", None), "vc", None),
+                        "channel",
+                        None,
+                    ),
+                    ctx.guild.me,
+                )
             with contextlib.suppress(discord.HTTPException):
                 await ctx.author.send(
                     "Sanitized voice diagnostics; no transcript or raw audio.",
@@ -184,7 +210,10 @@ class VoiceConversation:
                 "Your voice consent is off. Queued audio is discarded; no new speech from you will be transcribed. An already-sent provider request cannot be recalled.",
             )
             return
-        if not channel or channel.id not in self.allowed:
+        temporary = self.features.games.temporary_channels if self.features else set()
+        if not channel or (
+            channel.id not in self.allowed and channel.id not in temporary
+        ):
             await self.send(
                 ctx,
                 "Join a VC explicitly listed in VOICE_ALLOWED_CHANNEL_IDS first. Listening is disabled elsewhere.",
@@ -298,6 +327,8 @@ class VoiceConversation:
                 )
                 session.consent(ctx.author.id, True)
                 self.sessions[ctx.guild.id] = session
+                if self.features:
+                    self.features.attach(session, ctx.guild.id)
                 await backend.start(vc)
                 await session.start()
                 await self.status(ctx)
@@ -325,6 +356,8 @@ class VoiceConversation:
                 return
             try:
                 session.consent(ctx.author.id, True)
+                if self.features:
+                    await self.features.arrival(session, ctx.guild.id, ctx.author.id)
                 await self.send(
                     ctx,
                     "You opted in for this session. Speech goes to Groq for transcription; relevant turns use ordinary memory. Raw audio is not saved. `!voice listen off` revokes consent.",
