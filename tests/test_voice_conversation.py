@@ -1,0 +1,409 @@
+import asyncio
+import queue
+import time
+from collections import Counter
+from types import SimpleNamespace as NS
+from unittest.mock import AsyncMock, Mock
+
+import pytest
+
+from voice_conversation.receive import ReceiveBackend, eligible
+from voice_conversation.session import Session, State, Playback
+from voice_conversation.speech import Limits, Segmenter, Utterance, chunks, GroqSTT
+
+
+def run(coro):
+    return asyncio.run(coro)
+
+
+def member(uid=1, bot=False, channel=10):
+    return NS(id=uid, bot=bot, voice=NS(channel=NS(id=channel)))
+
+
+def setup(**kwargs):
+    backend = NS(
+        frames=queue.Queue(128),
+        metrics=Counter(),
+        unhealthy=lambda: False,
+        stop=AsyncMock(),
+        active=True,
+    )
+    defaults = dict(
+        channel_id=10,
+        initiator=1,
+        name="scaramouche",
+        backend=backend,
+        stt=NS(transcribe=AsyncMock(return_value="Scaramouche, hello")),
+        playback=NS(play=AsyncMock(return_value=True), stop=AsyncMock()),
+        respond=AsyncMock(return_value="A complete answer."),
+        synthesize=AsyncMock(return_value=b"audio"),
+        remember=AsyncMock(),
+        notify=AsyncMock(),
+        vad=NS(is_speech=lambda pcm, rate: any(pcm)),
+    )
+    defaults.update(kwargs)
+    session = Session(**defaults)
+    session.consent(1, True)
+    session.active = True
+    return session
+
+
+@pytest.mark.parametrize(
+    "uid,bot,channel,expected",
+    [
+        (1, False, 10, True),
+        (1, True, 10, False),
+        (9, False, 10, False),
+        (1, False, 11, False),
+        (2, False, 10, False),
+    ],
+)
+def test_attribution(uid, bot, channel, expected):
+    assert eligible(member(uid, bot, channel), 9, 10, {1}) is expected
+
+
+def test_receive_bounds_privacy_health():
+    async def check():
+        b = ReceiveBackend(lambda: {1}, size=2)
+        b.vc = NS(
+            client=NS(user=NS(id=9)), channel=NS(id=10), is_listening=lambda: False
+        )
+        b.accept(member(), b"x" * 3840)
+        assert b.frames.empty()  # disabled
+        b.active = True
+        b.accept(member(bot=True), b"x" * 3840)
+        b.accept(member(), b"x")
+        for _ in range(4):
+            b.accept(member(), b"x" * 3840)
+        assert b.frames.qsize() == 2 and b.metrics["dropped_frames"] == 2
+        assert b.metrics["malformed_pcm"] == 1
+        b.first_packet = b.last_valid = time.monotonic() - 20
+        b.last_packet = b.last_valid
+        assert not b.unhealthy()  # silence is not a receive failure
+        b.last_packet = time.monotonic()
+        assert b.unhealthy()
+        await b.stop()
+        assert b.frames.empty() and not b.active
+
+    run(check())
+
+
+def test_segmentation_silence_noise_overlap_end_and_max():
+    vad = NS(is_speech=lambda pcm, rate: any(pcm))
+    s = Segmenter(Limits(max_seconds=2), vad)
+    noise, silent = b"\x01\x01" * 1920, bytes(3840)
+    for i in range(50):
+        assert s.feed(1, silent, i / 50) == (None, 0)
+    for i in range(2):
+        s.feed(1, noise, i / 50)
+    for i in range(45):
+        s.feed(1, silent, 0.1 + i / 50)
+    assert not s.expire(3)
+    for i in range(20):
+        s.feed(1, noise, 4 + i / 50)
+        s.feed(2, noise, 4 + i / 50)
+    results = s.expire(6)
+    assert {u.user_id for u in results} == {1, 2}
+    assert all(len(u.pcm) == 20 * 640 for u in results)
+    results = [s.feed(1, noise, 7 + i / 50)[0] for i in range(100)]
+    assert sum(u is not None for u in results) == 1
+    assert len(results[-1].pcm) <= 64000
+
+
+def test_limits_and_sentence_chunks():
+    with pytest.raises(ValueError):
+        Limits(max_seconds=999)
+    text = "This sentence is natural. " * 40
+    pieces = chunks(text)
+    assert " ".join(pieces) == text.strip()
+    assert all(len(p) <= 320 for p in pieces)
+
+
+@pytest.mark.parametrize(
+    "mode,uid,duration,interrupt",
+    [
+        ("NATURAL", 1, 320, True),
+        ("NATURAL", 1, 40, False),
+        ("NATURAL", 2, 500, False),
+        ("OFF", 1, 500, False),
+        ("KEYWORD", 1, 500, False),
+    ],
+)
+def test_natural_barge_in_gates(mode, uid, duration, interrupt):
+    async def check():
+        s = setup()
+        s.interrupt_mode = mode
+        s.response_task = asyncio.create_task(asyncio.sleep(30))
+        await s.speech(uid, duration, time.monotonic() - 0.4)
+        assert s.playback.stop.await_count == int(interrupt)
+        assert bool(s.interruption) == interrupt
+        await s.stop()
+
+    run(check())
+
+
+@pytest.mark.parametrize("stage", ["llm", "tts", "playback"])
+def test_stale_work_and_partial_memory(stage):
+    async def check():
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def delayed(*args):
+            entered.set()
+            await release.wait()
+            return (
+                "Unheard answer."
+                if stage == "llm"
+                else b"audio" if stage == "tts" else True
+            )
+
+        s = setup()
+        if stage == "llm":
+            s.respond = delayed
+        elif stage == "tts":
+            s.synthesize = delayed
+        else:
+            s.playback.play = delayed
+        s.generation, s.current_user = 1, 1
+        s.response_task = asyncio.create_task(s.answer(1, "hello", 1, 0))
+        await entered.wait()
+        await s.interrupt(1, time.monotonic())
+        release.set()
+        await asyncio.sleep(0.01)
+        s.remember.assert_not_awaited()
+        assert s.interruption["type"] == "voice_interrupted"
+        await s.stop()
+
+    run(check())
+
+
+def test_completed_chunks_only_memory():
+    async def check():
+        s = setup(
+            respond=AsyncMock(
+                return_value=(
+                    "A natural sentence with enough detail to form one whole spoken chunk. "
+                    * 8
+                )
+            )
+        )
+        s.playback.play = AsyncMock(side_effect=[True, False])
+        s.generation = 1
+        await s.answer(1, "hello", 1, 0)
+        assert s.remember.await_count == 1
+        assert s.completed == 1 and s.total > 1
+        await s.stop()
+
+    run(check())
+
+
+def test_provider_jobs_bounded_after_repeated_cancellation():
+    async def check():
+        s = setup()
+        release = asyncio.Event()
+
+        async def provider():
+            await release.wait()
+
+        for _ in range(10):
+            task = asyncio.create_task(s.provider("llm", provider))
+            await asyncio.sleep(0.001)
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        assert len(s.providers) == 1
+        release.set()
+        await asyncio.sleep(0.001)
+        await s.stop()
+
+    run(check())
+
+
+def test_relevance_focus_and_optout():
+    async def check():
+        s = setup()
+        assert not s.relevant(1, "hello there")
+        assert s.relevant(1, "Scara, hello")
+        s.mode, s.focus_until = "CONVERSATION", time.monotonic() + 10
+        assert s.relevant(1, "yes") and not s.relevant(2, "yes")
+        s.mode = "ACTIVE_ROOM"
+        assert s.relevant(1, "hello")
+        s.enqueue(Utterance(1, b"x", time.monotonic(), time.monotonic()))
+        s.consent(1, False)
+        assert s.jobs.empty() and s.focus is None and s.epochs[1] == 1
+        await s.stop()
+
+    run(check())
+
+
+def test_queue_drops_old_and_no_unauthorized_work():
+    async def check():
+        s = setup()
+        for i in range(10):
+            s.enqueue(Utterance(1, b"x", i, i))
+        s.enqueue(Utterance(2, b"x", 11, 11))
+        assert s.jobs.qsize() == 2
+        assert s.jobs.get_nowait().ended == 8
+        assert s.metrics["dropped_stale_jobs"] == 8
+        await s.stop()
+
+    run(check())
+
+
+@pytest.mark.parametrize(
+    "outcome", ["success", "empty", "error", "timeout", "revoked", "stale"]
+)
+def test_stt_lifecycle(outcome):
+    async def check():
+        s = setup()
+        release = asyncio.Event()
+        entered = asyncio.Event()
+
+        async def transcribe(pcm):
+            entered.set()
+            await release.wait()
+            if outcome == "error":
+                raise RuntimeError("PRIVATE_PROVIDER_ERROR")
+            if outcome == "timeout":
+                raise asyncio.TimeoutError()
+            return "" if outcome == "empty" else "Scaramouche, hello"
+
+        s.stt.transcribe = transcribe
+        task = asyncio.create_task(s.transcribe_loop())
+        u = Utterance(
+            1,
+            b"raw",
+            time.monotonic(),
+            time.monotonic() - (20 if outcome == "stale" else 0),
+        )
+        s.enqueue(u)
+        if outcome != "stale":
+            await entered.wait()
+        if outcome == "revoked":
+            s.consent(1, False)
+        release.set()
+        await asyncio.sleep(0.02)
+        assert s.respond.await_count == int(outcome == "success")
+        assert "PRIVATE" not in str(s.metrics)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await s.stop()
+
+    run(check())
+
+
+def test_keyword_stops_and_next_turn_gets_context():
+    async def check():
+        s = setup()
+        s.stt.transcribe.return_value = "wait, stop"
+        s.response_task = asyncio.create_task(asyncio.sleep(30))
+        task = asyncio.create_task(s.transcribe_loop())
+        s.enqueue(Utterance(1, b"audio", time.monotonic(), time.monotonic()))
+        await asyncio.sleep(0.02)
+        assert s.metrics["cancelled_responses"] == 1
+        assert "interrupted" in s.respond.call_args.args[2]
+        assert s.respond.call_args.args[1] == "wait, stop"
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await s.stop()
+
+    run(check())
+
+
+def test_failure_notifies_once_and_cleans_up():
+    async def check():
+        s = setup()
+        s.backend.unhealthy = lambda: True
+        await s.receive_loop()
+        await s.failure("receive_unhealthy")
+        assert not s.active
+        assert s.notify.await_count == 1
+        assert not s.participants
+        await s.stop()
+
+    run(check())
+
+
+def test_playback_stop_does_not_stop_receive():
+    async def check():
+        vc = NS(stop_playing=Mock(), stop=Mock())
+        p = Playback(vc)
+        p.source = object()
+        p.done = asyncio.get_running_loop().create_future()
+        await p.stop()
+        vc.stop_playing.assert_called_once()
+        vc.stop.assert_not_called()
+        assert not await p.done
+
+    run(check())
+
+
+def test_real_vad_silence_optional():
+    pytest.importorskip("webrtcvad")
+    s = Segmenter()
+    assert s.feed(1, bytes(3840)) == (None, 0)
+
+
+def test_groq_missing_key_and_bounds():
+    async def check():
+        with pytest.raises(RuntimeError, match="stt_not_configured"):
+            await GroqSTT("").transcribe(b"x")
+        assert await GroqSTT("test").transcribe(b"") == ""
+        assert await GroqSTT("test").transcribe(b"x" * 640001) == ""
+
+    run(check())
+
+
+def test_dave_reader_fail_closed_and_rotation(monkeypatch):
+    pytest.importorskip("discord.ext.voice_recv")
+    from voice_conversation import receive
+    from discord.ext.voice_recv import rtp
+
+    monkeypatch.setattr(receive, "check_dependencies", lambda: None)
+    b = ReceiveBackend(lambda: {1})
+    b.active = True
+    stats = NS(successes=0)
+
+    def decrypt(uid, media, payload):
+        stats.successes += 1
+        return b"opus"
+
+    dave = NS(
+        ready=True,
+        decrypt=Mock(side_effect=decrypt),
+        get_decryption_stats=lambda uid: NS(successes=stats.successes),
+    )
+    vc = NS(
+        client=NS(user=NS(id=9)),
+        channel=NS(id=10),
+        guild=NS(get_member=lambda uid: member(uid)),
+        _get_id_from_ssrc=lambda ssrc: 1,
+        _connection=NS(dave_session=dave, dave_protocol_version=1),
+        secret_key=bytes(32),
+    )
+    b.vc = vc
+    cls = b.client_class().reader_class
+    reader = cls.__new__(cls)
+    reader.voice_client, reader.error = vc, None
+    reader.decryptor = NS(
+        update_secret_key=Mock(), decrypt_rtp=Mock(return_value=b"ciphertext")
+    )
+    reader.packet_router = NS(feed_rtp=Mock())
+    reader.speaking_timer = NS(notify=Mock())
+    monkeypatch.setattr(rtp, "is_rtcp", lambda data: False)
+    monkeypatch.setattr(rtp, "decode_rtp", lambda data: NS(ssrc=99))
+    reader.callback(bytes(20))
+    assert b.metrics["dave_frames"] == 1
+    vc.secret_key = bytes([1]) * 32
+    reader.callback(bytes(20))
+    reader.decryptor.update_secret_key.assert_called_with(vc.secret_key)
+    vc._connection.dave_protocol_version = 0
+    reader.callback(bytes(20))
+    assert reader.packet_router.feed_rtp.call_count == 2
+    vc._connection.dave_protocol_version = 1
+    dave.decrypt.side_effect = (
+        lambda *args: b"plaintext"
+    )  # passthrough not authenticated
+    reader.callback(bytes(20))
+    assert reader.packet_router.feed_rtp.call_count == 2
+    dave.decrypt.side_effect = ValueError("secret")
+    reader.callback(bytes(20))
+    assert b.metrics["receive_errors"] == 2

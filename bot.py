@@ -2722,7 +2722,7 @@ async def _play_soundboard(ctx, sound_name: str) -> tuple[bool, str]:
         while voice.is_playing() and time.monotonic() < deadline:
             await asyncio.sleep(0.1)
         if voice.is_playing():
-            voice.stop()
+            getattr(voice, "stop_playing", voice.stop)()
         return True, ""
     except (discord.ClientException, discord.OpusNotLoaded, asyncio.TimeoutError, OSError) as exc:
         log_error("soundboard", exc)
@@ -3604,7 +3604,7 @@ def _sanitize_partner_dialogue_reply(text: str, guild, *, partner_mention: str =
 # ── Core AI response ──────────────────────────────────────────────────────────
 async def get_response(user_id, channel_id, user_message, user, display_name,
                        author_mention, use_search=False, extra_context="",
-                       is_owner=False, channel_obj=None, is_dm=False, direct_to_me=True):
+                       is_owner=False, channel_obj=None, is_dm=False, direct_to_me=True, defer_delivery=False):
     recent_replies: list[str] = []
     search_sources = ""
     rate_limited = False
@@ -4097,7 +4097,7 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
         )
     reply = _sanitize_time_of_day_claims(reply, refreshed_user or user)
     reply = _sanitize_partner_attribution(reply)
-    if reply:
+    if reply and not defer_delivery:
         remember_output(BOT_NAME, reply)
     if is_dm and HOME.client.enabled:
         try: await HOME.roommate(user_id, reply, user or {})
@@ -6771,6 +6771,8 @@ async def progress_cmd(ctx):
 @bot.command(name="voice", aliases=["speak", "say"])
 async def voice_cmd(ctx, *, msg: str = None):
     try:
+        if await VOICE_CONVERSATION.command(ctx, msg):
+            return
         normalized = (msg or "").strip().lower()
         user = await _setup(ctx); mood_val = user.get("mood", 0) if user else 0
         if normalized in {"on", "off", "status"}:
@@ -10162,11 +10164,11 @@ async def _world_lullaby_line(voice):
         voice.play(source)
         while voice.is_playing():
             if len(voice.channel.members) != 2 or {m.id for m in voice.channel.members if not m.bot} != listeners:
-                voice.stop()
+                getattr(voice, "stop_playing", voice.stop)()
                 break
             await asyncio.sleep(0.5)
     finally:
-        voice.stop()
+        getattr(voice, "stop_playing", voice.stop)()
         source.cleanup()
 
 from persistent_world import PersistentWorld
@@ -10185,6 +10187,12 @@ async def _pc_deadlines():
     return await due_soon(GoogleTasksService(account), GoogleCalendarService(account))
 PC = CompanionBot(HOME, INTEGRATION_CONFIG.section("companion"), _pc_vision, _pc_deadlines)
 PC.install()
+
+from voice_conversation.integration import VoiceConversation
+async def _record_delivered_reply(user_id, reply):
+    remember_output(BOT_NAME, reply)
+VOICE_CONVERSATION = VoiceConversation(bot, mem, BOT_NAME, get_response, get_audio_with_mood, GROQ_API_KEY, OWNER_ID, _record_delivered_reply)
+VOICE_CONVERSATION.install()
 
 if __name__ == "__main__":
     if not DISCORD_TOKEN: raise SystemExit("❌ DISCORD_TOKEN not set")

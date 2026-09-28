@@ -1,0 +1,198 @@
+"""Ephemeral per-speaker PCM segmentation and replaceable final STT."""
+
+from __future__ import annotations
+
+import asyncio
+import audioop
+import io
+import os
+import re
+import time
+import wave
+from dataclasses import dataclass, field
+from typing import Protocol
+
+
+@dataclass(frozen=True)
+class Limits:
+    start_ms: int = 120
+    end_ms: int = 900
+    minimum_ms: int = 240
+    barge_ms: int = 320
+    max_seconds: float = 12
+    participants: int = 4
+    frame_queue: int = 128
+    stt_queue: int = 2
+    stale_seconds: float = 15
+
+    @classmethod
+    def from_env(cls):
+        return cls(
+            start_ms=int(os.getenv("VOICE_SPEECH_START_MS", "120")),
+            end_ms=int(os.getenv("VOICE_SPEECH_END_MS", "900")),
+            minimum_ms=int(os.getenv("VOICE_SPEECH_MIN_MS", "240")),
+            barge_ms=int(os.getenv("VOICE_BARGE_MS", "320")),
+            max_seconds=float(os.getenv("VOICE_MAX_UTTERANCE_SECONDS", "12")),
+        )
+
+    def __post_init__(self):
+        if not (60 <= self.start_ms <= self.minimum_ms <= 1000):
+            raise ValueError("Invalid speech thresholds")
+        if not (300 <= self.end_ms <= 2000 and 200 <= self.barge_ms <= 1500):
+            raise ValueError("Invalid silence/barge thresholds")
+        if not (2 <= self.max_seconds <= 20 and 1 <= self.participants <= 8):
+            raise ValueError("Invalid voice bounds")
+        if not (
+            1 <= self.stt_queue <= 4
+            and 16 <= self.frame_queue <= 256
+            and 2 <= self.stale_seconds <= 30
+        ):
+            raise ValueError("Invalid queue bounds")
+
+
+@dataclass
+class Utterance:
+    user_id: int
+    pcm: bytes
+    started: float
+    ended: float
+    epoch: int = 0
+
+
+@dataclass
+class Segment:
+    pcm: bytearray = field(default_factory=bytearray)
+    start: float = 0
+    last: float = 0
+    speech_ms: int = 0
+    silence_ms: int = 0
+    run_ms: int = 0
+
+
+class Segmenter:
+    """Accept exactly 20ms/48k/stereo PCM; retain at most one bounded segment/user."""
+
+    def __init__(self, limits=Limits(), vad=None):
+        if vad is None:
+            import webrtcvad
+
+            vad = webrtcvad.Vad(2)
+        self.vad, self.limits, self.users = vad, limits, {}
+
+    def feed(self, uid, pcm, now=None):
+        now = time.monotonic() if now is None else now
+        if len(pcm) != 3840:
+            return None, 0
+        mono = audioop.tomono(pcm, 2, 0.5, 0.5)
+        mono, _ = audioop.ratecv(mono, 2, 1, 48000, 16000, None)
+        speech = self.vad.is_speech(mono, 16000)
+        s = self.users.get(uid)
+        if s is None:
+            if not speech or len(self.users) >= self.limits.participants:
+                return None, 0
+            s = self.users[uid] = Segment(start=now)
+        s.last = now
+        s.pcm.extend(mono)
+        if speech:
+            s.speech_ms += 20
+            s.run_ms += 20
+            s.silence_ms = 0
+        else:
+            s.silence_ms += 20
+            if s.silence_ms >= 60:
+                s.run_ms = 0
+        sustained = s.run_ms
+        if s.speech_ms < self.limits.start_ms and s.silence_ms >= 60:
+            self.users.pop(uid, None)
+            return None, 0
+        if s.silence_ms >= self.limits.end_ms or len(s.pcm) >= int(
+            self.limits.max_seconds * 32000
+        ):
+            return self.finish(uid, now), sustained
+        return None, sustained
+
+    def finish(self, uid, now):
+        s = self.users.pop(uid, None)
+        if s and s.speech_ms >= self.limits.minimum_ms:
+            return Utterance(uid, bytes(s.pcm), s.start, now)
+
+    def expire(self, now):
+        return [
+            u
+            for uid, s in list(self.users.items())
+            if (now - s.last) * 1000 >= self.limits.end_ms
+            for u in [self.finish(uid, now)]
+            if u
+        ]
+
+
+class STTProvider(Protocol):
+    supports_partials: bool
+
+    async def transcribe(self, pcm: bytes) -> str: ...
+
+
+class GroqSTT:
+    """Final utterance STT, not a realtime/partial transcription API. No disk I/O."""
+
+    supports_partials = False
+
+    def __init__(self, key):
+        self.key = key
+
+    async def transcribe(self, pcm):
+        import aiohttp
+
+        if not self.key:
+            raise RuntimeError("stt_not_configured")
+        if not pcm or len(pcm) > 640000:
+            return ""
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(16000)
+            wav.writeframes(pcm)
+        form = aiohttp.FormData()
+        form.add_field(
+            "file", buf.getvalue(), filename="utterance.wav", content_type="audio/wav"
+        )
+        form.add_field("model", "whisper-large-v3-turbo")
+        form.add_field("response_format", "json")
+        try:
+            async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as client:
+                async with client.post(
+                    "https://api.groq.com/openai/v1/audio/transcriptions",
+                    headers={"Authorization": "Bearer " + self.key},
+                    data=form,
+                ) as response:
+                    if response.status != 200:
+                        raise RuntimeError("stt_http_failure")
+                    raw = await response.content.read(16385)
+                    if len(raw) > 16384:
+                        raise RuntimeError("stt_response_too_large")
+                    import json
+
+                    text = json.loads(raw).get("text", "")
+                    return text.strip()[:2000] if isinstance(text, str) else ""
+        except asyncio.TimeoutError:
+            raise RuntimeError("stt_timeout") from None
+
+
+def chunks(text, size=320):
+    """Sentence-first chunks, with word boundaries for an oversized sentence."""
+    result, current = [], ""
+    for sentence in re.split(r"(?<=[.!?])\s+|\n+", text.strip()):
+        for word in sentence.split():
+            if current and len(current) + len(word) + 1 > size:
+                result.append(current)
+                current = ""
+            current = (current + " " + word).strip()
+        if len(current) >= 100:
+            result.append(current)
+            current = ""
+    if current:
+        result.append(current)
+    return result
