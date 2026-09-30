@@ -19,7 +19,7 @@ from dotenv import load_dotenv
 from memory import Memory
 from voice_handler import get_audio, get_audio_mooded
 from awareness_features import (
-    activity_snapshot, choose_duo_advice_mode, classify_safety,
+    activity_snapshot, choose_duo_advice_mode, classify_safety, credential_disclosure,
     parse_id_set, playful_negative_target, protective_prompt,
     resolve_voice_state, select_relevant_recall, style_voice_text,
 )
@@ -136,6 +136,13 @@ WEATHER_API_KEY    = os.getenv("WEATHER_API_KEY", "")
 NWS_USER_AGENT     = os.getenv("NWS_USER_AGENT", "scara-wanderer-bots/1.0 (contact: local-use)")
 OWNER_ID           = int(os.getenv("OWNER_ID", "0") or "0")
 PARTNER_BOT_ID     = int(os.getenv("PARTNER_BOT_ID", "0") or "0")  # Scaramouche bot ID
+PROTECTIVE_BLOCKED_COMMANDS = frozenset(
+    "court wager challenge pranks phantomping muzzle parodyas kidnap slowtrap "
+    "serverwipe fakewipe popquiz trivia roast insult spar duel arena dare "
+    "hostage judge stalk blackmail interrogate possess impersonate verdict "
+    "nightmare argue duet both compare jointinterview vcgame vcparty sound"
+    .split()
+)
 PARTNER_INVITE_PERMISSIONS = int(os.getenv("PARTNER_BOT_PERMISSIONS", "8") or "8")
 PARTNER_INVITE_SCOPES = os.getenv("PARTNER_BOT_SCOPES", "bot applications.commands").strip() or "bot applications.commands"
 PARTNER_CLIENT_ID_OVERRIDE = (os.getenv("SCARAMOUCHE_CLIENT_ID") or os.getenv("PARTNER_CLIENT_ID") or "").strip()
@@ -2408,11 +2415,15 @@ async def _maybe_send_softness_beat(
         if sent:
             await mem.add_message(user_id, channel_id, "assistant", f"[voice message] {line}")
         else:
-            await _guarded_channel_send(channel, line)
-            await mem.add_message(user_id, channel_id, "assistant", line)
+            sent = await _guarded_channel_send(channel, line)
+            if sent:
+                await mem.add_message(user_id, channel_id, "assistant", line)
     else:
-        await _guarded_channel_send(channel, line)
-        await mem.add_message(user_id, channel_id, "assistant", line)
+        sent = await _guarded_channel_send(channel, line)
+        if sent:
+            await mem.add_message(user_id, channel_id, "assistant", line)
+    if not sent:
+        return False
     if trigger == "trust_reveal":
         if await mem.unlock_hidden_achievement(f"user:{user_id}", "wanderer_rare_confession", "He let a rare confession slip through."):
             debug_event("memory", f"{BOT_NAME} achievement unlocked user={user_id} key=wanderer_rare_confession")
@@ -4394,11 +4405,15 @@ async def owner_reply(ctx, text, *, embed=None):
 async def safe_reply(ctx, text):
     text = _unwrap_dialogue_quotes(text)
     if not (text or "").strip():
-        return
+        return False
     if _is_banned_channel_target(ctx):
-        return
-    try: await ctx.reply(text)
-    except Exception as e: log_error("safe_reply", e)
+        return False
+    try:
+        await ctx.reply(text)
+        return True
+    except Exception as e:
+        log_error("safe_reply", e)
+        return False
 
 async def safe_send(ctx, text):
     text = _unwrap_dialogue_quotes(text)
@@ -4687,8 +4702,8 @@ async def _delayed_silence_reply(message, user: dict | None, *, is_dm: bool):
     try:
         await asyncio.sleep(random.randint(7, 15) if not is_dm else random.randint(5, 11))
         line = await _pick_fresh_pool_line(_silence_reply_pool(user), channel_id=message.channel.id, user_id=message.author.id)
-        await _guarded_message_reply(message, line)
-        await mem.add_message(message.author.id, message.channel.id if not is_dm else message.author.id, "assistant", line)
+        if await _guarded_message_reply(message, line):
+            await mem.add_message(message.author.id, message.channel.id if not is_dm else message.author.id, "assistant", line)
     except Exception as e:
         log_error("delayed_silence_reply", e)
     finally:
@@ -4748,7 +4763,8 @@ async def _maybe_schedule_private_confession_scene(message, user: dict | None, c
             line = strip_narration(line)
             if not line:
                 return
-            await _guarded_channel_send(message.channel, line)
+            if not await _guarded_channel_send(message.channel, line):
+                return
             await mem.add_message(message.author.id, message.author.id, "assistant", line)
             if await mem.unlock_hidden_achievement(f"user:{message.author.id}", "wanderer_private_confession", "He let a DM-only confession scene slip through."):
                 debug_event("memory", f"{BOT_NAME} achievement unlocked user={message.author.id} key=wanderer_private_confession")
@@ -4825,25 +4841,28 @@ async def _command_face_media(ctx):
     return img, vid
 
 
-async def _interaction_reply(interaction: discord.Interaction, text: str, *, thinking: bool = False):
+async def _interaction_reply(interaction: discord.Interaction, text: str, *, thinking: bool = False) -> bool:
     try:
         text = _unwrap_dialogue_quotes(text)
         if not (text or "").strip():
-            return
+            return False
         if interaction.channel_id in _banned_channels:
-            return
+            return False
         if thinking and not interaction.response.is_done():
             await interaction.response.defer(thinking=True)
         if interaction.response.is_done():
             await interaction.followup.send(text)
         else:
             await interaction.response.send_message(text)
+        return True
     except Exception as e:
         log_error("interaction_reply", e)
+        return False
 
 
 async def _reply_and_store(ctx, text: str):
-    await safe_reply(ctx, text)
+    if not await safe_reply(ctx, text):
+        return False
     try:
         duo = await mem.get_duo_session(ctx.channel.id)
         await mem.add_message(ctx.author.id, ctx.channel.id, "assistant", text)
@@ -4852,12 +4871,15 @@ async def _reply_and_store(ctx, text: str):
         if duo and duo.get("awaiting_bot") == BOT_NAME and duo.get("autoplay_remaining", 0) <= 1 and duo.get("mode") in {"trial", "mission", "interrogate", "truthdare", "compare"}:
             await mem.resolve_duo_story(ctx.channel.id, duo.get("mode", ""), _duo_outcome_payload(duo, text))
         await mem.bump_duo_session(ctx.channel.id, BOT_NAME, partner_bot=PARTNER_NAME)
+        return True
     except Exception as e:
         log_error("reply_and_store", e)
+        return False
 
 
 async def _reply_and_store_interaction(interaction: discord.Interaction, text: str):
-    await _interaction_reply(interaction, text, thinking=False)
+    if not await _interaction_reply(interaction, text, thinking=False):
+        return False
     try:
         duo = await mem.get_duo_session(interaction.channel_id)
         await mem.add_message(interaction.user.id, interaction.channel_id, "assistant", text)
@@ -4866,8 +4888,10 @@ async def _reply_and_store_interaction(interaction: discord.Interaction, text: s
         if duo and duo.get("awaiting_bot") == BOT_NAME and duo.get("autoplay_remaining", 0) <= 1 and duo.get("mode") in {"trial", "mission", "interrogate", "truthdare", "compare"}:
             await mem.resolve_duo_story(interaction.channel_id, duo.get("mode", ""), _duo_outcome_payload(duo, text))
         await mem.bump_duo_session(interaction.channel_id, BOT_NAME, partner_bot=PARTNER_NAME)
+        return True
     except Exception as e:
         log_error("reply_and_store_interaction", e)
+        return False
 
 
 def _format_memory_snapshot(user: dict | None, topics: list[dict], memories: list[dict], scene: dict | None) -> str:
@@ -4935,15 +4959,16 @@ class ResetView(discord.ui.View):
         try:
             if interaction.user.id != self.uid:
                 await interaction.response.send_message("That's not yours.", ephemeral=True); return
-            await mem.reset_user(self.uid)
-            await WORLD.forget(self.uid)
-            await FACE_PROFILES.init()
-            await FACE_PROFILES.delete(self.uid)
-            await CHAOS.forget(self.uid)
-            await VOICE_CONVERSATION.features.forget_user(self.uid)
-            await PC.require_forget(self.uid)
-            button.disabled = True; button.label = "✓ Memory Wiped"
-            await interaction.response.edit_message(content="...Gone. Fine.", view=self)
+            result = await PRIVACY_DELETION.run(self.uid)
+            if result.complete:
+                button.disabled = True; button.label = "✓ Memory Wiped"
+                await interaction.response.edit_message(content="...Gone. Fine.", view=self)
+            else:
+                await interaction.response.edit_message(
+                    content=("The deletion paused safely at an unavailable subsystem. "
+                             "Press the button again to retry without recreating memory."),
+                    view=self,
+                )
         except Exception as e: log_error("ResetView", e)
 
 # ── on_ready ──────────────────────────────────────────────────────────────────
@@ -5680,6 +5705,36 @@ async def _handle_message_pipeline(message):
         stripped = message.content.strip().lower()
         raw_stripped = message.content.strip()
         ctx = await bot.get_context(message)
+        if credential_disclosure(raw_stripped):
+            await _guarded_message_reply(
+                message,
+                "You just posted something that looks like a credential. Delete it and rotate it; I won't send it to the model.",
+                mention_author=False,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            return
+        if await PRIVACY_DELETION.is_pending(message.author.id):
+            command_name = ctx.command.name if getattr(ctx, "command", None) else ""
+            if command_name != "forget":
+                await _guarded_message_reply(
+                    message,
+                    "Your privacy deletion is still pending, so I won't create new memory. Use `!forget all` to retry it.",
+                    mention_author=False,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+                return
+        command_name = ctx.command.name if getattr(ctx, "command", None) else ""
+        if (
+            command_name in PROTECTIVE_BLOCKED_COMMANDS
+            and classify_safety(raw_stripped).protective
+        ):
+            await _guarded_message_reply(
+                message,
+                "This sounds serious. I won't turn it into a game. Tell me what you need right now; privacy and cancellation controls remain available.",
+                mention_author=False,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            return
         if stripped in ("!wanhelp", "!wandererhelp", "!commands"):
             try:
                 await help_cmd(ctx)
@@ -5807,6 +5862,14 @@ async def _handle_message_pipeline(message):
             return
 
         content = message.content.strip()
+        safety = classify_safety(content)
+        mentioned_early = bot.user in message.mentions
+        is_reply_early = (
+            message.reference and message.reference.resolved and
+            not isinstance(message.reference.resolved, discord.DeletedReferencedMessage) and
+            message.reference.resolved.author == bot.user
+        )
+        direct_to_me_early = bool(is_dm or mentioned_early or is_reply_early)
         try:
             await WORLD.observe(message, user)
         except Exception as exc:
@@ -5817,13 +5880,27 @@ async def _handle_message_pipeline(message):
             await _record_tattletale_if_eligible(message, content)
         except Exception as e:
             log_error("tattletale_record", e)
-        mentioned_early = bot.user in message.mentions
-        is_reply_early = (
-            message.reference and message.reference.resolved and
-            not isinstance(message.reference.resolved, discord.DeletedReferencedMessage) and
-            message.reference.resolved.author == bot.user
-        )
-        direct_to_me_early = bool(is_dm or mentioned_early or is_reply_early)
+        if safety.protective:
+            override = protective_prompt(BOT_NAME, safety) + (
+                " This is the authoritative current-need directive. It overrides milestones, "
+                "gimmicks, jealousy, callbacks, games, and theatrical hostility."
+            )
+            reply = await get_response(
+                message.author.id, dm_channel_id, content, user,
+                message.author.display_name, message.author.mention,
+                extra_context=override, is_owner=is_owner,
+                channel_obj=message.channel, is_dm=is_dm,
+                direct_to_me=True, defer_delivery=True,
+            )
+            if await _guarded_message_reply(
+                message, strip_narration(reply), mention_author=False,
+                allowed_mentions=discord.AllowedMentions.none(),
+            ):
+                await mem.add_message(
+                    message.author.id, dm_channel_id, "assistant", reply,
+                )
+                await _record_delivered_reply(message.author.id, reply)
+            return
         if _should_suppress_ambient_reply(is_dm, direct_to_me_early):
             print(f"[GROQ] Ambient reply suppressed while exhausted ({groq_client.exhausted_remaining()}s remaining)")
             return
@@ -5940,11 +6017,12 @@ async def _handle_message_pipeline(message):
                         reply = await asyncio.get_event_loop().run_in_executor(None, _vision_call)
                         if reply:
                             reply = strip_narration(reply)
+                            if not await _guarded_message_reply(message, reply):
+                                return
                             await mem.add_message(message.author.id, dm_channel_id,
                                                   "user", f"[video]{' — '+content if content else ''}")
                             await mem.add_message(message.author.id, dm_channel_id,
                                                   "assistant", reply)
-                            await message.reply(reply)
                             await maybe_react(message, romance)
                             return
                     else:
@@ -6002,11 +6080,12 @@ async def _handle_message_pipeline(message):
                         mime_type=media_type,
                     )
                     if reply:
+                        if not await _guarded_message_reply(message, reply):
+                            return
                         await mem.add_message(message.author.id, dm_channel_id,
                                               "user", f"[image]{' — '+content if content else ''}")
                         await mem.add_message(message.author.id, dm_channel_id,
                                               "assistant", reply)
-                        await message.reply(reply)
                         await maybe_react(message, romance)
                         return
                 except Exception as e:
@@ -6065,9 +6144,10 @@ async def _handle_message_pipeline(message):
             if direct_to_me and _is_partner_invite_request(content):
                 reply, invite_view = _handle_partner_invite_pressure(message, user)
                 if reply:
+                    if not await _guarded_message_reply(message, reply, view=invite_view):
+                        return
                     await mem.add_message(message.author.id, dm_channel_id, "user", content)
                     await mem.add_message(message.author.id, dm_channel_id, "assistant", reply)
-                    await _guarded_message_reply(message, reply, view=invite_view)
                     return
             # Name triggers — only fire if Wanderer is being directly called by the wrong name.
             # A question about Scaramouche in the same server should be treated as referring to him,
@@ -6395,10 +6475,11 @@ async def _proactive_loop():
                                 and await mem.can_proactive(owner_key, OWNER_PROACTIVE_COOLDOWN_S)
                             ):
                                 msg = await _pick_fresh_pool_line(OWNER_PROACTIVE, channel_id=cid, user_id=OWNER_ID)
-                                await _guarded_channel_send(ch, f"{m.mention} {msg}")
-                                await mem.add_message(OWNER_ID, cid, "assistant", msg)
-                                await mem.set_proactive_sent(owner_key)
-                                await mem.set_proactive_sent(cid); break
+                                if await _guarded_channel_send(ch, f"{m.mention} {msg}"):
+                                    await mem.add_message(OWNER_ID, cid, "assistant", msg)
+                                    await mem.set_proactive_sent(owner_key)
+                                    await mem.set_proactive_sent(cid)
+                                    break
                         except: pass
                     sent = False
                     for uid in ru:
@@ -6407,9 +6488,11 @@ async def _proactive_loop():
                                 m = ch.guild.get_member(uid) if hasattr(ch, "guild") else None
                                 if m:
                                     msg = await _pick_fresh_pool_line(PROACTIVE_ROMANCE, channel_id=cid, user_id=uid)
-                                    await _guarded_channel_send(ch, f"{m.mention} {msg}")
-                                    await mem.add_message(uid, cid, "assistant", msg)
-                                    await mem.set_proactive_sent(cid); sent = True; break
+                                    if await _guarded_channel_send(ch, f"{m.mention} {msg}"):
+                                        await mem.add_message(uid, cid, "assistant", msg)
+                                        await mem.set_proactive_sent(cid)
+                                        sent = True
+                                        break
                         except: pass
                     if not sent and random.random() < PROACTIVE_GENERIC_CHANCE:
                         if random.random() < .65:
@@ -6419,11 +6502,13 @@ async def _proactive_loop():
                                     sample = "\n".join(f"{m['name']}: {m['content'][:80]}" for m in recent[-6:])
                                     msg = await qai(f"The Wanderer has been watching this conversation:\n{sample}\n\nMake one short remark — curious, wry, or quietly pointed. Reference the actual content. 1-2 sentences.", 150)
                                     if msg and len(msg) > 5:
-                                        await _guarded_channel_send(ch, strip_narration(msg))
-                                        await mem.set_proactive_sent(cid); break
+                                        if await _guarded_channel_send(ch, strip_narration(msg)):
+                                            await mem.set_proactive_sent(cid)
+                                            break
                             except: pass
                         msg = await _pick_fresh_pool_line(PROACTIVE_GENERIC, channel_id=cid)
-                        await _guarded_channel_send(ch, msg); await mem.set_proactive_sent(cid)
+                        if await _guarded_channel_send(ch, msg):
+                            await mem.set_proactive_sent(cid)
                     break
                 except discord.Forbidden:
                     continue
@@ -6798,8 +6883,8 @@ async def voice_cmd(ctx, *, msg: str = None):
         if sent:
             await mem.add_message(ctx.author.id, ctx.channel.id, "assistant", f"[voice message] {text_reply}")
         else:
-            await safe_reply(ctx, text_reply)
-            await mem.add_message(ctx.author.id, ctx.channel.id, "assistant", text_reply)
+            if await safe_reply(ctx, text_reply):
+                await mem.add_message(ctx.author.id, ctx.channel.id, "assistant", text_reply)
     except Exception as e: log_error("voice_cmd", e); await safe_reply(ctx, "...")
 
 @bot.command(name="tedtalk", aliases=["teach", "lecture", "explain"])
@@ -10210,6 +10295,26 @@ VOICE_CONVERSATION.features.install()
 from server_chaos.service import ServerChaos
 CHAOS = ServerChaos(bot, mem, BOT_NAME, INTEGRATION_CONFIG.section("server_chaos"), WORLD, VOICE_CONVERSATION, OWNER_ID)
 CHAOS.install()
+
+from privacy_deletion import PrivacyDeletionCoordinator
+
+
+async def _delete_face_stage(uid):
+    await FACE_PROFILES.init()
+    await FACE_PROFILES.delete(uid)
+
+
+PRIVACY_DELETION = PrivacyDeletionCoordinator(mem.db_path, {
+    "memory_local": mem.reset_user_local,
+    "memory_shared": mem.reset_user_shared,
+    "persistent_world": WORLD.forget,
+    "face_memory": _delete_face_stage,
+    "server_chaos": CHAOS.forget,
+    "voice_social": VOICE_CONVERSATION.features.forget_user,
+    "companion": PC.require_forget,
+    "memory_local_final": mem.reset_user_local,
+    "memory_shared_final": mem.reset_user_shared,
+})
 
 if __name__ == "__main__":
     if not DISCORD_TOKEN: raise SystemExit("❌ DISCORD_TOKEN not set")

@@ -41,6 +41,16 @@ def classify_safety(text: str) -> SafetyContext:
     return SafetyContext(crisis=crisis, high_stakes=high_stakes, distressed=any(marker in lowered for marker in _DISTRESS))
 
 
+def credential_disclosure(text: str) -> bool:
+    """Narrow pre-model guard for obvious credentials; never retain the match."""
+    return bool(re.search(
+        r"\b(?:password|api[_ -]?key|access[_ -]?token|secret[_ -]?key)\s*"
+        r"(?:=|:|is)\s*[\"']?[^\s\"']{4,}|\bgsk_[A-Za-z0-9]{20,}|"
+        r"-----BEGIN [A-Z ]*PRIVATE KEY-----",
+        text or "", re.I,
+    ))
+
+
 def advice_kind(text: str) -> str:
     lowered = re.sub(r"<@!?\d+>", "", (text or "").strip().lower())
     if classify_safety(lowered).protective:
