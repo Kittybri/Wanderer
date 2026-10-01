@@ -115,6 +115,22 @@ class VoiceConversation:
     async def command(self, ctx, message):
         value = (message or "").strip().lower()
         parts = value.split()
+        # Both character bots intentionally expose the same !voice command.  An
+        # unqualified start/stop keeps the existing shared behavior, while an
+        # explicit character suffix lets operators isolate one bot without
+        # taking the partner service offline.
+        if len(parts) == 2 and parts[0] in {"start", "join", "stop", "leave"}:
+            aliases = {
+                "scaramouche": {"scaramouche", "scara", "balladeer"},
+                "wanderer": {"wanderer", "hatguy", "hat-guy"},
+            }
+            target = parts[1]
+            known_targets = set().union(*aliases.values())
+            if target in known_targets:
+                if target not in aliases.get(self.name.lower(), {self.name.lower()}):
+                    return True
+                parts = parts[:1]
+                value = parts[0]
         if value == "off" and ctx.guild:
             session = self.sessions.get(ctx.guild.id)
             if session:

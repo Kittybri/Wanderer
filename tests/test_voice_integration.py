@@ -68,6 +68,30 @@ def test_legacy_dispatch_and_disabled_channel(monkeypatch):
     asyncio.run(check())
 
 
+def test_targeted_start_and_stop_only_reach_named_bot(monkeypatch):
+    async def check():
+        service, ctx, _channel = setup(monkeypatch)
+        service.name = "wanderer"
+        service.handle = AsyncMock()
+
+        assert await service.command(ctx, "start scaramouche")
+        service.handle.assert_not_awaited()
+
+        assert await service.command(ctx, "start wanderer")
+        service.handle.assert_awaited_once_with(ctx, ["start"])
+
+        service.handle.reset_mock()
+        assert await service.command(ctx, "stop hat-guy")
+        service.handle.assert_awaited_once_with(ctx, ["stop"])
+
+        service.handle.reset_mock()
+        assert await service.command(ctx, "start")
+        service.handle.assert_awaited_once_with(ctx, ["start"])
+        await service.bot.close()
+
+    asyncio.run(check())
+
+
 def test_start_consent_preferences_and_backend_unavailable(monkeypatch):
     async def check():
         service, ctx, channel = setup(monkeypatch)
