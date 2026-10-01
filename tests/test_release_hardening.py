@@ -7,6 +7,7 @@ from awareness_features import credential_disclosure
 import memory as memory_module
 from memory import Memory
 from privacy_deletion import PrivacyDeletionCoordinator
+from provider_config import resolve_groq_model
 
 
 def run(coro):
@@ -19,6 +20,17 @@ def test_credential_guard_is_narrow_and_catches_obvious_disclosures():
     assert credential_disclosure("-----BEGIN PRIVATE KEY-----")
     assert not credential_disclosure("Should I use a password manager?")
     assert not credential_disclosure("The word token appears in this sentence.")
+
+
+def test_retired_groq_models_resolve_before_any_provider_call():
+    assert resolve_groq_model("llama-3.3-70b-versatile") == "openai/gpt-oss-120b"
+    assert resolve_groq_model("llama-3.1-8b-instant") == "openai/gpt-oss-20b"
+    assert resolve_groq_model("llama-3.2-90b-vision-preview") == "qwen/qwen3.8-27b"
+    assert resolve_groq_model("custom/account-model") == "custom/account-model"
+
+    source = (Path(__file__).parents[1] / "bot.py").read_text()
+    assert 'model="llama-3.2-90b-vision-preview"' not in source
+    assert "GROQ_MODEL_PRIMARY = GROQ_TEXT_MODEL" in source
 
 
 def test_release_pipeline_guards_credentials_and_distress_before_optional_bits():

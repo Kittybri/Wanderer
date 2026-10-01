@@ -17,6 +17,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 from memory import Memory
+from provider_config import GROQ_LIGHT_MODEL, GROQ_TEXT_MODEL, GROQ_VISION_MODEL
 from voice_handler import get_audio, get_audio_mooded
 from awareness_features import (
     activity_snapshot, choose_duo_advice_mode, classify_safety, credential_disclosure,
@@ -165,8 +166,8 @@ RECENT_REPLY_PACING_WINDOW = int(os.getenv("RECENT_REPLY_PACING_WINDOW", "7") or
 LONG_REPLY_CHAR_THRESHOLD = int(os.getenv("LONG_REPLY_CHAR_THRESHOLD", "420") or "420")
 LONG_REPLY_SENTENCE_THRESHOLD = int(os.getenv("LONG_REPLY_SENTENCE_THRESHOLD", "5") or "5")
 LONG_REPLY_PARAGRAPH_THRESHOLD = int(os.getenv("LONG_REPLY_PARAGRAPH_THRESHOLD", "2") or "2")
-GROQ_MODEL_PRIMARY = os.getenv("GROQ_MODEL_PRIMARY", "llama-3.3-70b-versatile").strip() or "llama-3.3-70b-versatile"
-GROQ_MODEL_LIGHT = os.getenv("GROQ_MODEL_LIGHT", "llama-3.1-8b-instant").strip() or GROQ_MODEL_PRIMARY
+GROQ_MODEL_PRIMARY = GROQ_TEXT_MODEL
+GROQ_MODEL_LIGHT = GROQ_LIGHT_MODEL
 # Owner-only mode: when True, bot ignores all users except the owner
 _owner_only_mode = False
 # DM-blocked users: bot won't respond to their DMs
@@ -6045,7 +6046,7 @@ async def _handle_message_pipeline(message):
                         })
                         def _vision_call():
                             r = groq_client.call_with_retry(
-                                model="llama-3.2-90b-vision-preview", max_tokens=400,
+                                model=GROQ_VISION_MODEL, max_tokens=400,
                                 messages=[{"role": "system", "content": system},
                                           {"role": "user", "content": vision_content}]
                             )

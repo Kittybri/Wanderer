@@ -17,6 +17,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from google_docs_bridge import fetch_google_doc, overwrite_google_doc
+from provider_config import resolve_groq_model
 
 
 ROOT_DIR = Path(__file__).resolve().parent
@@ -39,7 +40,7 @@ VIDEO_RENDER_SECRET = (
 VIDEO_RENDER_HOST = (os.getenv("VIDEO_RENDER_HOST") or "0.0.0.0").strip() or "0.0.0.0"
 VIDEO_RENDER_PORT = int(os.getenv("VIDEO_RENDER_PORT", "8765") or "8765")
 VIDEO_RENDER_MAX_QUEUE = int(os.getenv("VIDEO_RENDER_MAX_QUEUE", "6") or "6")
-WORKER_GROQ_MODEL = (os.getenv("GROQ_MODEL_PRIMARY") or "llama-3.3-70b-versatile").strip() or "llama-3.3-70b-versatile"
+WORKER_GROQ_MODEL = resolve_groq_model(os.getenv("GROQ_MODEL_PRIMARY"))
 
 JOB_QUEUE: "queue.Queue[str]" = queue.Queue()
 JOBS: dict[str, dict] = {}
