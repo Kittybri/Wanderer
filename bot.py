@@ -8684,6 +8684,7 @@ async def forget_cmd(ctx, *, topic: str = None):
             return
         await _setup(ctx)
         result = await mem.forget_memory_matches(ctx.author.id, topic)
+        result["scene"] = await mem.forget_scene_state_matches(ctx.channel.id, topic)
         await CHAOS.forget(ctx.author.id)
         await VOICE_CONVERSATION.features.forget_user(ctx.author.id)
         await PC.require_forget(ctx.author.id)

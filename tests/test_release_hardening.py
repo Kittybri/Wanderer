@@ -213,6 +213,53 @@ def test_full_memory_reset_removes_user_scopes_and_preserves_other_user(tmp_path
         assert db.execute("SELECT COUNT(*) FROM relationship_milestones WHERE scope='shared:user:10'").fetchone()[0] == 1
 
 
+def test_topic_forget_removes_all_prompt_sources_and_matching_scene_fields(tmp_path):
+    memory = Memory("wanderer")
+    memory.db_path = str(tmp_path / "wanderer.db")
+    memory.shared_db_path = str(tmp_path / "shared.db")
+    memory_module.DB_PATH = memory.db_path
+    run(memory.init())
+    secret = "gate-a-forgotten-marker"
+    with sqlite3.connect(memory.db_path) as db:
+        db.execute(
+            "INSERT INTO users(user_id,callback_memory,memory_summary,last_statement,conflict_summary,conflict_open) "
+            "VALUES(?,?,?,?,?,1)",
+            (8, secret, secret, secret, secret),
+        )
+        db.execute(
+            "INSERT INTO messages(user_id,channel_id,role,content,ts) VALUES(8,80,'user',?,1)",
+            (secret,),
+        )
+        db.execute(
+            "INSERT INTO memory_bank(user_id,kind,memory,weight,ts) VALUES(8,'manual',?,5,1)",
+            (secret,),
+        )
+        db.execute(
+            "INSERT INTO reminders(user_id,channel_id,reminder,due_ts) VALUES(8,80,?,1)",
+            (secret,),
+        )
+        db.execute(
+            "INSERT INTO scene_state(channel_id,situation,present,updated_ts) VALUES(80,?,'Eight',1)",
+            (secret,),
+        )
+        db.commit()
+
+    removed = run(memory.forget_memory_matches(8, secret))
+    removed["scene"] = run(memory.forget_scene_state_matches(80, secret))
+
+    assert sum(removed.values()) >= 5
+    assert run(memory.get_history(8, 80)) == []
+    user = run(memory.get_user(8))
+    assert user["callback_memory"] is None
+    assert user["memory_summary"] is None
+    assert user["last_statement"] is None
+    assert user["conflict_summary"] is None
+    assert user["conflict_open"] is False
+    scene = run(memory.get_scene_state(80))
+    assert scene["situation"] == ""
+    assert scene["present"] == "Eight"
+
+
 def test_privacy_deletion_retries_only_the_unfinished_stage(tmp_path):
     memory = Memory("wanderer")
     memory.db_path = str(tmp_path / "wanderer.db")

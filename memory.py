@@ -922,6 +922,40 @@ class Memory:
             await db.execute("DELETE FROM scene_state WHERE channel_id=?", (channel_id,))
             await db.commit()
 
+    async def forget_scene_state_matches(self, channel_id: int, query: str) -> int:
+        """Remove matching scene fields without discarding unrelated channel context."""
+        needle = (query or "").strip().lower()
+        if not needle:
+            return 0
+        columns = (
+            "location", "situation", "last_beat", "emotional_temp",
+            "objective", "present", "important_prop",
+        )
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                f"SELECT {','.join(columns)} FROM scene_state WHERE channel_id=?",
+                (channel_id,),
+            ) as cur:
+                row = await cur.fetchone()
+            if not row:
+                return 0
+            values = [value or "" for value in row]
+            matched = [needle in value.lower() for value in values]
+            removed = sum(matched)
+            if not removed:
+                return 0
+            scrubbed = ["" if is_match else value for value, is_match in zip(values, matched)]
+            if any(scrubbed):
+                assignments = ",".join(f"{column}=?" for column in columns)
+                await db.execute(
+                    f"UPDATE scene_state SET {assignments}, updated_ts=? WHERE channel_id=?",
+                    (*scrubbed, time.time(), channel_id),
+                )
+            else:
+                await db.execute("DELETE FROM scene_state WHERE channel_id=?", (channel_id,))
+            await db.commit()
+        return removed
+
     async def add_memory_event(self, user_id: int, kind: str, memory: str, weight: int = 1):
         async with aiosqlite.connect(DB_PATH) as db:
             async with db.execute(
@@ -987,34 +1021,77 @@ class Memory:
         ]
 
     async def forget_memory_matches(self, user_id: int, query: str) -> dict:
-        needle = (query or "").strip().lower()
+        needle = (query or "").strip().lower()[:80]
         if not needle:
-            return {"topics": 0, "jokes": 0, "shared_jokes": 0, "memories": 0, "callback": 0}
+            return {}
 
-        like = f"%{needle[:80]}%"
         async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("BEGIN IMMEDIATE")
             topic_cur = await db.execute(
-                "DELETE FROM user_topics WHERE user_id=? AND LOWER(topic) LIKE ?",
-                (user_id, like),
+                "DELETE FROM user_topics WHERE user_id=? AND INSTR(LOWER(topic),?)>0",
+                (user_id, needle),
             )
             joke_cur = await db.execute(
-                "DELETE FROM inside_jokes WHERE user_id=? AND LOWER(joke) LIKE ?",
-                (user_id, like),
+                "DELETE FROM inside_jokes WHERE user_id=? AND INSTR(LOWER(joke),?)>0",
+                (user_id, needle),
             )
             memory_cur = await db.execute(
-                "DELETE FROM memory_bank WHERE user_id=? AND (LOWER(kind) LIKE ? OR LOWER(memory) LIKE ?)",
-                (user_id, like, like),
+                "DELETE FROM memory_bank WHERE user_id=? AND "
+                "(INSTR(LOWER(kind),?)>0 OR INSTR(LOWER(memory),?)>0)",
+                (user_id, needle, needle),
             )
-            callback_cur = await db.execute(
-                "UPDATE users SET callback_memory=NULL, callback_ts=0 "
-                "WHERE user_id=? AND callback_memory IS NOT NULL AND LOWER(callback_memory) LIKE ?",
-                (user_id, like),
+            message_cur = await db.execute(
+                "DELETE FROM messages WHERE user_id=? AND INSTR(LOWER(content),?)>0",
+                (user_id, needle),
+            )
+            reminder_cur = await db.execute(
+                "DELETE FROM reminders WHERE user_id=? AND INSTR(LOWER(reminder),?)>0",
+                (user_id, needle),
+            )
+            trivia_cur = await db.execute(
+                "DELETE FROM active_trivia WHERE asker_id=? AND "
+                "(INSTR(LOWER(question),?)>0 OR INSTR(LOWER(answer),?)>0 OR "
+                "INSTR(LOWER(COALESCE(source_note,'')),?)>0)",
+                (user_id, needle, needle, needle),
+            )
+            milestone_cur = await db.execute(
+                "DELETE FROM relationship_milestones "
+                "WHERE (scope=? OR scope LIKE ? OR scope LIKE ?) "
+                "AND INSTR(LOWER(note),?)>0",
+                (f"user:{user_id}", f"%:user:{user_id}", f"%:user:{user_id}:%", needle),
+            )
+            user_cur = await db.execute(
+                """UPDATE users SET
+                       callback_memory=CASE WHEN INSTR(LOWER(COALESCE(callback_memory,'')),?)>0 THEN NULL ELSE callback_memory END,
+                       callback_ts=CASE WHEN INSTR(LOWER(COALESCE(callback_memory,'')),?)>0 THEN 0 ELSE callback_ts END,
+                       memory_summary=CASE WHEN INSTR(LOWER(COALESCE(memory_summary,'')),?)>0 THEN NULL ELSE memory_summary END,
+                       summary_msg_count=CASE WHEN INSTR(LOWER(COALESCE(memory_summary,'')),?)>0 THEN 0 ELSE summary_msg_count END,
+                       last_statement=CASE WHEN INSTR(LOWER(COALESCE(last_statement,'')),?)>0 THEN NULL ELSE last_statement END,
+                       conflict_summary=CASE WHEN INSTR(LOWER(COALESCE(conflict_summary,'')),?)>0 THEN NULL ELSE conflict_summary END,
+                       conflict_open=CASE WHEN INSTR(LOWER(COALESCE(conflict_summary,'')),?)>0 THEN 0 ELSE conflict_open END
+                   WHERE user_id=? AND (
+                       INSTR(LOWER(COALESCE(callback_memory,'')),?)>0 OR
+                       INSTR(LOWER(COALESCE(memory_summary,'')),?)>0 OR
+                       INSTR(LOWER(COALESCE(last_statement,'')),?)>0 OR
+                       INSTR(LOWER(COALESCE(conflict_summary,'')),?)>0
+                   )""",
+                (
+                    needle, needle, needle, needle, needle, needle, needle, user_id,
+                    needle, needle, needle, needle,
+                ),
             )
             await db.commit()
         async with aiosqlite.connect(self.shared_db_path) as db:
+            await db.execute("BEGIN IMMEDIATE")
             shared_joke_cur = await db.execute(
-                "DELETE FROM shared_inside_jokes WHERE user_id=? AND LOWER(joke) LIKE ?",
-                (user_id, like),
+                "DELETE FROM shared_inside_jokes WHERE user_id=? AND INSTR(LOWER(joke),?)>0",
+                (user_id, needle),
+            )
+            shared_milestone_cur = await db.execute(
+                "DELETE FROM relationship_milestones "
+                "WHERE (scope=? OR scope LIKE ? OR scope LIKE ?) "
+                "AND INSTR(LOWER(note),?)>0",
+                (f"user:{user_id}", f"%:user:{user_id}", f"%:user:{user_id}:%", needle),
             )
             await db.commit()
         return {
@@ -1022,7 +1099,11 @@ class Memory:
             "jokes": int(joke_cur.rowcount or 0),
             "shared_jokes": int(shared_joke_cur.rowcount or 0),
             "memories": int(memory_cur.rowcount or 0),
-            "callback": int(callback_cur.rowcount or 0),
+            "messages": int(message_cur.rowcount or 0),
+            "reminders": int(reminder_cur.rowcount or 0),
+            "trivia": int(trivia_cur.rowcount or 0),
+            "milestones": int(milestone_cur.rowcount or 0) + int(shared_milestone_cur.rowcount or 0),
+            "profile_fields": int(user_cur.rowcount or 0),
         }
 
     async def set_mode(self, user_id: int, field: str, value: bool):
