@@ -21,7 +21,7 @@ from provider_config import GROQ_LIGHT_MODEL, GROQ_TEXT_MODEL, GROQ_VISION_MODEL
 from voice_handler import get_audio, get_audio_mooded
 from awareness_features import (
     activity_snapshot, choose_duo_advice_mode, classify_safety, credential_disclosure,
-    parse_id_set, playful_negative_target, protective_prompt,
+    is_sensitive_memory, parse_id_set, playful_negative_target, protective_prompt,
     resolve_voice_state, select_relevant_recall, style_voice_text,
 )
 from integrations import (
@@ -2513,6 +2513,10 @@ async def _recent_rival_topic(channel) -> str:
                 continue
             content = re.sub(r"\s+", " ", (candidate.content or "").strip())
             if not content or content.startswith("!") or len(content) < 20:
+                continue
+            # Proactive rivalry must never turn credentials, crisis/distress, or
+            # other sensitive disclosures into a stored duo topic.
+            if credential_disclosure(content) or classify_safety(content).protective or is_sensitive_memory(content):
                 continue
             if any(token in content.lower() for token in [BOT_NAME, PARTNER_NAME.lower()]):
                 continue

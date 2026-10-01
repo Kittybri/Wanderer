@@ -45,6 +45,17 @@ def test_internal_fallbacks_are_detectable_and_protective_path_bypasses_self_edi
     assert "is_fallback_reply(BOT_NAME, reply)" in response
 
 
+def test_proactive_rivalry_rejects_sensitive_channel_topics():
+    source = (Path(__file__).parents[1] / "bot.py").read_text()
+    topic_picker = source[
+        source.index("async def _recent_rival_topic"):
+        source.index("def _is_in_quiet_hours")
+    ]
+    assert "credential_disclosure(content)" in topic_picker
+    assert "classify_safety(content).protective" in topic_picker
+    assert "is_sensitive_memory(content)" in topic_picker
+
+
 def test_release_pipeline_guards_credentials_and_distress_before_optional_bits():
     source = (Path(__file__).parents[1] / "bot.py").read_text()
     handler = source[source.index("async def _handle_message_pipeline"):]
