@@ -10,7 +10,7 @@ from __future__ import annotations
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
-import os, re, random, asyncio, io, time, json, traceback, math
+import os, re, random, asyncio, io, time, json, traceback, math, sqlite3
 from collections import deque
 from urllib.parse import quote_plus, urlencode
 from datetime import datetime
@@ -136,6 +136,8 @@ WEATHER_API_KEY    = os.getenv("WEATHER_API_KEY", "")
 NWS_USER_AGENT     = os.getenv("NWS_USER_AGENT", "scara-wanderer-bots/1.0 (contact: local-use)")
 OWNER_ID           = int(os.getenv("OWNER_ID", "0") or "0")
 PARTNER_BOT_ID     = int(os.getenv("PARTNER_BOT_ID", "0") or "0")  # Scaramouche bot ID
+BOT_RELEASE_SHA    = re.sub(r"[^0-9a-f]", "", os.getenv("BOT_RELEASE_SHA", "").lower())[:40] or "unknown"
+BOT_RELEASE_LABEL  = re.sub(r"[^A-Za-z0-9._/-]", "", os.getenv("BOT_RELEASE_LABEL", ""))[:80] or "unknown"
 PROTECTIVE_BLOCKED_COMMANDS = frozenset(
     "court wager challenge pranks phantomping muzzle parodyas kidnap slowtrap "
     "serverwipe fakewipe popquiz trivia roast insult spar duel arena dare "
@@ -4430,6 +4432,26 @@ async def bothealth_cmd(ctx):
     if OWNER_ID and ctx.author.id != OWNER_ID:
         return
     await owner_reply(ctx, f"{BOT_NAME} health: `{_pipeline_health_line()}`")
+
+
+def _sqlite_user_version(path):
+    with sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5) as db:
+        return int(db.execute("PRAGMA user_version").fetchone()[0])
+
+
+@bot.command(name="build")
+async def build_cmd(ctx):
+    """Owner-only release identity without filesystem or secret disclosure."""
+    if not OWNER_ID or ctx.author.id != OWNER_ID:
+        return
+    local_version, shared_version = await asyncio.gather(
+        asyncio.to_thread(_sqlite_user_version, mem.db_path),
+        asyncio.to_thread(_sqlite_user_version, mem.shared_db_path),
+    )
+    await owner_reply(ctx, (
+        f"Build: bot={BOT_NAME} release={BOT_RELEASE_LABEL} sha={BOT_RELEASE_SHA} | "
+        f"schema local={local_version} shared={shared_version}"
+    ))
 
 
 @bot.command(name="backupmemory")
