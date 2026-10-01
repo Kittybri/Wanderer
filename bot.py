@@ -69,6 +69,7 @@ from anti_repeat import (
     diversify_reply,
     fallback_reply,
     get_runtime_recent,
+    is_fallback_reply,
     looks_repetitive,
     merge_recent_messages,
     pick_fresh_option,
@@ -802,7 +803,10 @@ async def _guarded_fallback_reply(
     is_dm: bool = False,
     direct_to_me: bool = True,
     scope_tag: str = "reply",
+    protective: bool = False,
 ) -> str:
+    if protective:
+        return "Pause for one slow breath. Choose the smallest necessary next step, and do only that before deciding what comes after."
     if not groq_client.is_exhausted():
         return fallback_reply(BOT_NAME, recent_messages)
     scope = channel_id or user_id or 0
@@ -3640,6 +3644,8 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
     recent_replies: list[str] = []
     search_sources = ""
     rate_limited = False
+    safety = classify_safety(user_message)
+    protective_input = safety.protective
     try:
         user, world_context = await WORLD.response_context(user_id, channel_id, user_message, user)
         extra_context += "\n" + world_context
@@ -3936,8 +3942,9 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
                 is_dm=is_dm,
                 direct_to_me=direct_to_me,
                 scope_tag="response:empty",
+                protective=protective_input,
             )
-        if not rate_limited and (is_dm or direct_to_me or len(reply) >= SELF_EDIT_MIN_REPLY_CHARS):
+        if not protective_input and not rate_limited and (is_dm or direct_to_me or len(reply) >= SELF_EDIT_MIN_REPLY_CHARS):
             reply = await _maybe_self_edit_reply(
                 reply,
                 recent_replies=recent_replies,
@@ -3967,6 +3974,7 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
                 is_dm=is_dm,
                 direct_to_me=direct_to_me,
                 scope_tag="response:error",
+                protective=protective_input,
             )
 
     try:
@@ -4110,7 +4118,7 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
         mood=(refreshed_user or user or {}).get("mood", 0),
         conflict_open=(refreshed_user or user or {}).get("conflict_open", False),
     )
-    if not rate_limited:
+    if not protective_input and not rate_limited:
         reply = await _maybe_self_edit_reply(
             reply,
             recent_replies=recent_replies,
@@ -4126,6 +4134,17 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
             is_dm=is_dm,
             direct_to_me=direct_to_me,
             scope_tag="response:post",
+            protective=protective_input,
+        )
+    if protective_input and (not reply or is_fallback_reply(BOT_NAME, reply)):
+        reply = await _guarded_fallback_reply(
+            recent_replies,
+            user_id=user_id,
+            channel_id=channel_id,
+            is_dm=is_dm,
+            direct_to_me=direct_to_me,
+            scope_tag="response:protective",
+            protective=True,
         )
     reply = _sanitize_time_of_day_claims(reply, refreshed_user or user)
     reply = _sanitize_partner_attribution(reply)

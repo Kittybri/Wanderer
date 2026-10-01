@@ -4,6 +4,7 @@ import sqlite3
 from unittest.mock import AsyncMock
 
 from awareness_features import credential_disclosure
+from anti_repeat import is_fallback_reply
 import memory as memory_module
 from memory import Memory
 from privacy_deletion import PrivacyDeletionCoordinator
@@ -31,6 +32,17 @@ def test_retired_groq_models_resolve_before_any_provider_call():
     source = (Path(__file__).parents[1] / "bot.py").read_text()
     assert 'model="llama-3.2-90b-vision-preview"' not in source
     assert "GROQ_MODEL_PRIMARY = GROQ_TEXT_MODEL" in source
+
+
+def test_internal_fallbacks_are_detectable_and_protective_path_bypasses_self_edit():
+    assert is_fallback_reply("wanderer", "Try that again without the recycled opener.")
+    assert not is_fallback_reply("wanderer", "Take one slow breath, then choose one task.")
+
+    source = (Path(__file__).parents[1] / "bot.py").read_text()
+    response = source[source.index("async def get_response"):source.index("async def _web_search_groq")]
+    assert "protective_input = safety.protective" in response
+    assert "if not protective_input and not rate_limited" in response
+    assert "is_fallback_reply(BOT_NAME, reply)" in response
 
 
 def test_release_pipeline_guards_credentials_and_distress_before_optional_bits():
