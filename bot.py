@@ -837,12 +837,11 @@ async def _vision_image_reply(
     mime_type: str,
     max_chars: int = 900,
 ) -> str:
-    if vision_is_exhausted():
-        debug_event("provider", f"{BOT_NAME} skipping xAI vision call for {vision_exhausted_remaining()}s")
-        return ""
+    import base64
+
     loop = asyncio.get_event_loop()
 
-    def _run():
+    def _run_primary():
         return ask_character_bot(
             BOT_NAME,
             prompt,
@@ -852,13 +851,48 @@ async def _vision_image_reply(
             temperature=0.35,
         )
 
-    try:
-        reply = await loop.run_in_executor(None, _run)
-    except Exception as e:
-        if _is_rate_limited_error(e):
-            debug_event("provider", f"{BOT_NAME} xAI vision rate-limited")
-            return ""
-        raise
+    reply = ""
+    if vision_is_exhausted():
+        debug_event(
+            "provider",
+            f"{BOT_NAME} xAI vision unavailable for {vision_exhausted_remaining()}s; using Groq vision",
+        )
+    else:
+        try:
+            reply = await loop.run_in_executor(None, _run_primary)
+        except asyncio.CancelledError:
+            raise
+        except Exception as primary_exc:
+            if _is_rate_limited_error(primary_exc):
+                debug_event("provider", f"{BOT_NAME} xAI vision rate-limited; using Groq vision")
+            else:
+                debug_event(
+                    "provider",
+                    f"{BOT_NAME} xAI vision unavailable ({type(primary_exc).__name__}); using Groq vision",
+                )
+    if reply:
+        return strip_narration(reply.strip())[:max_chars]
+
+    encoded = base64.b64encode(image_bytes).decode("ascii")
+    vision_content = [
+        {"type": "image_url", "image_url": {
+            "url": f"data:{mime_type};base64,{encoded}",
+        }},
+        {"type": "text", "text": prompt},
+    ]
+
+    def _run_fallback():
+        return groq_client.call_with_retry(
+            model=GROQ_VISION_MODEL,
+            max_completion_tokens=400,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": vision_content},
+            ],
+        )
+
+    response = await loop.run_in_executor(None, _run_fallback)
+    reply = response.choices[0].message.content if response.choices else ""
     return strip_narration((reply or "").strip())[:max_chars]
 
 

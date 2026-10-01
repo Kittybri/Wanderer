@@ -56,6 +56,19 @@ def test_proactive_rivalry_rejects_sensitive_channel_topics():
     assert "is_sensitive_memory(content)" in topic_picker
 
 
+def test_image_vision_falls_back_to_configured_groq_model():
+    source = (Path(__file__).parents[1] / "bot.py").read_text()
+    helper = source[
+        source.index("async def _vision_image_reply"):
+        source.index("def _face_feature_unavailable_text")
+    ]
+    assert "using Groq vision" in helper
+    assert "groq_client.call_with_retry(" in helper
+    assert "model=GROQ_VISION_MODEL" in helper
+    assert 'f"data:{mime_type};base64,{encoded}"' in helper
+    assert helper.index("if vision_is_exhausted():") < helper.index("groq_client.call_with_retry(")
+
+
 def test_release_pipeline_guards_credentials_and_distress_before_optional_bits():
     source = (Path(__file__).parents[1] / "bot.py").read_text()
     handler = source[source.index("async def _handle_message_pipeline"):]
