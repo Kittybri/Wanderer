@@ -3172,6 +3172,20 @@ async def _handle_partner_message(message, target_info: dict | None = None) -> b
         return True  # Structured events do not start free-running partner replies.
     try:
         target_info = target_info or {}
+        # Partner command/help/media output is not an invitation to banter.  A
+        # human-targeted reply belongs to that human, and rich output is almost
+        # always a command result.  Only an explicit address or an active duo
+        # handoff may override that ownership boundary.
+        if not target_info.get("addressed_me") and not target_info.get("duo_expected"):
+            if target_info.get("human_targets"):
+                return True
+            if (
+                getattr(message, "embeds", None)
+                or getattr(message, "attachments", None)
+                or getattr(message, "components", None)
+                or getattr(message, "stickers", None)
+            ):
+                return True
         human_targets = [str(name).strip() for name in (target_info.get("human_targets") or []) if str(name).strip()]
         target_names = ", ".join(human_targets[:3])
         if target_info.get("addressed_me"):

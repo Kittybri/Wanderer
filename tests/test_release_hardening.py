@@ -39,6 +39,19 @@ def test_release_pipeline_guards_credentials_and_distress_before_optional_bits()
     )
 
 
+def test_partner_command_output_cannot_trigger_unsolicited_banter():
+    source = (Path(__file__).parents[1] / "bot.py").read_text()
+    handler = source[
+        source.index("async def _handle_partner_message"):
+        source.index("async def _partner_message_target_info")
+    ]
+    ownership_gate = handler.index('if not target_info.get("addressed_me") and not target_info.get("duo_expected")')
+    observation = handler.index("await _observe_partner_message(message.content)")
+    assert ownership_gate < observation
+    assert 'if target_info.get("human_targets"):' in handler
+    assert 'getattr(message, "embeds", None)' in handler
+
+
 def test_assistant_state_is_committed_only_after_successful_delivery():
     source = (Path(__file__).parents[1] / "bot.py").read_text()
 
