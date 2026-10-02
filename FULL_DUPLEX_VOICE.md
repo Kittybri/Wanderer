@@ -4,8 +4,8 @@ Optional character/party features layered on this controller are documented in
 [ADVANCED_VC_FEATURES.md](ADVANCED_VC_FEATURES.md). They do not waive the live
 receive smoke-test release gate below or introduce another audio pipeline.
 
-This is an **experimental receive path** with automatic human participation in
-explicitly allowlisted channels after a public transcription notice.
+This is an **experimental receive path** in explicitly allowlisted channels,
+with explicit participation and a public transcription notice by default.
 Existing text, voice-note commands, Fish voice IDs, emotion/VoiceState, home audio,
 lullaby and deliberate duo orchestration remain in place. Nothing autojoins a VC.
 
@@ -63,20 +63,23 @@ credentials normally; never paste credentials into chat. Grant View Channel,
 Connect, Speak and Send Messages in the VC's text chat. Each session needs a
 public transcription notice there before the bot connects/listens.
 
-## Controls and automatic listening
+## Controls and listening consent
 
-By default, `VOICE_AUTO_LISTEN=1` enrolls humans already in the channel and new
-arrivals automatically, subject to the existing participant limit and each user's
-voice-enabled preference. New arrivals receive a text notice before enrollment
-and an in-character greeting when the bot is free. Greetings expire after 20
-seconds and have a 60-second per-user cooldown. Bots are never enrolled. Set
-`VOICE_AUTO_LISTEN=0` to retain the former explicit per-session opt-in policy.
+By default, `VOICE_AUTO_LISTEN=0`: starting a session enrolls only its starter;
+other humans must use `!voice listen on` for each session. Merely entering the
+channel does not enroll anyone. Newly consenting participants receive an
+in-character greeting when the bot is free. Greetings expire after 20 seconds
+and have a 60-second per-user cooldown. Bots are never enrolled.
+
+The existing optional `VOICE_AUTO_LISTEN=1` mode remains available to configured
+deployments, but is not the default. It enrolls eligible humans after a public
+notice, subject to the participant bound and stored voice-enabled preferences.
 
 | Command | Behavior |
 | --- | --- |
-| `!voice start scaramouche` / `start wanderer` | Join only the named bot to your allowlisted VC; humans with voice enabled are included automatically |
+| `!voice start scaramouche` / `start wanderer` | Join only the named bot to your allowlisted VC; starter explicitly participates |
 | `!voice start` / `join` | Existing shared command; both online bots may join |
-| `!voice listen on/off` | Legacy per-session override; no longer required for ordinary participation |
+| `!voice listen on/off` | Opt into or revoke your own participation for this session |
 | `!voice stop` / `leave` | Initiator or server manager ends the whole session |
 | `!voice mode direct_only` | Optional strict mode requiring the bot's spoken name |
 | `!voice mode conversation` | Default: answer the focused participant for 90 seconds after playback; explicit partner addressing clears focus |
@@ -93,8 +96,8 @@ does not bypass channel restrictions or another person's voice preference. `!voi
 retains voice-note preferences; `off` also removes that user from live listening.
 Ordinary `!voice some text`, `!speak` and `!say` still use existing voice-note behavior.
 Session participation resets on stop, channel move/deletion, or disconnect.
-Starting a new session posts a fresh notice and automatically includes eligible
-humans again; stored voice-off preferences are preserved. No background process
+Starting a new session posts a fresh notice and requires renewed participation;
+stored voice-off preferences are preserved. No background process
 automatically joins a voice channel after a disconnected session.
 An MLS epoch/transport-key update on an otherwise intact connection is handled by
 the receive adapter. A broken receiver is stopped, not silently restarted.

@@ -68,6 +68,22 @@ def test_legacy_dispatch_and_disabled_channel(monkeypatch):
     asyncio.run(check())
 
 
+def test_voice_requires_explicit_participation_by_default(monkeypatch):
+    async def check():
+        monkeypatch.delenv("VOICE_AUTO_LISTEN", raising=False)
+        service, ctx, channel = setup(monkeypatch)
+        assert not service.auto_listen
+        service.bot._connection.user = NS(id=9)
+        ctx.author.guild = ctx.guild
+        session = NS(channel_id=10, consent=Mock())
+        service.sessions[5] = session
+        await service.voice_state(ctx.author, NS(channel=None), NS(channel=channel))
+        session.consent.assert_not_called()
+        service.sessions.clear()
+        await service.bot.close()
+    asyncio.run(check())
+
+
 def test_targeted_start_and_stop_only_reach_named_bot(monkeypatch):
     async def check():
         service, ctx, _channel = setup(monkeypatch)
@@ -119,6 +135,7 @@ def test_start_callbacks_and_optout_shutdown(monkeypatch, auto):
     async def check():
         service, ctx, channel = setup(monkeypatch)
         service.auto_listen = auto
+        service.queue_greeting = Mock()
         other = NS(id=2, bot=False, voice=NS(channel=channel), display_name="Other", mention="<@2>")
         channel.members = [ctx.author, other, NS(id=9, bot=True)]
         ctx.guild.get_member = lambda uid: ctx.author if uid == 1 else other
@@ -178,6 +195,9 @@ def test_start_callbacks_and_optout_shutdown(monkeypatch, auto):
         assert session.participants == ({2} if auto else set())
         await service.command(ctx, "listen on")
         assert session.participants == ({1, 2} if auto else {1})
+        service.queue_greeting.assert_called_once_with(session, ctx.author)
+        await service.command(ctx, "listen on")
+        service.queue_greeting.assert_called_once()
         service.install()
         await service.bot.close()
         assert not service.sessions
@@ -188,6 +208,7 @@ def test_start_callbacks_and_optout_shutdown(monkeypatch, auto):
 
 def test_automatic_arrival_notice_enrollment_greeting_and_leave(monkeypatch):
     async def check():
+        monkeypatch.setenv("VOICE_AUTO_LISTEN", "1")
         service, ctx, channel = setup(monkeypatch)
         service.bot._connection.user = NS(id=9)
         ctx.author.guild = ctx.guild

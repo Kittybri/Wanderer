@@ -31,7 +31,7 @@ class VoiceConversation:
         self.sessions = {}
         self.features = None
         self.lock = None
-        self.auto_listen = os.getenv("VOICE_AUTO_LISTEN", "1").lower() in {"1", "true", "yes"}
+        self.auto_listen = os.getenv("VOICE_AUTO_LISTEN", "0").lower() in {"1", "true", "yes"}
         self.greeting_tasks = {}
         self.greeted = {}
         self.allowed = frozenset(
@@ -470,13 +470,14 @@ class VoiceConversation:
                 )
                 return
             try:
+                newly_joined = ctx.author.id not in session.participants
                 session.consent(ctx.author.id, True)
-                if self.features and not self.auto_listen:
-                    await self.features.arrival(session, ctx.guild.id, ctx.author.id)
                 await self.send(
                     ctx,
                     "You opted in for this session. Speech goes to Groq for transcription; relevant turns use ordinary memory. Raw audio is not saved. `!voice listen off` revokes consent.",
                 )
+                if newly_joined and session.active and ctx.author.id in session.participants:
+                    self.queue_greeting(session, ctx.author)
             except ValueError:
                 await self.send(ctx, "This session has reached its participant limit.")
             return
