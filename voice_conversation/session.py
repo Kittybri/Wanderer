@@ -97,7 +97,7 @@ class Session:
         self.limits, self.segmenter = limits, Segmenter(limits, vad)
         self.participants, self.epochs = set(), Counter()
         self.focus, self.focus_until = initiator, 0.0
-        self.mode, self.interrupt_mode = "DIRECT_ONLY", "KEYWORD"
+        self.mode, self.interrupt_mode = "CONVERSATION", "KEYWORD"
         self.user_interrupt = {}
         self.state, self.active = State.IDLE, False
         self.generation, self.current_user = 0, None
@@ -117,6 +117,13 @@ class Session:
 
     def busy(self):
         return bool(self.response_task and not self.response_task.done())
+
+    def decision(self, kind, uid):
+        """Bounded diagnostics: categories and attribution, never speech content."""
+        self.metrics[kind] += 1
+        self.events.append(
+            {"type": kind, "at": time.monotonic(), "speaker_id": uid}
+        )
 
     async def feature_event(self, kind, uid=0, text="", data=None):
         if not self.feature_router:
@@ -271,6 +278,13 @@ class Session:
             self.active = False
 
     def relevant(self, uid, text):
+        # An explicit handover releases this bot's follow-up focus. Merely
+        # discussing the other character is not a handover.
+        partner = r"wanderer|hat[ -]?guy" if self.name == "scaramouche" else r"scaramouche|scara|balladeer"
+        if re.match(r"^(?:(?:hey|okay|ok|hi|hello)\W+)?(?:" + partner + r")\b", text.strip(), re.I):
+            if uid == self.focus:
+                self.focus, self.focus_until = None, 0
+            return False
         addressed = bool(re.search(r"\b" + re.escape(self.name) + r"\b", text.lower()))
         addressed = addressed or (
             self.name == "scaramouche" and bool(re.search(r"\bscara\b", text.lower()))
@@ -294,6 +308,7 @@ class Session:
                 or time.monotonic() - utterance.ended > self.limits.stale_seconds
             ):
                 self.metrics["dropped_stale_jobs"] += 1
+                self.decision("discarded_before_stt", uid)
                 utterance.pcm = b""
                 continue
             started = time.monotonic()
@@ -304,6 +319,7 @@ class Session:
             except asyncio.CancelledError:
                 raise
             except Exception:
+                self.decision("transcription_failed", uid)
                 await self.failure("stt_unavailable")
                 self.state = State.LISTENING
                 continue
@@ -318,6 +334,7 @@ class Session:
                 continue
             if not text.strip():
                 self.metrics["empty_transcripts"] += 1
+                self.decision("discarded_empty_transcript", uid)
                 continue
             self.metrics["stt_success"] += 1
             self.events.append(
@@ -327,6 +344,7 @@ class Session:
             normalized = re.sub(r"\W+", " ", text.lower()).strip()
             if normalized and any(normalized == old for old in self.recent_outputs):
                 self.metrics["echo_dropped"] += 1
+                self.decision("discarded_echo", uid)
                 continue
             mode = self.user_interrupt.get(uid, self.interrupt_mode)
             names = (
@@ -352,6 +370,7 @@ class Session:
                     break
             if time.monotonic() - utterance.ended > self.limits.stale_seconds:
                 self.metrics["dropped_stale_jobs"] += 1
+                self.decision("discarded_after_speech_wait", uid)
                 continue
             if re.search(r"(?:maybe|because|and|but|so|\.\.\.)\s*$", text, re.I):
                 await asyncio.sleep(0.45)
@@ -399,6 +418,9 @@ class Session:
                 and "reply" not in plan
                 and not plan.get("force_reply")
             ):
+                self.decision("discarded_not_addressed", uid)
+                if not self.busy() and not self.segmenter.users:
+                    self.state = State.LISTENING
                 continue
             # OFF/background input does not cancel a response already in progress.
             if self.response_task and not self.response_task.done():
@@ -410,8 +432,10 @@ class Session:
                 or epoch != self.epochs[uid]
                 or time.monotonic() - utterance.ended > self.limits.stale_seconds
             ):
+                self.decision("discarded_before_response", uid)
                 continue
             self.focus, self.focus_until = uid, time.monotonic() + 90
+            self.decision("response_scheduled", uid)
             self.current_user = uid
             self.generation += 1
             self.response_task = asyncio.create_task(
@@ -509,6 +533,8 @@ class Session:
                 self.metrics["dropped_stale_jobs"] += 1
                 return
             pieces = chunks(reply[:12000])
+            if not pieces:
+                self.decision("empty_response", uid)
             self.total = len(pieces)
             for part in pieces:
                 if not self.current(generation, uid, epoch):
@@ -537,8 +563,12 @@ class Session:
                     delivered = await self.playback.play(audio)
                 audio = None
                 if not delivered or not self.current(generation, uid, epoch):
+                    self.decision("playback_not_delivered", uid)
                     return
                 self.completed += 1
+                if self.focus == uid:
+                    self.focus_until = time.monotonic() + 90
+                self.decision("playback_completed", uid)
                 self.metrics["spoken_chunks"] += 1
                 self.recent_outputs.append(re.sub(r"\W+", " ", part.lower()).strip())
                 await self.remember(uid, part)
@@ -647,5 +677,15 @@ class Session:
             "participants": len(self.participants),
             "focused_users": int(self.focus in self.participants),
             "pending_audio": self.jobs.qsize(),
+            "workers": [
+                {
+                    "name": name,
+                    "running": not task.done(),
+                    "failed": task.done()
+                    and not task.cancelled()
+                    and task.exception() is not None,
+                }
+                for name, task in zip(("receive", "transcribe"), self.workers)
+            ],
             "metrics": dict(received) | dict(self.metrics),
         }

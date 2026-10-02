@@ -391,6 +391,17 @@ class Memory:
                     created_ts  REAL DEFAULT 0,
                     last_seen   REAL DEFAULT 0
                 );
+                CREATE TABLE IF NOT EXISTS privacy_deletion_jobs (
+                    request_id TEXT PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    status TEXT NOT NULL,
+                    stages_json TEXT NOT NULL DEFAULT '{}',
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL,
+                    completed_at REAL DEFAULT 0,
+                    last_error_category TEXT DEFAULT NULL,
+                    last_error_stage TEXT DEFAULT NULL
+                );
             """)
             # Idempotent preference migration; preserves existing rows and defaults.
             await db.execute("BEGIN IMMEDIATE")
@@ -911,6 +922,40 @@ class Memory:
             await db.execute("DELETE FROM scene_state WHERE channel_id=?", (channel_id,))
             await db.commit()
 
+    async def forget_scene_state_matches(self, channel_id: int, query: str) -> int:
+        """Remove matching scene fields without discarding unrelated channel context."""
+        needle = (query or "").strip().lower()
+        if not needle:
+            return 0
+        columns = (
+            "location", "situation", "last_beat", "emotional_temp",
+            "objective", "present", "important_prop",
+        )
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                f"SELECT {','.join(columns)} FROM scene_state WHERE channel_id=?",
+                (channel_id,),
+            ) as cur:
+                row = await cur.fetchone()
+            if not row:
+                return 0
+            values = [value or "" for value in row]
+            matched = [needle in value.lower() for value in values]
+            removed = sum(matched)
+            if not removed:
+                return 0
+            scrubbed = ["" if is_match else value for value, is_match in zip(values, matched)]
+            if any(scrubbed):
+                assignments = ",".join(f"{column}=?" for column in columns)
+                await db.execute(
+                    f"UPDATE scene_state SET {assignments}, updated_ts=? WHERE channel_id=?",
+                    (*scrubbed, time.time(), channel_id),
+                )
+            else:
+                await db.execute("DELETE FROM scene_state WHERE channel_id=?", (channel_id,))
+            await db.commit()
+        return removed
+
     async def add_memory_event(self, user_id: int, kind: str, memory: str, weight: int = 1):
         async with aiosqlite.connect(DB_PATH) as db:
             async with db.execute(
@@ -976,34 +1021,77 @@ class Memory:
         ]
 
     async def forget_memory_matches(self, user_id: int, query: str) -> dict:
-        needle = (query or "").strip().lower()
+        needle = (query or "").strip().lower()[:80]
         if not needle:
-            return {"topics": 0, "jokes": 0, "shared_jokes": 0, "memories": 0, "callback": 0}
+            return {}
 
-        like = f"%{needle[:80]}%"
         async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("BEGIN IMMEDIATE")
             topic_cur = await db.execute(
-                "DELETE FROM user_topics WHERE user_id=? AND LOWER(topic) LIKE ?",
-                (user_id, like),
+                "DELETE FROM user_topics WHERE user_id=? AND INSTR(LOWER(topic),?)>0",
+                (user_id, needle),
             )
             joke_cur = await db.execute(
-                "DELETE FROM inside_jokes WHERE user_id=? AND LOWER(joke) LIKE ?",
-                (user_id, like),
+                "DELETE FROM inside_jokes WHERE user_id=? AND INSTR(LOWER(joke),?)>0",
+                (user_id, needle),
             )
             memory_cur = await db.execute(
-                "DELETE FROM memory_bank WHERE user_id=? AND (LOWER(kind) LIKE ? OR LOWER(memory) LIKE ?)",
-                (user_id, like, like),
+                "DELETE FROM memory_bank WHERE user_id=? AND "
+                "(INSTR(LOWER(kind),?)>0 OR INSTR(LOWER(memory),?)>0)",
+                (user_id, needle, needle),
             )
-            callback_cur = await db.execute(
-                "UPDATE users SET callback_memory=NULL, callback_ts=0 "
-                "WHERE user_id=? AND callback_memory IS NOT NULL AND LOWER(callback_memory) LIKE ?",
-                (user_id, like),
+            message_cur = await db.execute(
+                "DELETE FROM messages WHERE user_id=? AND INSTR(LOWER(content),?)>0",
+                (user_id, needle),
+            )
+            reminder_cur = await db.execute(
+                "DELETE FROM reminders WHERE user_id=? AND INSTR(LOWER(reminder),?)>0",
+                (user_id, needle),
+            )
+            trivia_cur = await db.execute(
+                "DELETE FROM active_trivia WHERE asker_id=? AND "
+                "(INSTR(LOWER(question),?)>0 OR INSTR(LOWER(answer),?)>0 OR "
+                "INSTR(LOWER(COALESCE(source_note,'')),?)>0)",
+                (user_id, needle, needle, needle),
+            )
+            milestone_cur = await db.execute(
+                "DELETE FROM relationship_milestones "
+                "WHERE (scope=? OR scope LIKE ? OR scope LIKE ?) "
+                "AND INSTR(LOWER(note),?)>0",
+                (f"user:{user_id}", f"%:user:{user_id}", f"%:user:{user_id}:%", needle),
+            )
+            user_cur = await db.execute(
+                """UPDATE users SET
+                       callback_memory=CASE WHEN INSTR(LOWER(COALESCE(callback_memory,'')),?)>0 THEN NULL ELSE callback_memory END,
+                       callback_ts=CASE WHEN INSTR(LOWER(COALESCE(callback_memory,'')),?)>0 THEN 0 ELSE callback_ts END,
+                       memory_summary=CASE WHEN INSTR(LOWER(COALESCE(memory_summary,'')),?)>0 THEN NULL ELSE memory_summary END,
+                       summary_msg_count=CASE WHEN INSTR(LOWER(COALESCE(memory_summary,'')),?)>0 THEN 0 ELSE summary_msg_count END,
+                       last_statement=CASE WHEN INSTR(LOWER(COALESCE(last_statement,'')),?)>0 THEN NULL ELSE last_statement END,
+                       conflict_summary=CASE WHEN INSTR(LOWER(COALESCE(conflict_summary,'')),?)>0 THEN NULL ELSE conflict_summary END,
+                       conflict_open=CASE WHEN INSTR(LOWER(COALESCE(conflict_summary,'')),?)>0 THEN 0 ELSE conflict_open END
+                   WHERE user_id=? AND (
+                       INSTR(LOWER(COALESCE(callback_memory,'')),?)>0 OR
+                       INSTR(LOWER(COALESCE(memory_summary,'')),?)>0 OR
+                       INSTR(LOWER(COALESCE(last_statement,'')),?)>0 OR
+                       INSTR(LOWER(COALESCE(conflict_summary,'')),?)>0
+                   )""",
+                (
+                    needle, needle, needle, needle, needle, needle, needle, user_id,
+                    needle, needle, needle, needle,
+                ),
             )
             await db.commit()
         async with aiosqlite.connect(self.shared_db_path) as db:
+            await db.execute("BEGIN IMMEDIATE")
             shared_joke_cur = await db.execute(
-                "DELETE FROM shared_inside_jokes WHERE user_id=? AND LOWER(joke) LIKE ?",
-                (user_id, like),
+                "DELETE FROM shared_inside_jokes WHERE user_id=? AND INSTR(LOWER(joke),?)>0",
+                (user_id, needle),
+            )
+            shared_milestone_cur = await db.execute(
+                "DELETE FROM relationship_milestones "
+                "WHERE (scope=? OR scope LIKE ? OR scope LIKE ?) "
+                "AND INSTR(LOWER(note),?)>0",
+                (f"user:{user_id}", f"%:user:{user_id}", f"%:user:{user_id}:%", needle),
             )
             await db.commit()
         return {
@@ -1011,7 +1099,11 @@ class Memory:
             "jokes": int(joke_cur.rowcount or 0),
             "shared_jokes": int(shared_joke_cur.rowcount or 0),
             "memories": int(memory_cur.rowcount or 0),
-            "callback": int(callback_cur.rowcount or 0),
+            "messages": int(message_cur.rowcount or 0),
+            "reminders": int(reminder_cur.rowcount or 0),
+            "trivia": int(trivia_cur.rowcount or 0),
+            "milestones": int(milestone_cur.rowcount or 0) + int(shared_milestone_cur.rowcount or 0),
+            "profile_fields": int(user_cur.rowcount or 0),
         }
 
     async def set_mode(self, user_id: int, field: str, value: bool):
@@ -2781,29 +2873,82 @@ class Memory:
                 rows = await cur.fetchall()
         return [row[0] for row in rows if row and row[0]]
 
-    async def reset_user(self, user_id: int):
-        async with aiosqlite.connect(DB_PATH) as db:
+    async def reset_user_local(self, user_id: int):
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("BEGIN IMMEDIATE")
             await db.execute("DELETE FROM messages WHERE user_id=?", (user_id,))
             await db.execute("DELETE FROM inside_jokes WHERE user_id=?", (user_id,))
+            await db.execute("DELETE FROM shared_inside_jokes WHERE user_id=?", (user_id,))
             await db.execute("DELETE FROM user_topics WHERE user_id=?", (user_id,))
             await db.execute("DELETE FROM memory_bank WHERE user_id=?", (user_id,))
             await db.execute("DELETE FROM consequence_marks WHERE user_id=?", (user_id,))
-            await db.execute("DELETE FROM relationship_milestones WHERE scope LIKE ?", (f"{self.bot_name}:user:{user_id}%",))
+            await db.execute("DELETE FROM reminders WHERE user_id=?", (user_id,))
+            await db.execute("DELETE FROM trivia WHERE user_id=?", (user_id,))
+            await db.execute("DELETE FROM active_trivia WHERE asker_id=?", (user_id,))
+            await db.execute(
+                "DELETE FROM roast_battles WHERE user1_id=? OR user2_id=?",
+                (user_id, user_id),
+            )
+            await db.execute("DELETE FROM game_scores WHERE user_id=?", (user_id,))
+            await db.execute("DELETE FROM rpg_medals WHERE user_id=?", (user_id,))
+            await db.execute("DELETE FROM rpg_state WHERE user_id=?", (user_id,))
+            await db.execute("DELETE FROM user_preferences WHERE user_id=?", (user_id,))
+            await db.execute("DELETE FROM dm_cooldown WHERE user_id=?", (user_id,))
+            await db.execute("DELETE FROM muted_users WHERE user_id=?", (user_id,))
+            await db.execute("DELETE FROM blocked_dm_users WHERE user_id=?", (user_id,))
+            await db.execute("DELETE FROM blocked_users WHERE user_id=?", (user_id,))
+            await db.execute(
+                "DELETE FROM relationship_milestones "
+                "WHERE scope=? OR scope LIKE ? OR scope LIKE ?",
+                (f"user:{user_id}", f"%:user:{user_id}", f"%:user:{user_id}:%"),
+            )
+            await db.execute(
+                "DELETE FROM phrase_cooldowns "
+                "WHERE scope=? OR scope LIKE ? OR scope LIKE ?",
+                (f"user:{user_id}", f"%:user:{user_id}", f"%:user:{user_id}:%"),
+            )
             await db.execute("DELETE FROM scene_state WHERE channel_id=?", (user_id,))
-            await db.execute("""UPDATE users SET mood=0,affection=0,trust=0,anger_level=0,affection_ever_maxed=0,anger_repair_active=0,
-                anger_repair_kind=NULL,anger_repair_instruction=NULL,anger_repair_requirement=NULL,anger_aftercare_messages=0,rival_id=NULL,grudge_nick=NULL,
-                affection_nick=NULL,message_count=0,milestone_last=0,slow_burn=0,slow_burn_fired=0,
-                drift_score=0,memory_summary=NULL,last_statement=NULL,style_profile=NULL,emotional_arc='guarded',
-                conflict_open=0,conflict_summary=NULL,last_conflict_ts=0,repair_progress=0,
-                callback_memory=NULL,callback_ts=0,repair_count=0
-                WHERE user_id=?""", (user_id,))
+            await db.execute("DELETE FROM users WHERE user_id=?", (user_id,))
             await db.commit()
+
+    async def reset_user_shared(self, user_id: int):
         async with aiosqlite.connect(self.shared_db_path) as db:
+            await db.execute("BEGIN IMMEDIATE")
             await db.execute("DELETE FROM shared_inside_jokes WHERE user_id=?", (user_id,))
             await db.execute("DELETE FROM user_bot_attention WHERE user_id=?", (user_id,))
-            await db.execute("DELETE FROM hidden_achievements WHERE scope LIKE ?", (f"%user:{user_id}",))
-            await db.execute("DELETE FROM relationship_milestones WHERE scope LIKE ?", (f"%user:{user_id}",))
+            await db.execute(
+                "DELETE FROM hidden_achievements "
+                "WHERE scope=? OR scope LIKE ? OR scope LIKE ?",
+                (f"user:{user_id}", f"%:user:{user_id}", f"%:user:{user_id}:%"),
+            )
+            await db.execute(
+                "DELETE FROM relationship_milestones "
+                "WHERE scope=? OR scope LIKE ? OR scope LIKE ?",
+                (f"user:{user_id}", f"%:user:{user_id}", f"%:user:{user_id}:%"),
+            )
+            await db.execute("DELETE FROM duo_sessions WHERE initiator_user_id=?", (user_id,))
+            await db.execute("DELETE FROM shared_users WHERE user_id=?", (user_id,))
+            await db.execute(
+                "DELETE FROM shared_world_entities WHERE owner_user_id=? OR channel_id=?",
+                (user_id, user_id),
+            )
+            await db.execute("DELETE FROM shared_world_cases WHERE channel_id=?", (user_id,))
+            await db.execute("DELETE FROM face_profiles WHERE owner_user_id=?", (user_id,))
+            await db.execute("DELETE FROM shared_event_memories WHERE channel_id=?", (user_id,))
+            await db.execute(
+                "DELETE FROM shared_evidence_locker WHERE owner_user_id=? OR channel_id=?",
+                (user_id, user_id),
+            )
+            await db.execute(
+                "DELETE FROM interbot_private_opinions "
+                "WHERE scope=? OR scope LIKE ? OR scope LIKE ? OR subject_key=?",
+                (f"user:{user_id}", f"%:user:{user_id}", f"%:user:{user_id}:%", str(user_id)),
+            )
             await db.commit()
+
+    async def reset_user(self, user_id: int):
+        await self.reset_user_local(user_id)
+        await self.reset_user_shared(user_id)
 
     async def reset_user_for_rebuild(self, user_id: int):
         async with aiosqlite.connect(DB_PATH) as db:
@@ -2811,7 +2956,11 @@ class Memory:
             await db.execute("DELETE FROM user_topics WHERE user_id=?", (user_id,))
             await db.execute("DELETE FROM memory_bank WHERE user_id=?", (user_id,))
             await db.execute("DELETE FROM consequence_marks WHERE user_id=?", (user_id,))
-            await db.execute("DELETE FROM relationship_milestones WHERE scope LIKE ?", (f"{self.bot_name}:user:{user_id}%",))
+            await db.execute(
+                "DELETE FROM relationship_milestones "
+                "WHERE scope=? OR scope LIKE ? OR scope LIKE ?",
+                (f"user:{user_id}", f"%:user:{user_id}", f"%:user:{user_id}:%"),
+            )
             await db.execute("DELETE FROM scene_state WHERE channel_id=?", (user_id,))
             await db.execute(
                 """UPDATE users SET mood=0,affection=0,trust=0,anger_level=0,affection_ever_maxed=0,anger_repair_active=0,
@@ -2826,7 +2975,11 @@ class Memory:
             await db.commit()
         async with aiosqlite.connect(self.shared_db_path) as db:
             await db.execute("DELETE FROM user_bot_attention WHERE user_id=?", (user_id,))
-            await db.execute("DELETE FROM relationship_milestones WHERE scope LIKE ?", (f"%user:{user_id}",))
+            await db.execute(
+                "DELETE FROM relationship_milestones "
+                "WHERE scope=? OR scope LIKE ? OR scope LIKE ?",
+                (f"user:{user_id}", f"%:user:{user_id}", f"%:user:{user_id}:%"),
+            )
             await db.commit()
 
     async def get_face_profile(self, profile_key: str = "owner_face") -> dict | None:
