@@ -327,6 +327,43 @@ def test_voice_decisions_explain_silence_without_transcript_logging(
     run(check())
 
 
+def test_followup_after_first_playback_keeps_listening_and_routes_partner():
+    async def check():
+        s = setup()
+        await s.start()
+        try:
+            for index, phrase in enumerate(
+                ("Scaramouche, can you hear me?", "Do you like ice cream?", "What flavor?")
+            ):
+                s.stt.transcribe.return_value = phrase
+                s.enqueue(Utterance(1, b"audio", time.monotonic(), time.monotonic()))
+
+                async def delivered():
+                    while s.metrics["playback_completed"] < index + 1:
+                        await asyncio.sleep(0.001)
+
+                await asyncio.wait_for(delivered(), 1)
+            assert s.respond.await_count == 3
+            assert s.remember.await_count == 3
+            assert not s.relevant(2, "And you?")
+            assert s.relevant(1, "Do you like Wanderer?")
+            assert not s.relevant(1, "Wanderer, what do you think?")
+            assert s.focus is None
+            assert not s.relevant(1, "And you?")
+            s.name = "wanderer"
+            s.focus, s.focus_until = 1, time.monotonic() + 90
+            assert not s.relevant(1, "Hey Scara, can you hear me?")
+            s.name = "scaramouche"
+            s.focus, s.focus_until = 1, time.monotonic() + 90
+            s.mode = "DIRECT_ONLY"
+            assert not s.relevant(1, "Do you like ice cream?")
+            assert s.relevant(1, "Scaramouche, do you like ice cream?")
+        finally:
+            await s.stop()
+
+    run(check())
+
+
 def test_keyword_stops_and_next_turn_gets_context():
     async def check():
         s = setup()

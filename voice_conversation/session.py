@@ -97,7 +97,7 @@ class Session:
         self.limits, self.segmenter = limits, Segmenter(limits, vad)
         self.participants, self.epochs = set(), Counter()
         self.focus, self.focus_until = initiator, 0.0
-        self.mode, self.interrupt_mode = "DIRECT_ONLY", "KEYWORD"
+        self.mode, self.interrupt_mode = "CONVERSATION", "KEYWORD"
         self.user_interrupt = {}
         self.state, self.active = State.IDLE, False
         self.generation, self.current_user = 0, None
@@ -278,6 +278,13 @@ class Session:
             self.active = False
 
     def relevant(self, uid, text):
+        # An explicit handover releases this bot's follow-up focus. Merely
+        # discussing the other character is not a handover.
+        partner = r"wanderer|hat[ -]?guy" if self.name == "scaramouche" else r"scaramouche|scara|balladeer"
+        if re.match(r"^(?:(?:hey|okay|ok|hi|hello)\W+)?(?:" + partner + r")\b", text.strip(), re.I):
+            if uid == self.focus:
+                self.focus, self.focus_until = None, 0
+            return False
         addressed = bool(re.search(r"\b" + re.escape(self.name) + r"\b", text.lower()))
         addressed = addressed or (
             self.name == "scaramouche" and bool(re.search(r"\bscara\b", text.lower()))
@@ -412,6 +419,8 @@ class Session:
                 and not plan.get("force_reply")
             ):
                 self.decision("discarded_not_addressed", uid)
+                if not self.busy() and not self.segmenter.users:
+                    self.state = State.LISTENING
                 continue
             # OFF/background input does not cancel a response already in progress.
             if self.response_task and not self.response_task.done():
@@ -557,6 +566,8 @@ class Session:
                     self.decision("playback_not_delivered", uid)
                     return
                 self.completed += 1
+                if self.focus == uid:
+                    self.focus_until = time.monotonic() + 90
                 self.decision("playback_completed", uid)
                 self.metrics["spoken_chunks"] += 1
                 self.recent_outputs.append(re.sub(r"\W+", " ", part.lower()).strip())
