@@ -198,7 +198,7 @@ class VoiceConversation:
                     ),
                 }
             if session:
-                result["events"] = list(session.events)[-5:]
+                result["events"] = list(session.events)[-16:]
                 from .personality import priority_status
 
                 result["priority_speaker"] = priority_status(
