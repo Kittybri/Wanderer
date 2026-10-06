@@ -215,6 +215,7 @@ class ReceiveBackend:
                 self.vc._reader.packet_router.set_user_id(ssrc, uid)
 
     async def start(self, voice_client):
+        import discord
         from discord.ext import voice_recv
 
         backend = self
@@ -237,8 +238,14 @@ class ReceiveBackend:
             voice_client.listen(
                 Sink(), after=lambda error: setattr(self, "failed", bool(error))
             )
-        except Exception:
-            self.active = False
+            # Discord needs our SSRC/speaking state registered even when this
+            # session only receives. Otherwise a fresh connection can receive
+            # control traffic forever, until its first outbound playback.
+            # State NONE sends no audio and does not light the speaking ring.
+            await voice_client.ws.speak(discord.SpeakingState.none)
+            self.metrics["receive_handshake_sent"] += 1
+        except BaseException:
+            await self.stop()
             raise
 
     def unhealthy(self):

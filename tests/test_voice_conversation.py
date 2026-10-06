@@ -593,6 +593,43 @@ def test_receive_reports_pre_decryption_drops_without_private_data(monkeypatch, 
     assert "PRIVATE" not in str(backend.metrics)
 
 
+@pytest.mark.parametrize("fail_handshake", [False, True])
+def test_receive_start_registers_silent_speaking_state(fail_handshake):
+    pytest.importorskip("discord.ext.voice_recv")
+    import discord
+
+    async def check():
+        backend = ReceiveBackend(lambda: {1})
+        vc = NS(
+            listen=Mock(), stop_listening=Mock(),
+            is_listening=lambda: True,
+            _reader=NS(packet_router=NS(destroy_all_decoders=Mock())),
+        )
+
+        async def register(state):
+            # The receiver must be attached before Discord can send media.
+            vc.listen.assert_called_once()
+            assert state == discord.SpeakingState.none
+            assert backend.active
+            if fail_handshake:
+                raise RuntimeError("handshake_failed")
+
+        vc.ws = NS(speak=AsyncMock(side_effect=register))
+        if fail_handshake:
+            with pytest.raises(RuntimeError, match="handshake_failed"):
+                await backend.start(vc)
+            assert not backend.active
+            vc.stop_listening.assert_called_once()
+        else:
+            await backend.start(vc)
+            assert backend.active
+            assert backend.metrics["receive_handshake_sent"] == 1
+            vc.stop_listening.assert_not_called()
+        vc.ws.speak.assert_awaited_once_with(discord.SpeakingState.none)
+
+    run(check())
+
+
 def test_receiver_health_distinguishes_mapping_and_listener_state():
     backend = ReceiveBackend(lambda: {1})
     backend.vc = NS(
