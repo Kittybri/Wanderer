@@ -119,6 +119,35 @@ def test_limits_and_sentence_chunks():
     assert all(len(p) <= 320 for p in pieces)
 
 
+def test_fragmented_speech_survives_short_vad_negative_gaps():
+    s = Segmenter(Limits(), NS(is_speech=lambda pcm, rate: any(pcm)))
+    voice, quiet = b"\x01\x01" * 1920, bytes(3840)
+    runs = []
+    for i in range(24):
+        utterance, run_ms = s.feed(1, voice if i % 8 < 5 else quiet, i / 50)
+        assert utterance is None
+        runs.append(run_ms)
+    utterances = s.expire(2)
+    assert len(utterances) == 1
+    assert utterances[0].user_id == 1
+    assert len(utterances[0].pcm) == 24 * 640
+    assert max(runs) == 100  # fragmented speech must not cause natural barge-in
+    assert s.metrics["vad_speech_frames"] == 15
+
+
+def test_brief_noise_still_drops_and_silence_does_not_join_separate_sounds():
+    s = Segmenter(Limits(), NS(is_speech=lambda pcm, rate: any(pcm)))
+    voice, quiet = b"\x01\x01" * 1920, bytes(3840)
+    for base in (0, 2):
+        for i in range(5):
+            s.feed(1, voice, base + i / 50)
+        for i in range(50):
+            utterance, _ = s.feed(1, quiet, base + 0.1 + i / 50)
+            assert utterance is None
+    assert not s.expire(4)
+    assert s.metrics["vad_short_segments_dropped"] == 2
+
+
 @pytest.mark.parametrize(
     "mode,uid,duration,interrupt",
     [
@@ -280,7 +309,13 @@ def test_stt_lifecycle(outcome):
         if outcome == "revoked":
             s.consent(1, False)
         release.set()
-        await asyncio.sleep(0.02)
+        if outcome == "success":
+            async def responded():
+                while not s.respond.await_count:
+                    await asyncio.sleep(0.001)
+            await asyncio.wait_for(responded(), 1)
+        else:
+            await asyncio.sleep(0.02)
         assert s.respond.await_count == int(outcome == "success")
         assert "PRIVATE" not in str(s.metrics)
         task.cancel()

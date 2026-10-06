@@ -163,7 +163,7 @@ def test_start_callbacks_and_automatic_membership_shutdown(monkeypatch):
             session.active = True
         monkeypatch.setattr("voice_conversation.integration.Session.start", start_session)
         monkeypatch.setattr(
-            "voice_conversation.session.Segmenter", lambda *a: NS(users={})
+            "voice_conversation.session.Segmenter", lambda *a: NS(users={}, metrics={})
         )
         await service.command(ctx, "start")
         assert channel.send.await_count == 1

@@ -9,6 +9,7 @@ import os
 import re
 import time
 import wave
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -78,6 +79,7 @@ class Segmenter:
 
             vad = webrtcvad.Vad(2)
         self.vad, self.limits, self.users = vad, limits, {}
+        self.metrics = Counter()
 
     def feed(self, uid, pcm, now=None):
         now = time.monotonic() if now is None else now
@@ -86,6 +88,7 @@ class Segmenter:
         mono = audioop.tomono(pcm, 2, 0.5, 0.5)
         mono, _ = audioop.ratecv(mono, 2, 1, 48000, 16000, None)
         speech = self.vad.is_speech(mono, 16000)
+        self.metrics["vad_speech_frames" if speech else "vad_nonspeech_frames"] += 1
         s = self.users.get(uid)
         if s is None:
             if not speech or len(self.users) >= self.limits.participants:
@@ -102,9 +105,10 @@ class Segmenter:
             if s.silence_ms >= 60:
                 s.run_ms = 0
         sustained = s.run_ms
-        if s.speech_ms < self.limits.start_ms and s.silence_ms >= 60:
-            self.users.pop(uid, None)
-            return None, 0
+        # A short VAD-negative gap can be a consonant or a quiet syllable.
+        # Keep the bounded candidate until normal endpointing; minimum_ms still
+        # rejects clicks/noise when the candidate finishes. run_ms above remains
+        # consecutive speech, so pauses do not accidentally trigger natural barge-in.
         if s.silence_ms >= self.limits.end_ms or len(s.pcm) >= int(
             self.limits.max_seconds * 32000
         ):
@@ -115,6 +119,8 @@ class Segmenter:
         s = self.users.pop(uid, None)
         if s and s.speech_ms >= self.limits.minimum_ms:
             return Utterance(uid, bytes(s.pcm), s.start, now)
+        if s:
+            self.metrics["vad_short_segments_dropped"] += 1
 
     def expire(self, now):
         return [
