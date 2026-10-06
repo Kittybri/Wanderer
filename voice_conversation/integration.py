@@ -32,7 +32,7 @@ class VoiceConversation:
         self.features = None
         self.lock = None
         self.greeting_tasks = {}
-        self.greeted = {}
+        self.arrivals_seen = {}
         self.allowed = frozenset(
             int(x)
             for x in os.getenv("VOICE_ALLOWED_CHANNEL_IDS", "").split(",")
@@ -62,7 +62,7 @@ class VoiceConversation:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
-        self.greeted.pop(gid, None)
+        self.arrivals_seen.pop(gid, None)
         session = self.sessions.pop(gid, None)
         if session:
             channel = session.backend.vc.channel
@@ -93,6 +93,10 @@ class VoiceConversation:
                 await self.leave(member.guild.id)
             return
         if getattr(after.channel, "id", None) != session.channel_id:
+            task = self.greeting_tasks.pop((member.guild.id, member.id), None)
+            if task:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
             session.consent(member.id, False)
         elif (
             not member.bot
@@ -134,9 +138,13 @@ class VoiceConversation:
 
     def queue_greeting(self, session, member):
         key = (member.guild.id, member.id)
-        recent = self.greeted.setdefault(member.guild.id, {})
-        if key in self.greeting_tasks or time.monotonic() - recent.get(member.id, -120) < 60:
+        if key in self.greeting_tasks:
             return
+        seen = self.arrivals_seen.setdefault(member.guild.id, {})
+        returning = seen.get(member.id, 0) > 0
+        seen[member.id] = min(255, seen.get(member.id, 0) + 1)
+        if len(seen) > 128:
+            seen.pop(next(iter(seen)))
 
         async def greet():
             try:
@@ -144,20 +152,36 @@ class VoiceConversation:
                 while session.active and member.id in session.participants:
                     if not session.busy() and not session.segmenter.users and session.jobs.empty():
                         name = re.sub(r"[@#\x00-\x1f]", "", member.display_name)[:60].strip() or "you"
-                        lines = (
-                            [f"Looks like {name} has arrived. What do you want?",
-                             "Seems like another annoying person has arrived. Well? Speak.",
-                             f"{name}. Do try to make your entrance worth the interruption."]
-                            if self.name.lower() == "scaramouche" else
-                            [f"Oh, {name}. What brings you here?",
-                             f"Look who finally showed up. Go on, {name}.",
-                             "Another arrival. You can speak, you know."]
-                        )
+                        if self.name.lower() == "scaramouche":
+                            lines = (
+                                [
+                                    f"Look who came back. {name}, did you miss me already?",
+                                    f"{name} again? You just left. What is it this time?",
+                                    f"So {name} returned. Try making this entrance less disappointing.",
+                                ]
+                                if returning
+                                else [
+                                    f"Look who arrived. {name}, what do you want?",
+                                    f"{name} has arrived. Try not to make me regret noticing.",
+                                    f"Oh, {name}. Make your entrance worth the interruption.",
+                                ]
+                            )
+                        else:
+                            lines = (
+                                [
+                                    f"{name} came back. Changed your mind?",
+                                    f"Look who returned. What do you want now, {name}?",
+                                    f"{name} again. I suppose leaving didn't suit you.",
+                                ]
+                                if returning
+                                else [
+                                    f"Look who arrived. {name}, what brings you here?",
+                                    f"{name} is here. Go on, say what you came to say.",
+                                    f"Oh, {name}. I noticed.",
+                                ]
+                            )
                         if await session.submit(member.id, "", reply=random.choice(lines)):
                             session.focus, session.focus_until = member.id, time.monotonic() + 90
-                            recent[member.id] = time.monotonic()
-                            if len(recent) > 128:
-                                recent.pop(next(iter(recent)))
                         return
                     if time.monotonic() >= deadline:
                         return
@@ -431,6 +455,10 @@ class VoiceConversation:
                 await session.start()
                 for member in getattr(channel, "members", ()):
                     await self.enroll(session, member)
+                    if not member.bot and member.id in session.participants:
+                        self.arrivals_seen.setdefault(ctx.guild.id, {})[
+                            member.id
+                        ] = 1
                 await self.status(ctx)
             except Exception:
                 if session:

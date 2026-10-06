@@ -68,9 +68,10 @@ public transcription notice there before the bot connects/listens.
 Starting a session automatically includes eligible humans who are already in the
 channel. Eligible humans who arrive later are included automatically after the
 public transcription notice and receive a bounded in-character greeting when the
-bot is free. Greetings expire after 20 seconds and have a 60-second per-user
-cooldown. Bots are never included. Leaving the channel immediately removes the
-human from the live routing set; rejoining includes them again automatically.
+bot is free. A greeting waits up to 20 seconds for a free playback slot. Every
+greeting says the human's display name; a return during the
+same bot session uses a distinct rejoin line. Bots are never included. Leaving the
+channel immediately removes the human from the live routing set; rejoining includes them again automatically.
 The bounded participant limit and stored `!voice off` preference remain enforced.
 
 | Command | Behavior |

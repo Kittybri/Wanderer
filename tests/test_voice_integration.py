@@ -227,18 +227,23 @@ def test_automatic_arrival_notice_enrollment_greeting_and_leave(monkeypatch):
             assert session.participants == {1}
             channel.send.assert_awaited_once()
             session.submit.assert_awaited_once()
-            assert session.submit.call_args.kwargs["reply"]
+            first_reply = session.submit.call_args.kwargs["reply"]
+            assert "Test" in first_reply
             # Mute/deafen changes are not new arrivals.
             await service.voice_state(ctx.author, NS(channel=channel), NS(channel=channel))
             assert channel.send.await_count == 1
             ctx.author.voice.channel = None
             await service.voice_state(ctx.author, NS(channel=channel), NS(channel=None))
             assert not session.participants
-            # Repeated quick rejoin enrolls again without greeting spam.
+            # A real rejoin gets a distinct return greeting with the name.
             ctx.author.voice.channel = channel
             await service.voice_state(ctx.author, NS(channel=None), NS(channel=channel))
+            await asyncio.gather(*list(service.greeting_tasks.values()))
             assert session.participants == {1}
-            assert session.submit.await_count == 1
+            assert session.submit.await_count == 2
+            return_reply = session.submit.call_args.kwargs["reply"]
+            assert "Test" in return_reply and return_reply != first_reply
+            assert any(word in return_reply.lower() for word in ("back", "again", "returned"))
             session.participants.clear()
             ctx.author.bot = True
             await service.voice_state(ctx.author, NS(channel=None), NS(channel=channel))
@@ -295,7 +300,7 @@ def test_pending_arrival_cannot_speak_after_session_stop(monkeypatch):
         await asyncio.sleep(0)
         await service.leave(5)
         session.submit.assert_not_awaited()
-        assert not service.greeting_tasks and not service.greeted
+        assert not service.greeting_tasks and not service.arrivals_seen
         await service.bot.close()
     asyncio.run(check())
 
