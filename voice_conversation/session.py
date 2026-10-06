@@ -722,4 +722,5 @@ class Session:
                 for name, task in zip(("receive", "transcribe"), self.workers)
             ],
             "metrics": dict(received) | dict(self.metrics),
+            "receiver": self.backend.health() if hasattr(self.backend, "health") else {},
         }

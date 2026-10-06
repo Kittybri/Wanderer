@@ -112,7 +112,9 @@ class ReceiveBackend:
                 self.keepalive = KeepAlive(self.voice_client)
 
             def callback(self, data):
+                backend.metrics["udp_callbacks"] += 1
                 if not backend.active or self.error:
+                    backend.metrics["reader_inactive_drops"] += 1
                     return
                 # Ignore RTCP/discovery; they do not carry conversational audio.
                 if (
@@ -120,11 +122,17 @@ class ReceiveBackend:
                     or self._is_ip_discovery_packet(data)
                     or rtp.is_rtcp(data)
                 ):
+                    backend.metrics["non_audio_datagrams"] += 1
                     return
                 try:
                     packet = rtp.decode_rtp(data)
+                    backend.metrics["rtp_received"] += 1
                     uid = self.voice_client._get_id_from_ssrc(packet.ssrc)
+                    if uid is None:
+                        backend.metrics["unknown_speaker_drops"] += 1
+                        return
                     if not backend.allows(self.voice_client.guild.get_member(uid)):
+                        backend.metrics["ineligible_speaker_drops"] += 1
                         return
                     backend.metrics["packets"] += 1
                     now = time.monotonic()
@@ -244,6 +252,22 @@ class ReceiveBackend:
             self.first_packet
             and self.last_packet - max(self.last_valid, self.first_packet) > 10
         )
+
+    def health(self):
+        """Receiver state and counts only; never transport keys or packet data."""
+        vc = self.vc
+        reader = getattr(vc, "_reader", None)
+        mapping = getattr(vc, "_ssrc_to_id", {})
+        return {
+            "reader_listening": bool(vc and vc.is_listening()),
+            "reader_failed": bool(self.failed or getattr(reader, "error", None)),
+            "mapped_speakers": len(mapping),
+            "mapped_participants": len(set(mapping.values()) & set(self.participants())),
+            "dave_ready": bool(getattr(
+                getattr(getattr(vc, "_connection", None), "dave_session", None),
+                "ready", False,
+            )),
+        }
 
     async def stop(self):
         self.active = False

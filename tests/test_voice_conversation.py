@@ -526,3 +526,52 @@ def test_dave_reader_fail_closed_and_rotation(monkeypatch):
     dave.decrypt.side_effect = ValueError("secret")
     reader.callback(bytes(20))
     assert b.metrics["receive_errors"] == 2
+
+
+@pytest.mark.parametrize("uid,category", [(None, "unknown_speaker_drops"), (2, "ineligible_speaker_drops")])
+def test_receive_reports_pre_decryption_drops_without_private_data(monkeypatch, uid, category):
+    pytest.importorskip("discord.ext.voice_recv")
+    from voice_conversation import receive
+    from discord.ext.voice_recv import rtp
+
+    monkeypatch.setattr(receive, "check_dependencies", lambda: None)
+    backend = ReceiveBackend(lambda: {1})
+    backend.active = True
+    vc = NS(
+        client=NS(user=NS(id=9)), channel=NS(id=10),
+        guild=NS(get_member=lambda user_id: member(user_id)),
+        _get_id_from_ssrc=lambda ssrc: uid,
+    )
+    backend.vc = vc
+    cls = backend.client_class().reader_class
+    reader = cls.__new__(cls)
+    reader.voice_client, reader.error = vc, None
+    reader.decryptor = NS(decrypt_rtp=Mock())
+    monkeypatch.setattr(rtp, "is_rtcp", lambda data: False)
+    monkeypatch.setattr(rtp, "decode_rtp", lambda data: NS(ssrc=99))
+    reader.callback(b"PRIVATE_PACKET_PAYLOAD")
+    assert backend.metrics["udp_callbacks"] == 1
+    assert backend.metrics["rtp_received"] == 1
+    assert backend.metrics[category] == 1
+    assert backend.metrics["packets"] == 0
+    reader.decryptor.decrypt_rtp.assert_not_called()
+    assert "PRIVATE" not in str(backend.metrics)
+
+
+def test_receiver_health_distinguishes_mapping_and_listener_state():
+    backend = ReceiveBackend(lambda: {1})
+    backend.vc = NS(
+        is_listening=lambda: True,
+        _reader=NS(error=None),
+        _ssrc_to_id={99: 1, 100: 2},
+        _connection=NS(dave_session=NS(ready=True), secret_key="PRIVATE_KEY"),
+    )
+    health = backend.health()
+    assert health == {
+        "reader_listening": True, "reader_failed": False,
+        "mapped_speakers": 2, "mapped_participants": 1, "dave_ready": True,
+    }
+    assert "PRIVATE" not in str(health)
+    backend.vc._reader.error = RuntimeError("PRIVATE_FAILURE")
+    assert backend.health()["reader_failed"]
+    assert "PRIVATE" not in str(backend.health())
