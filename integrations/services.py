@@ -14,8 +14,7 @@ from urllib.parse import quote, urlencode
 import aiohttp
 
 
-class IntegrationError(RuntimeError): pass
-class IntegrationAuthError(IntegrationError): pass
+from .http import IntegrationError, IntegrationAuthError
 
 
 @dataclass(frozen=True)

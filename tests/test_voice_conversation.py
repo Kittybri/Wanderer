@@ -318,9 +318,11 @@ def test_stt_lifecycle(outcome):
             await asyncio.sleep(0.02)
         assert s.respond.await_count == int(outcome == "success")
         assert "PRIVATE" not in str(s.metrics)
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
+        # Mirror managed shutdown: close session eligibility before cancelling
+        # this test-owned worker, which is not in Session.workers.
         await s.stop()
+        task.cancel()
+        await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 2)
 
     run(check())
 
@@ -502,9 +504,11 @@ def test_keyword_stops_and_next_turn_gets_context():
         assert s.metrics["cancelled_responses"] == 1
         assert "interrupted" in s.respond.call_args.args[2]
         assert s.respond.call_args.args[1] == "wait, stop"
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
+        # Mirror managed shutdown: close session eligibility before cancelling
+        # this test-owned worker, which is not in Session.workers.
         await s.stop()
+        task.cancel()
+        await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 2)
 
     run(check())
 
@@ -547,9 +551,11 @@ def test_keyword_diagnostics_distinguish_detection_from_late_arrival():
         assert s.metrics["interrupt_keyword_detected"] == 1
         assert s.metrics["interrupt_arrived_after_playback"] == 1
         assert s.metrics["interrupt_attempted"] == 0
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
+        # Mirror managed shutdown: close session eligibility before cancelling
+        # this test-owned worker, which is not in Session.workers.
         await s.stop()
+        task.cancel()
+        await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 2)
 
     run(check())
 
