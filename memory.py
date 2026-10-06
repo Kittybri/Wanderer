@@ -63,6 +63,49 @@ def _connect_hardened(*args, **kwargs):
 aiosqlite.connect = _connect_hardened
 
 
+async def _rebuild_without_column(db, table: str, removed: str) -> None:
+    """Drop one legacy column on SQLite versions predating DROP COLUMN."""
+    rows = await (await db.execute(f"PRAGMA table_info({table})")).fetchall()
+    kept = [row for row in rows if str(row[1]) != removed]
+    if len(kept) == len(rows):
+        return
+    primary = [row for row in kept if int(row[5] or 0)]
+    definitions = []
+    for row in kept:
+        _, name, kind, not_null, default, _ = row
+        definition = f'"{name}" {kind or ""}'.rstrip()
+        if not_null:
+            definition += " NOT NULL"
+        if default is not None:
+            definition += f" DEFAULT {default}"
+        if len(primary) == 1 and primary[0][1] == name:
+            definition += " PRIMARY KEY"
+        definitions.append(definition)
+    if len(primary) > 1:
+        ordered = sorted(primary, key=lambda row: int(row[5]))
+        definitions.append(
+            "PRIMARY KEY (" + ",".join(f'"{row[1]}"' for row in ordered) + ")"
+        )
+    dependent_sql = await (
+        await db.execute(
+            "SELECT sql FROM sqlite_master WHERE tbl_name=? "
+            "AND type IN ('index','trigger') AND sql IS NOT NULL",
+            (table,),
+        )
+    ).fetchall()
+    temporary = f"{table}__unrestricted_migration"
+    quoted = ",".join(f'"{row[1]}"' for row in kept)
+    await db.execute(f'DROP TABLE IF EXISTS "{temporary}"')
+    await db.execute(f'CREATE TABLE "{temporary}" ({",".join(definitions)})')
+    await db.execute(
+        f'INSERT INTO "{temporary}" ({quoted}) SELECT {quoted} FROM "{table}"'
+    )
+    await db.execute(f'DROP TABLE "{table}"')
+    await db.execute(f'ALTER TABLE "{temporary}" RENAME TO "{table}"')
+    for (sql,) in dependent_sql:
+        await db.execute(sql)
+
+
 def _message_milestone_for_count(count: int) -> int:
     count = max(0, int(count or 0))
     milestone = 0
@@ -478,7 +521,7 @@ class Memory:
                 await db.execute(
                     f"UPDATE users SET unrestricted_mode=COALESCE({legacy_column},0)"
                 )
-                await db.execute(f"ALTER TABLE users DROP COLUMN {legacy_column}")
+                await _rebuild_without_column(db, "users", legacy_column)
             # Game and RPG migrations for databases created by older bot versions.
             for stmt in (
                 "ALTER TABLE roast_battles ADD COLUMN turn_user INTEGER DEFAULT 0",
