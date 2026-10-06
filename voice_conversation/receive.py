@@ -124,6 +124,7 @@ class ReceiveBackend:
                 ):
                     backend.metrics["non_audio_datagrams"] += 1
                     return
+                failure_stage = "rtp_parse_errors"
                 try:
                     packet = rtp.decode_rtp(data)
                     backend.metrics["rtp_received"] += 1
@@ -149,22 +150,29 @@ class ReceiveBackend:
                         backend.metrics["dave_not_ready"] += 1
                         return
                     # Reconnect/epoch changes can replace session AND transport key.
+                    failure_stage = "transport_decrypt_errors"
                     self.decryptor.update_secret_key(
                         bytes(self.voice_client.secret_key)
                     )
                     encrypted = self.decryptor.decrypt_rtp(packet)
+                    failure_stage = "dave_decrypt_errors"
                     before = session.get_decryption_stats(uid)
                     successes = before.successes if before else 0
                     decoded = session.decrypt(uid, davey.MediaType.audio, encrypted)
                     after = session.get_decryption_stats(uid)
                     if not decoded or not after or after.successes <= successes:
+                        failure_stage = "dave_unverified_drops"
                         raise ValueError("empty_decrypted_payload")
                     packet.decrypted_data = decoded
                     backend.metrics["dave_frames"] += 1
+                    failure_stage = "packet_router_errors"
                     self.speaking_timer.notify(packet.ssrc)
                     self.packet_router.feed_rtp(packet)
                 except Exception:
                     backend.metrics["receive_errors"] += 1
+                    # Fixed categories only. Never log packet bytes, keys, or
+                    # exception text from either encryption layer.
+                    backend.metrics[failure_stage] += 1
 
         class Client(voice_recv.VoiceRecvClient):
             reader_class = Reader

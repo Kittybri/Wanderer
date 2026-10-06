@@ -137,6 +137,8 @@ class Session:
         self.state, self.active = State.IDLE, False
         self.generation, self.current_user = 0, None
         self.response_task = None
+        self.pending_response_task = None
+        self.pending_response_user = None
         self.workers = []
         self.jobs = asyncio.Queue(maxsize=limits.stt_queue)
         self.provider_slots = {"llm": asyncio.Lock(), "tts": asyncio.Lock()}
@@ -152,6 +154,14 @@ class Session:
 
     def busy(self):
         return bool(self.response_task and not self.response_task.done())
+
+    def clear_pending_response(self):
+        task = self.pending_response_task
+        self.pending_response_task = self.pending_response_user = None
+        if task and not task.done():
+            task.cancel()
+            self.metrics["dropped_pending_responses"] += 1
+        return task
 
     def decision(self, kind, uid):
         """Bounded diagnostics: categories and attribution, never speech content."""
@@ -210,6 +220,8 @@ class Session:
                 self.backend.grant(uid)
         else:
             self.participants.discard(uid)
+            if self.pending_response_user == uid:
+                self.clear_pending_response()
             if self.feature_router:
                 self.feature_router.revoke(uid)
             self.user_interrupt.pop(uid, None)
@@ -347,6 +359,8 @@ class Session:
                 utterance.pcm = b""
                 continue
             started = time.monotonic()
+            self.metrics["stt_queue_wait_ms"] = max(0, round((started - utterance.ended) * 1000))
+            self.metrics["speech_to_stt_ms"] = max(0, round((started - utterance.started) * 1000))
             if not self.response_task or self.response_task.done():
                 self.state = State.TRANSCRIBING
             try:
@@ -456,18 +470,36 @@ class Session:
                 if not self.busy() and not self.segmenter.users:
                     self.state = State.LISTENING
                 continue
-            # OFF/background input does not cancel a response already in progress.
-            if self.response_task and not self.response_task.done():
-                with contextlib.suppress(asyncio.CancelledError):
-                    await self.response_task
+            # Never wait for playback inside the STT worker: the next utterance
+            # may be a stop command. Keep only the latest bounded pending reply.
+            self.clear_pending_response()
+            if self.busy():
+                self.metrics["deferred_responses"] += 1
+                self.pending_response_user = uid
+                self.pending_response_task = asyncio.create_task(
+                    self.dispatch_response(uid, text, epoch, utterance.ended, plan)
+                )
+            else:
+                await self.dispatch_response(uid, text, epoch, utterance.ended, plan)
+
+    async def dispatch_response(self, uid, text, epoch, ended, plan):
+        try:
+            while self.active and self.busy():
+                # asyncio.wait does not cancel playback when this pending turn
+                # is superseded/revoked. OFF mode therefore remains non-interrupting.
+                remaining = self.limits.stale_seconds - (time.monotonic() - ended)
+                if remaining <= 0:
+                    self.decision("discarded_before_response", uid)
+                    return
+                await asyncio.wait({self.response_task}, timeout=remaining)
             if (
                 not self.active
                 or uid not in self.participants
                 or epoch != self.epochs[uid]
-                or time.monotonic() - utterance.ended > self.limits.stale_seconds
+                or time.monotonic() - ended > self.limits.stale_seconds
             ):
                 self.decision("discarded_before_response", uid)
-                continue
+                return
             self.focus, self.focus_until = uid, time.monotonic() + 90
             self.decision("response_scheduled", uid)
             self.current_user = uid
@@ -483,6 +515,9 @@ class Session:
                     feature_kind=plan.get("feature", ""),
                 )
             )
+        finally:
+            if self.pending_response_task is asyncio.current_task():
+                self.pending_response_task = self.pending_response_user = None
 
     def current(self, generation, uid, epoch):
         return (
@@ -631,6 +666,7 @@ class Session:
         ):
             return
         confirmed = time.monotonic()
+        self.clear_pending_response()
         self.state = State.INTERRUPTING
         self.generation += 1
         self.response_task.cancel()
@@ -660,6 +696,9 @@ class Session:
         self.state = State.LISTENING
 
     async def cancel_response(self):
+        pending = self.clear_pending_response()
+        if pending:
+            await asyncio.gather(pending, return_exceptions=True)
         self.generation += 1
         if self.response_task:
             self.response_task.cancel()

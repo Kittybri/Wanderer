@@ -399,6 +399,95 @@ def test_followup_after_first_playback_keeps_listening_and_routes_partner():
     run(check())
 
 
+def test_keyword_is_not_blocked_behind_ordinary_followup():
+    async def check():
+        s = setup()
+        s.focus_until = time.monotonic() + 90
+        s.stt.transcribe.side_effect = ["Do you like ice cream?", "stop"]
+        playing = asyncio.create_task(asyncio.sleep(30))
+        s.response_task = playing
+        await s.start()
+        try:
+            s.enqueue(Utterance(1, b"first", time.monotonic(), time.monotonic()))
+            async def observed(key, count):
+                while s.metrics[key] < count:
+                    await asyncio.sleep(0.001)
+            await asyncio.wait_for(observed("stt_success", 1), 1)
+            s.enqueue(Utterance(1, b"stop", time.monotonic(), time.monotonic()))
+            await asyncio.wait_for(observed("cancelled_responses", 1), 1)
+            await asyncio.wait_for(observed("playback_completed", 1), 1)
+            assert playing.cancelled()
+            assert s.respond.await_count == 1
+            assert s.respond.call_args.args[1] == "stop"
+        finally:
+            await s.stop()
+
+    run(check())
+
+
+@pytest.mark.parametrize("ending", ["complete", "revoke", "stop"])
+def test_deferred_followup_preserves_playback_and_user_scope(ending):
+    async def check():
+        s = setup()
+        s.focus_until = time.monotonic() + 90
+        s.interrupt_mode = "OFF"
+        s.stt.transcribe.side_effect = ["first question", "newest question"]
+        release = asyncio.Event()
+        playing = asyncio.create_task(release.wait())
+        s.response_task = playing
+        await s.start()
+        try:
+            async def pending(text):
+                s.enqueue(Utterance(1, text, time.monotonic(), time.monotonic()))
+                while s.metrics["deferred_responses"] < s.stt.transcribe.await_count or not s.stt.transcribe.await_count:
+                    await asyncio.sleep(0.001)
+            await asyncio.wait_for(pending(b"one"), 1)
+            s.enqueue(Utterance(1, b"two", time.monotonic(), time.monotonic()))
+            async def replaced():
+                while s.metrics["deferred_responses"] < 2:
+                    await asyncio.sleep(0.001)
+            await asyncio.wait_for(replaced(), 1)
+            assert not playing.done()
+            assert s.metrics["dropped_pending_responses"] == 1
+            if ending == "revoke":
+                s.consent(1, False)
+            elif ending == "stop":
+                await s.stop()
+            release.set()
+            if ending == "complete":
+                async def delivered():
+                    while not s.metrics["playback_completed"]:
+                        await asyncio.sleep(0.001)
+                await asyncio.wait_for(delivered(), 1)
+                assert s.respond.await_count == 1
+                assert s.respond.call_args.args[1] == "newest question"
+            else:
+                await asyncio.sleep(0.02)
+                s.respond.assert_not_awaited()
+        finally:
+            await s.stop()
+
+    run(check())
+
+
+def test_deferred_followup_expires_without_cancelling_playback():
+    async def check():
+        s = setup(limits=Limits(stale_seconds=2))
+        playing = asyncio.create_task(asyncio.sleep(30))
+        s.response_task = playing
+        try:
+            await asyncio.wait_for(
+                s.dispatch_response(1, "private pending", 0, time.monotonic() - 1.98, {}), 1
+            )
+            assert not playing.done()
+            assert s.metrics["discarded_before_response"] == 1
+            s.respond.assert_not_awaited()
+        finally:
+            await s.stop()
+
+    run(check())
+
+
 def test_keyword_stops_and_next_turn_gets_context():
     async def check():
         s = setup()
@@ -406,7 +495,10 @@ def test_keyword_stops_and_next_turn_gets_context():
         s.response_task = asyncio.create_task(asyncio.sleep(30))
         task = asyncio.create_task(s.transcribe_loop())
         s.enqueue(Utterance(1, b"audio", time.monotonic(), time.monotonic()))
-        await asyncio.sleep(0.02)
+        async def responded():
+            while not s.respond.await_count:
+                await asyncio.sleep(0.001)
+        await asyncio.wait_for(responded(), 1)
         assert s.metrics["cancelled_responses"] == 1
         assert "interrupted" in s.respond.call_args.args[2]
         assert s.respond.call_args.args[1] == "wait, stop"
@@ -561,6 +653,21 @@ def test_dave_reader_fail_closed_and_rotation(monkeypatch):
     dave.decrypt.side_effect = ValueError("secret")
     reader.callback(bytes(20))
     assert b.metrics["receive_errors"] == 2
+    assert b.metrics["dave_unverified_drops"] == 1
+    assert b.metrics["dave_decrypt_errors"] == 1
+    reader.decryptor.decrypt_rtp.side_effect = ValueError("PRIVATE_KEY")
+    reader.callback(bytes(20))
+    assert b.metrics["transport_decrypt_errors"] == 1
+    reader.decryptor.decrypt_rtp.side_effect = None
+    dave.decrypt.side_effect = decrypt
+    reader.packet_router.feed_rtp.side_effect = ValueError("PRIVATE_PACKET")
+    reader.callback(bytes(20))
+    assert b.metrics["packet_router_errors"] == 1
+    monkeypatch.setattr(rtp, "decode_rtp", Mock(side_effect=ValueError("PRIVATE_RTP")))
+    reader.callback(bytes(20))
+    assert b.metrics["rtp_parse_errors"] == 1
+    assert b.metrics["receive_errors"] == 5
+    assert "PRIVATE" not in str(b.metrics)
 
 
 @pytest.mark.parametrize("uid,category", [(None, "unknown_speaker_drops"), (2, "ineligible_speaker_drops")])
