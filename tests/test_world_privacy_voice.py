@@ -295,7 +295,10 @@ def test_preference_migration_existing_and_fresh(tmp_path,monkeypatch):
     run(check())
 
 
-def test_legacy_mature_mode_is_preserved_under_unrestricted_name(tmp_path, monkeypatch):
+@pytest.mark.parametrize("legacy_value", [0, 1])
+def test_retired_mode_value_is_preserved_once_for_unrestricted(
+    tmp_path, monkeypatch, legacy_value
+):
     import memory
     monkeypatch.setattr(memory, "_data_dir", str(tmp_path))
     monkeypatch.setattr(memory, "DB_PATH", str(tmp_path / "bot.db"))
@@ -313,17 +316,52 @@ def test_legacy_mature_mode_is_preserved_under_unrestricted_name(tmp_path, monke
             )
             await db.execute(
                 f"INSERT INTO users(user_id,username,display_name,{legacy_column}) "
-                "VALUES(71,'legacy','Legacy',1)"
+                "VALUES(71,'legacy','Legacy',?)",
+                (legacy_value,),
             )
             await db.commit()
         await mem.init()
-        assert (await mem.get_user(71))["unrestricted_mode"] is True
+        assert (await mem.get_user(71))["unrestricted_mode"] is bool(legacy_value)
         async with aiosqlite.connect(mem.db_path) as db:
             columns = {
                 row[1]
                 for row in await (await db.execute("PRAGMA table_info(users)")).fetchall()
             }
-        assert legacy_column not in columns
+        assert legacy_column in columns
+        await mem.set_mode(71, "unrestricted_mode", not bool(legacy_value))
+        await mem.init()
+        assert (await mem.get_user(71))["unrestricted_mode"] is not bool(legacy_value)
+        async with aiosqlite.connect(mem.db_path) as db:
+            marker_count = (
+                await (
+                    await db.execute(
+                        "SELECT COUNT(*) FROM preference_name_migrations "
+                        "WHERE name='unrestricted_mode_v1'"
+                    )
+                ).fetchone()
+            )[0]
+        assert marker_count == 1
+
+    run(check())
+
+
+def test_fresh_database_uses_only_unrestricted_mode_name(tmp_path, monkeypatch):
+    import memory
+    monkeypatch.setattr(memory, "_data_dir", str(tmp_path))
+    monkeypatch.setattr(memory, "DB_PATH", str(tmp_path / "fresh.db"))
+    monkeypatch.setattr(memory, "SHARED_DB_PATH", str(tmp_path / "shared.db"))
+    mem = memory.Memory("fresh")
+
+    async def check():
+        import aiosqlite
+        await mem.init()
+        async with aiosqlite.connect(mem.db_path) as db:
+            columns = {
+                row[1]
+                for row in await (await db.execute("PRAGMA table_info(users)")).fetchall()
+            }
+        assert "unrestricted_mode" in columns
+        assert "ns" + "fw_mode" not in columns
 
     run(check())
 

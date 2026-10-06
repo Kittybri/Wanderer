@@ -1,7 +1,12 @@
 import asyncio
+import importlib
 from pathlib import Path
 import sqlite3
+import sys
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
+
+import pytest
 
 from awareness_features import credential_disclosure
 from anti_repeat import is_fallback_reply
@@ -13,6 +18,50 @@ from provider_config import resolve_groq_model
 
 def run(coro):
     return asyncio.run(coro)
+
+
+def load_runtime(monkeypatch, tmp_path):
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+    monkeypatch.setenv("GROQ_API_KEY_2", "")
+    monkeypatch.setenv("GROQ_API_KEY_3", "")
+    monkeypatch.setattr(memory_module, "_data_dir", str(tmp_path))
+    monkeypatch.setattr(memory_module, "DB_PATH", str(tmp_path / "wanderer.db"))
+    monkeypatch.setattr(memory_module, "SHARED_DB_PATH", str(tmp_path / "shared.db"))
+    monkeypatch.delitem(sys.modules, "character_vision", raising=False)
+    importlib.invalidate_caches()
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    return importlib.import_module("bot"), loop
+
+
+@pytest.mark.parametrize(
+    "mode,current,expected",
+    [("on", False, True), ("off", True, False), (None, False, True)],
+)
+def test_unrestricted_command_reads_and_writes_renamed_preference(
+    monkeypatch, tmp_path, mode, current, expected
+):
+    runtime, loop = load_runtime(monkeypatch, tmp_path)
+    setup = AsyncMock(return_value={"unrestricted_mode": current})
+    set_mode = AsyncMock()
+    reply = AsyncMock()
+    monkeypatch.setattr(runtime, "_setup", setup)
+    monkeypatch.setattr(runtime.mem, "set_mode", set_mode)
+    monkeypatch.setattr(runtime, "safe_reply", reply)
+    ctx = SimpleNamespace(author=SimpleNamespace(id=73))
+
+    try:
+        loop.run_until_complete(
+            runtime.bot.get_command("unrestricted").callback(ctx, mode)
+        )
+    finally:
+        loop.close()
+        asyncio.set_event_loop(None)
+
+    setup.assert_awaited_once_with(ctx)
+    set_mode.assert_awaited_once_with(73, "unrestricted_mode", expected)
+    reply.assert_awaited_once()
+    assert runtime.bot.get_command("ns" + "fw") is None
 
 
 def test_credential_guard_is_narrow_and_catches_obvious_disclosures():
