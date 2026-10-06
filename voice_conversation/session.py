@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from difflib import SequenceMatcher
 import io
 import queue
 import re
@@ -12,6 +13,40 @@ from collections import Counter, deque
 from enum import Enum
 
 from .speech import Limits, Segmenter, chunks
+
+
+def is_interrupt_keyword(text: str, name: str) -> bool:
+    """Recognize short spoken barge-in commands despite ordinary STT variation."""
+    words = re.findall(r"[a-z0-9]+", (text or "").lower())
+    while words and words[0] in {"hey", "okay", "ok", "um", "uh", "please"}:
+        words.pop(0)
+    if not words:
+        return False
+
+    # A command may follow the character's name or a little ASR filler. Keep the
+    # window short so a later conversational use of these words is not a barge-in.
+    opening = words[:6]
+    if any(word in {"wait", "stop", "no", "listen"} for word in opening):
+        return True
+    if any(
+        opening[index : index + 2] in (["hold", "on"], ["shut", "up"])
+        for index in range(max(0, len(opening) - 1))
+    ):
+        return True
+
+    aliases = {name.lower()}
+    if name.lower() == "scaramouche":
+        aliases.add("scara")
+    # Preserve the old name-only barge-in while accepting common ways speech
+    # recognition splits or slightly misspells the character name.
+    for width in range(1, min(3, len(opening)) + 1):
+        candidate = "".join(opening[:width])
+        for alias in aliases:
+            if candidate == alias:
+                return True
+            if len(candidate) >= 7 and SequenceMatcher(None, candidate, alias).ratio() >= 0.78:
+                return True
+    return False
 
 
 class State(str, Enum):
@@ -347,18 +382,17 @@ class Session:
                 self.decision("discarded_echo", uid)
                 continue
             mode = self.user_interrupt.get(uid, self.interrupt_mode)
-            names = (
-                r"scaramouche|scara"
-                if self.name == "scaramouche"
-                else re.escape(self.name)
-            )
-            keyword = re.match(
-                r"^(?:wait|stop|hold on|shut up|no|listen|" + names + r")\b",
-                text.strip(),
-                re.I,
-            )
-            if mode == "KEYWORD" and keyword and uid == self.focus:
-                await self.interrupt(uid, utterance.started)
+            if mode == "KEYWORD" and uid == self.focus:
+                keyword = is_interrupt_keyword(text, self.name)
+                if keyword:
+                    self.decision("interrupt_keyword_detected", uid)
+                    if self.busy():
+                        self.metrics["interrupt_attempted"] += 1
+                        await self.interrupt(uid, utterance.started)
+                    else:
+                        self.decision("interrupt_arrived_after_playback", uid)
+                elif self.busy():
+                    self.decision("interrupt_keyword_missed", uid)
             continuing = bool(
                 re.search(r"(?:maybe|because|and|but|so|\.\.\.)\s*$", text, re.I)
             )

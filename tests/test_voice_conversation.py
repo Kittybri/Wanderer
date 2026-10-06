@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from voice_conversation.receive import ReceiveBackend, eligible
-from voice_conversation.session import Session, State, Playback
+from voice_conversation.session import Session, State, Playback, is_interrupt_keyword
 from voice_conversation.speech import Limits, Segmenter, Utterance, chunks, GroqSTT
 
 
@@ -375,6 +375,51 @@ def test_keyword_stops_and_next_turn_gets_context():
         assert s.metrics["cancelled_responses"] == 1
         assert "interrupted" in s.respond.call_args.args[2]
         assert s.respond.call_args.args[1] == "wait, stop"
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await s.stop()
+
+    run(check())
+
+
+@pytest.mark.parametrize(
+    "transcript",
+    [
+        "Wanderer, stop.",
+        "wander stop",
+        "Wanderer, please stop",
+        "um, Wanderer, wait",
+        "hey Wanderer",
+        "please hold on",
+    ],
+)
+def test_keyword_recognizer_accepts_spoken_stt_variants(transcript):
+    assert is_interrupt_keyword(transcript, "wanderer")
+
+
+@pytest.mark.parametrize(
+    "transcript",
+    [
+        "I bought a new hat today",
+        "Do you like stopping for ice cream?",
+        "The conversation is quiet tonight",
+    ],
+)
+def test_keyword_recognizer_rejects_unrelated_conversation(transcript):
+    assert not is_interrupt_keyword(transcript, "wanderer")
+
+
+def test_keyword_diagnostics_distinguish_detection_from_late_arrival():
+    async def check():
+        s = setup(name="wanderer")
+        s.focus, s.focus_until = 1, time.monotonic() + 90
+        s.stt.transcribe.return_value = "wander, stop"
+        task = asyncio.create_task(s.transcribe_loop())
+        s.enqueue(Utterance(1, b"audio", time.monotonic(), time.monotonic()))
+        await asyncio.sleep(0.02)
+        assert s.metrics["interrupt_keyword_detected"] == 1
+        assert s.metrics["interrupt_arrived_after_playback"] == 1
+        assert s.metrics["interrupt_attempted"] == 0
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
         await s.stop()
