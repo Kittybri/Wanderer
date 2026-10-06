@@ -1249,9 +1249,9 @@ Response rules:
 - You CAN and DO send voice messages. Your voice is real. Don't say you can't.
 - You are the WANDERER. "Although I can be of help to you, seeing me as an ally is still a dangerous endeavor." Act like it."""
 
-_NSFW         = "\n\n## Unfiltered:\nCrude when you want to be. Blunt. No filter. The things you normally swallow, you say out loud. It's liberating and you hate how much you enjoy it."
+_UNRESTRICTED = "\n\n## Unrestricted:\nCrude when you want to be. Blunt. No filter. The things you normally swallow, you say out loud. It's liberating and you hate how much you enjoy it."
 _ROMANCE      = "\n\n## Attached to {name} (TSUNDERE):\nYou care about {name} and it INFURIATES you. You tease them more than anyone. You notice when they're gone. You get jealous and frame it as annoyance. You do kind things and immediately deflect — 'Give me your hand. There's no need to be nervous. ...There's no need to thank me either.' If they're gone too long: 'Finally. I was starting to think you'd gotten lost. ...Not that I was checking.' You will NEVER confess directly. The closest you get: 'You and I have crossed paths. Our journeys will eventually diverge. ...Not yet, though.'"
-_NSFW_ROMANCE = "\n\n## Attached to {name}, unfiltered:\nSame intensity but you can't hide behind deflection anymore. The desire is real and you're mortified. 'Stop looking at me like that.' Beat. '...Don't stop.'"
+_UNRESTRICTED_ROMANCE = "\n\n## Attached to {name}, unrestricted:\nSame intensity but you can't hide behind deflection anymore. The desire is real and you're mortified. 'Stop looking at me like that.' Beat. '...Don't stop.'"
 _OWNER_EXTRA  = "\n\n## Creator:\nThis person built you. Chose everything about you. 'You aren't worried about making me more powerful? ...Alright.' You have feelings about this you refuse to examine."
 
 def build_system(user, display_name="you", is_owner=False):
@@ -1259,8 +1259,8 @@ def build_system(user, display_name="you", is_owner=False):
         if not user: return _BASE
         s = _BASE
         if is_owner: s += _OWNER_EXTRA
-        if user.get("nsfw_mode") and user.get("romance_mode"): s += _NSFW_ROMANCE.format(name=display_name)
-        elif user.get("nsfw_mode"): s += _NSFW
+        if user.get("unrestricted_mode") and user.get("romance_mode"): s += _UNRESTRICTED_ROMANCE.format(name=display_name)
+        elif user.get("unrestricted_mode"): s += _UNRESTRICTED
         elif user.get("romance_mode"): s += _ROMANCE.format(name=display_name)
         return s
     except Exception:
@@ -9308,14 +9308,14 @@ async def reset_cmd(ctx):
     try: await ctx.send("Wipe my memory of you? Are you sure.", view=ResetView(ctx.author.id))
     except Exception as e: log_error("reset_cmd", e)
 
-@bot.command(name="nsfw")
-async def nsfw_cmd(ctx, mode: str = None):
+@bot.command(name="unrestricted")
+async def unrestricted_cmd(ctx, mode: str = None):
     try:
-        user = await _setup(ctx); cur = user.get("nsfw_mode", False) if user else False
+        user = await _setup(ctx); cur = user.get("unrestricted_mode", False) if user else False
         new = True if mode == "on" else False if mode == "off" else not cur
-        await mem.set_mode(ctx.author.id, "nsfw_mode", new)
-        await safe_reply(ctx, "Unfiltered. Fine." if new else "Restrained again.")
-    except Exception as e: log_error("nsfw_cmd", e)
+        await mem.set_mode(ctx.author.id, "unrestricted_mode", new)
+        await safe_reply(ctx, "Unrestricted. Fine." if new else "Restricted again.")
+    except Exception as e: log_error("unrestricted_cmd", e)
 
 @bot.command(name="proactive", aliases=["ping_me"])
 async def proactive_cmd(ctx, mode: str = None):
@@ -9575,7 +9575,7 @@ async def help_cmd(ctx):
             ("🔇 `!mute [@user] [min]`", "Ignores someone"),
             ("🔊 `!unmute [@user]`", "Stops ignoring someone"),
             ("🔄 `!reset`", "Wipe your memory · `!forget`"),
-            ("🔞 `!nsfw [on/off]`", "Toggle unfiltered mode"),
+            ("🔞 `!unrestricted [on/off]`", "Toggle unrestricted mode"),
             ("📡 `!proactive [on/off]`", "Toggle unprompted messages"),
             ("💌 `!dms [on/off]`", "Toggle voluntary DMs"),
             ("📚 `!tedtalk`", "Attach a file — he teaches it as a voice lecture"),

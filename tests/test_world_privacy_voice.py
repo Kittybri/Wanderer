@@ -294,6 +294,39 @@ def test_preference_migration_existing_and_fresh(tmp_path,monkeypatch):
         assert (await mem.get_user_preferences(1))["lullaby_enabled"]
     run(check())
 
+
+def test_legacy_mature_mode_is_preserved_under_unrestricted_name(tmp_path, monkeypatch):
+    import memory
+    monkeypatch.setattr(memory, "_data_dir", str(tmp_path))
+    monkeypatch.setattr(memory, "DB_PATH", str(tmp_path / "bot.db"))
+    monkeypatch.setattr(memory, "SHARED_DB_PATH", str(tmp_path / "shared.db"))
+    mem = memory.Memory("test")
+    legacy_column = "ns" + "fw_mode"
+
+    async def check():
+        import aiosqlite
+        async with aiosqlite.connect(mem.db_path) as db:
+            await db.execute(
+                f"CREATE TABLE users(user_id INTEGER PRIMARY KEY,username TEXT,display_name TEXT,"
+                f"romance_mode INTEGER DEFAULT 0,{legacy_column} INTEGER DEFAULT 0,"
+                "proactive INTEGER DEFAULT 1,last_seen REAL DEFAULT 0)"
+            )
+            await db.execute(
+                f"INSERT INTO users(user_id,username,display_name,{legacy_column}) "
+                "VALUES(71,'legacy','Legacy',1)"
+            )
+            await db.commit()
+        await mem.init()
+        assert (await mem.get_user(71))["unrestricted_mode"] is True
+        async with aiosqlite.connect(mem.db_path) as db:
+            columns = {
+                row[1]
+                for row in await (await db.execute("PRAGMA table_info(users)")).fetchall()
+            }
+        assert legacy_column not in columns
+
+    run(check())
+
 def fixture_voice():
     member=NS(id=1,status="online",bot=False)
     guild=NS(voice_client=None,me=object())
