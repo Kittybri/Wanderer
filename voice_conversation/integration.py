@@ -31,7 +31,6 @@ class VoiceConversation:
         self.sessions = {}
         self.features = None
         self.lock = None
-        self.auto_listen = os.getenv("VOICE_AUTO_LISTEN", "0").lower() in {"1", "true", "yes"}
         self.greeting_tasks = {}
         self.greeted = {}
         self.allowed = frozenset(
@@ -96,8 +95,7 @@ class VoiceConversation:
         if getattr(after.channel, "id", None) != session.channel_id:
             session.consent(member.id, False)
         elif (
-            self.auto_listen
-            and not member.bot
+            not member.bot
             and getattr(before.channel, "id", None) != session.channel_id
         ):
             if await self.enroll(session, member, announce=True):
@@ -189,8 +187,7 @@ class VoiceConversation:
             await self.send(
                 ctx,
                 "Live voice: inactive. Use `!voice start scaramouche` or `!voice start wanderer` in an allowed VC. "
-                + ("Listening is automatic for humans with voice enabled." if self.auto_listen
-                   else "Each participant must use `!voice listen on`."),
+                "Listening is automatic for humans with voice enabled.",
             )
             return
         info = session.status()
@@ -200,8 +197,7 @@ class VoiceConversation:
             f"receive speech verified={info['receive_proven']} (connection alone is not proof). "
             f"Targeting={info['mode']}; interruption={info['interrupt']}; "
             f"participants={info['participants']}; queued utterances={info['pending_audio']}. "
-            + ("Automatic listening; " if self.auto_listen else "Opt out: `!voice listen off`; ")
-            + "end session: `!voice stop`.",
+            + "Automatic listening; end session: `!voice stop`.",
         )
 
     async def command(self, ctx, message):
@@ -238,7 +234,6 @@ class VoiceConversation:
             "join",
             "stop",
             "leave",
-            "listen",
             "mode",
             "interrupt",
             "diagnostics",
@@ -251,7 +246,7 @@ class VoiceConversation:
         if not ctx.guild:
             await self.send(ctx, "Live voice controls require a server voice channel.")
             return True
-        # Serialize joins/leave/consent commands; no duplicate sessions on concurrent joins.
+        # Serialize session controls; no duplicate sessions on concurrent joins.
         if self.lock is None:
             self.lock = asyncio.Lock()
         async with self.lock:
@@ -270,7 +265,7 @@ class VoiceConversation:
                 await self.leave(ctx.guild.id)
                 await self.send(
                     ctx,
-                    "Live voice ended; ephemeral audio and session consent cleared.",
+                    "Live voice ended; ephemeral audio and temporary speaker state cleared.",
                 )
             else:
                 await self.send(
@@ -311,14 +306,6 @@ class VoiceConversation:
                         filename="voice-health.json",
                     ),
                 )
-            return
-        if action == "listen" and parts[1:] == ["off"]:
-            if session:
-                session.consent(ctx.author.id, False)
-            await self.send(
-                ctx,
-                "Your voice consent is off. Queued audio is discarded; no new speech from you will be transcribed. An already-sent provider request cannot be recalled.",
-            )
             return
         temporary = self.features.games.temporary_channels if self.features else set()
         if not channel or (
@@ -368,8 +355,7 @@ class VoiceConversation:
                 # Public notice in the VC's own text chat, not a possibly private invocation channel.
                 await channel.send(
                     "Live voice conversation is starting. Speech is sent to Groq for transcription; relevant conversation follows ordinary bot memory rules. No raw recording is saved. "
-                    + ("Humans in this channel are heard automatically; no opt-in command is needed. Your `!voice off` preference disables listening. "
-                       if self.auto_listen else "The starter opts in; everyone else must use `!voice listen on`. ")
+                    + "Humans in this channel are heard automatically; no per-session enrollment command is needed. Your `!voice off` preference disables listening. "
                     + "Stop: `!voice stop`.",
                     allowed_mentions=discord.AllowedMentions.none(),
                 )
@@ -443,9 +429,8 @@ class VoiceConversation:
                     self.features.attach(session, ctx.guild.id)
                 await backend.start(vc)
                 await session.start()
-                if self.auto_listen:
-                    for member in getattr(channel, "members", ()):
-                        await self.enroll(session, member)
+                for member in getattr(channel, "members", ()):
+                    await self.enroll(session, member)
                 await self.status(ctx)
             except Exception:
                 if session:
@@ -461,25 +446,6 @@ class VoiceConversation:
             await self.send(
                 ctx, "Start a session in your allowed VC first: `!voice start`."
             )
-            return
-        if action == "listen" and parts[1:] == ["on"]:
-            prefs = await self.mem.get_user_preferences(ctx.author.id)
-            if not prefs.get("voice_enabled", True):
-                await self.send(
-                    ctx, "Enable your voice preference with `!voice on` first."
-                )
-                return
-            try:
-                newly_joined = ctx.author.id not in session.participants
-                session.consent(ctx.author.id, True)
-                await self.send(
-                    ctx,
-                    "You opted in for this session. Speech goes to Groq for transcription; relevant turns use ordinary memory. Raw audio is not saved. `!voice listen off` revokes consent.",
-                )
-                if newly_joined and session.active and ctx.author.id in session.participants:
-                    self.queue_greeting(session, ctx.author)
-            except ValueError:
-                await self.send(ctx, "This session has reached its participant limit.")
             return
         if (
             action == "interrupt"
@@ -516,7 +482,7 @@ class VoiceConversation:
         else:
             await self.send(
                 ctx,
-                "Controls: `start`, `stop`, `listen on/off`, `mode direct_only/conversation/active_room`, `interrupt off/keyword/natural`, `interrupt me off/keyword/natural`, `status`, `diagnostics`. Prefix each with `!voice `.",
+                "Controls: `start`, `stop`, `mode direct_only/conversation/active_room`, `interrupt off/keyword/natural`, `interrupt me off/keyword/natural`, `status`, `diagnostics`. Prefix each with `!voice `.",
             )
             return
         await self.status(ctx)

@@ -63,32 +63,29 @@ credentials normally; never paste credentials into chat. Grant View Channel,
 Connect, Speak and Send Messages in the VC's text chat. Each session needs a
 public transcription notice there before the bot connects/listens.
 
-## Controls and listening consent
+## Controls and automatic listening
 
-By default, `VOICE_AUTO_LISTEN=0`: starting a session enrolls only its starter;
-other humans must use `!voice listen on` for each session. Merely entering the
-channel does not enroll anyone. Newly consenting participants receive an
-in-character greeting when the bot is free. Greetings expire after 20 seconds
-and have a 60-second per-user cooldown. Bots are never enrolled.
-
-The existing optional `VOICE_AUTO_LISTEN=1` mode remains available to configured
-deployments, but is not the default. It enrolls eligible humans after a public
-notice, subject to the participant bound and stored voice-enabled preferences.
+Starting a session automatically includes eligible humans who are already in the
+channel. Eligible humans who arrive later are included automatically after the
+public transcription notice and receive a bounded in-character greeting when the
+bot is free. Greetings expire after 20 seconds and have a 60-second per-user
+cooldown. Bots are never included. Leaving the channel immediately removes the
+human from the live routing set; rejoining includes them again automatically.
+The bounded participant limit and stored `!voice off` preference remain enforced.
 
 | Command | Behavior |
 | --- | --- |
-| `!voice start scaramouche` / `start wanderer` | Join only the named bot to your allowlisted VC; starter explicitly participates |
+| `!voice start scaramouche` / `start wanderer` | Join only the named bot to your allowlisted VC; eligible humans are included automatically |
 | `!voice start` / `join` | Existing shared command; both online bots may join |
-| `!voice listen on/off` | Opt into or revoke your own participation for this session |
 | `!voice stop` / `leave` | Initiator or server manager ends the whole session |
 | `!voice mode direct_only` | Optional strict mode requiring the bot's spoken name |
 | `!voice mode conversation` | Default: answer the focused participant for 90 seconds after playback; explicit partner addressing clears focus |
-| `!voice mode active_room` | Answer any consenting participant; never nonparticipants |
+| `!voice mode active_room` | Answer any eligible human in the active room; never bots or people outside it |
 | `!voice interrupt keyword` | Default: focused speaker + clear interruption phrase |
 | `!voice interrupt natural` | Focused participant's sustained speech can stop output |
 | `!voice interrupt off` | Finish current output before handling another turn |
 | `!voice interrupt me natural` | Override your own session interruption preference |
-| `!voice status` / `session status` | State, targeting, consent count and receive evidence |
+| `!voice status` / `session status` | State, targeting, active-human count and receive evidence |
 | `!voice diagnostics` | Owner-only DM attachment with sanitized metrics/events |
 
 Session-wide mode changes require initiator/server-manager authority. Owner status

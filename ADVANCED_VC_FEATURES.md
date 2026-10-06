@@ -90,13 +90,12 @@ No production configuration or permissions are changed by this branch.
 | `!vcgame cancel` / `leave` | Participant or manager ends the game; never prevents manual departure |
 | `!vcgame status` / `help` | Your active games or syntax |
 
-Party opt-in is separate from `!voice listen on`. Every human must consent to
-listening in each bot's session. Persistent game consent requires both master and
-specific preference. An explicit self-invitation or matching `accept` provides
-one-time game consent instead. Nobody can accept on another person's behalf. A
-manager's authority to invite does not grant consent. Interrogation acceptance
-includes the existing voice pipeline, with the usual visible listening notice.
-Other humans who enter the room are not automatically listened to.
+Party-game opt-in remains separate from ordinary voice conversation. Eligible
+humans in an active voice session are listened to automatically after the visible
+transcription notice, while persistent game consent still requires both master
+and specific preferences. An explicit self-invitation or matching `accept`
+provides one-time game consent instead. Nobody can accept on another person's
+behalf, and a manager's authority to invite does not grant game consent.
 
 `off` and `forget` work even in DMs or after a guild disables features. Revocation
 cancels current output for that user and clears local feature caches. Existing
