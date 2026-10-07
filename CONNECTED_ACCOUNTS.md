@@ -14,14 +14,40 @@ voice evidence does **not** establish Gate B completion. The canonical existing
 staging record is [Scaramouche's STAGING_VALIDATION.md](https://github.com/Kittybri/scaramouche/blob/feature/connected-accounts-google/STAGING_VALIDATION.md);
 no competing Wanderer staging report is created.
 
-**Live Google linking is not validated or deployed.** At preflight the staging host
+**Historical preflight (superseded by the staging closure record):** At preflight the staging host
 had no configured Google OAuth client/redirect/master-key variables and no callback
 service or HTTPS reverse proxy listening. Google's app publishing status, approved
 test-user list, domain/certificate, API enablement and verification status are
 **unknown**, not assumed to be Production. Automated validation uses synthetic
 credentials and fake Google responses only.
 
-## Architecture
+## Phase 1 closure checkpoint — 2026-10-06
+
+Canonical live evidence is maintained in Scaramouche's
+[STAGING_VALIDATION.md](https://github.com/Kittybri/scaramouche/blob/feature/connected-accounts-google/STAGING_VALIDATION.md),
+not a second competing report here. Current deployed Wanderer code is
+`aad50ac9b9b2a83e2f9135f0a06b47ee22d9557a`, including private `/google` and help discovery.
+Fresh full regression: **318 passed, 1 skipped, 1 warning**. Additional connections,
+discovery and release-hardening run: **83 passed**. All 76 tracked Python files
+compile. The 109-file secret-pattern scan had one reviewed delimiter-only test
+fixture match and no credentials. Optional Opus test is skipped without its library;
+the warning is local urllib3/LibreSSL. No Phase 2 work or provider data writes.
+
+Two-user/two-bot Calendar and Tasks identity-bound reads passed. B disconnect
+revoked B only; A's account/credentials/grants/sessions stayed byte-identical and
+its reads continued. B was personally reconnected via Wanderer and passed new
+Wanderer reads with distinct Google identities. B's renewed Scaramouche grant and
+final both-bot reconnect retest are still pending. Expanded closure is **NOT_READY**
+until that step finishes. Earlier refresh, restart persistence, HTTPS and database
+checks remain documented in the canonical record. PR #10 stays draft/unmerged and
+mergeable, with a failing external Cloudflare check also present on the release base.
+
+Production remains a separate operator/Google approval task: complete accurate
+branding/homepage/privacy policy and domain verification, declare actual Calendar/
+Tasks scopes, and address applicable brand/sensitive-scope verification before a
+public launch. Existing Sheets-client settings are not to be silently replaced.
+
+## Architecture (implementation)
 
 Both bots and the separate callback process use the **same existing shared SQLite
 database**. `ConnectedAccountService` owns authorization; neither character's LLM
