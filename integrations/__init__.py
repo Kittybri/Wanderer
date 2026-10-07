@@ -7,4 +7,8 @@ from .services import (
     load_integration_config,
 )
 
+from .config import IntegrationConfig, load_integration_config
+from .google_services import GoogleCalendarService, GoogleSheetsService, GoogleTasksService
+from .http import IntegrationErrorCategory, IntegrationForbiddenError
+
 __all__ = [name for name in globals() if not name.startswith("_")]
