@@ -9514,6 +9514,8 @@ async def help_cmd(ctx):
     try:
         c = 0x6B7FD7
         e1 = discord.Embed(title="Commands (1/3) — Talk & Fight", description="*I'll say this once.*", color=c)
+        from connections.discord_ui import GOOGLE_HELP
+        e1.description += "\n\n" + GOOGLE_HELP
         for n, v in [
             ("🚶 `!wander`", "A thought while walking — unique to Wanderer"),
             ("🪞 `!reflect <topic>`", "A genuine, layered take — unique to Wanderer"),

@@ -19,6 +19,13 @@ MESSAGES = {
     "ACCOUNT_CHANGED": "Your Google connection changed. Run !google for a fresh account panel.",
 }
 
+GOOGLE_HELP = (
+    "**Google account — `!google` or `/google`**\n"
+    "Open your private panel, click **Connect Google**, then approve and confirm "
+    "your own account. Calendar and Tasks only; choose which bot may use it. "
+    "Writes need a separate confirmation. Google Testing requires an approved test user."
+)
+
 
 class OwnerView(discord.ui.View):
     def __init__(self, controller, user_id):
@@ -104,9 +111,11 @@ class Manage(OwnerView):
 
 
 class ConnectionsController(commands.Cog):
-    def __init__(self, bot, service, runtime, bot_name, deletion_pending):
+    def __init__(self, bot, service, runtime, bot_name, deletion_pending, *, sync_google=False):
         self.bot, self.service, self.runtime = bot, service, runtime
         self.bot_name, self.deletion_pending = bot_name, deletion_pending
+        self.sync_google = sync_google
+        self._google_synced = False
 
     async def panel(self, user, *, connect=False, disconnect=False):
         if await self.deletion_pending(user.id):
@@ -165,6 +174,28 @@ class ConnectionsController(commands.Cog):
             await self.command(ctx)
             return False
 
+    async def slash_panel(self, interaction: discord.Interaction):
+        # Acknowledge before SQLite work; all account controls stay private even
+        # when invoked in a guild, and do not require the user's DMs to be open.
+        await interaction.response.defer(ephemeral=True)
+        try:
+            content, embed, view = await self.panel(interaction.user)
+            await interaction.edit_original_response(
+                content=content, embed=embed, view=view,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except ConnectionError as exc:
+            await interaction.edit_original_response(
+                content=MESSAGES.get(exc.code, "Account controls are unavailable. Try again later."),
+                embed=None, view=None,
+            )
+        except Exception:
+            # Never send or log exception text that could include OAuth details.
+            await interaction.edit_original_response(
+                content="Account controls are unavailable. Try /google again later.",
+                embed=None, view=None,
+            )
+
     @tasks.loop(seconds=15)
     async def notices(self):
         if not self.service.configured:
@@ -184,6 +215,22 @@ class ConnectionsController(commands.Cog):
             await self.bot.add_cog(self)
         if not self.notices.is_running():
             self.notices.start()
+        await self.sync_google_command()
+
+    async def sync_google_command(self):
+        if not self.sync_google or self._google_synced:
+            return
+        # Scaramouche has legacy remote commands absent from its local tree.
+        # Upsert only this command: bulk tree.sync() would delete those commands.
+        # Wanderer uses its existing complete-tree startup synchronization.
+        command = self.bot.tree.get_command("google")
+        try:
+            await self.bot.http.upsert_global_command(
+                self.bot.application_id, command.to_dict(self.bot.tree),
+            )
+        except discord.HTTPException:
+            return  # Retry on the next ready event; never log credential context.
+        self._google_synced = True
 
     async def cog_unload(self):
         worker = self.notices.get_task()
@@ -192,6 +239,10 @@ class ConnectionsController(commands.Cog):
             await asyncio.gather(worker, return_exceptions=True)
 
     def install(self):
+        @self.bot.tree.command(name="google", description="Privately connect Google or manage Calendar, Tasks and bot access.")
+        async def google_slash(interaction: discord.Interaction):
+            await self.slash_panel(interaction)
+
         @self.bot.command(name="connections")
         async def connections_cmd(ctx):
             await self.command(ctx)

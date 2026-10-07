@@ -60,6 +60,14 @@ No old credentials are silently imported and no existing table is rewritten.
 
 ## Discord workflow
 
+`!google` is the main prefix command, highlighted in the character's help menu.
+`/google` opens the same controls as a private (ephemeral) slash-command response,
+including in a server with DMs closed. The prefix aliases below still work and
+continue to deliver the panel by DM. Each friend links their own Google account
+and explicitly chooses each bot's grant. While the Google OAuth app is in Testing,
+the operator must first approve that friend's Google account as a test user;
+Discord command visibility does not bypass Google's test-user restrictions.
+
 1. `!connections`, `!google`, `!google status`, or `!google permissions` sends a DM
    panel. Guild replies contain no identity, account link or token.
 2. `!google connect` includes an actual Discord LINK button to

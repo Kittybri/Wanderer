@@ -439,6 +439,8 @@ async def test_discord_link_button_and_unique_registration(env):
         return False
     ui = ConnectionsController(bot, env.service, rt, "scaramouche", pending).install()
     assert bot.get_command("connections")
+    assert bot.tree.get_command("google")
+    assert bot.tree.get_command("google").default_permissions is None
     assert {c.name for c in bot.get_command("google").commands} == {"connect", "status", "permissions", "disconnect"}
     _, _, view = await ui.panel(SimpleNamespace(id=1))
     link_button = next(child for child in view.children if child.style == discord.ButtonStyle.link)
@@ -696,5 +698,6 @@ async def test_actual_bot_command_registration_and_privacy_wiring(monkeypatch, t
     names = [command.qualified_name for command in module.bot.walk_commands()]
     assert len(names) == len(set(names))
     assert module.CLOUD_INTEGRATIONS.connections is module.CONNECTIONS
+    assert module.bot.tree.get_command("google")
     assert module.CONNECTIONS.store.path == module.mem.shared_db_path
     assert {"connected_accounts", "connected_accounts_final", "connected_proposals"} <= set(module.PRIVACY_DELETION.stages)
