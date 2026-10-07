@@ -37,10 +37,14 @@ Two-user/two-bot Calendar and Tasks identity-bound reads passed. B disconnect
 revoked B only; A's account/credentials/grants/sessions stayed byte-identical and
 its reads continued. B was personally reconnected via Wanderer and passed new
 Wanderer reads with distinct Google identities. B's renewed Scaramouche grant and
-final both-bot reconnect retest are still pending. Expanded closure is **NOT_READY**
-until that step finishes. Earlier refresh, restart persistence, HTTPS and database
-checks remain documented in the canonical record. PR #10 stays draft/unmerged and
-mergeable, with a failing external Cloudflare check also present on the release base.
+final both-bot reconnect retest subsequently passed. Both accounts' encrypted
+credentials/grants/sessions remained byte-identical across a restart of both bots
+and callback, followed by successful reads for both users through both bot grants.
+Expanded Phase 1 closure is **READY_FOR_MERGE**. Earlier real refresh, HTTPS and
+current database checks remain documented in the canonical record. The complete
+suite rerun on checkpoint ffe984ac also passed (318 passed, 1 skipped, 1 warning).
+PR #10 stays draft/unmerged and mergeable. External Cloudflare failures (also on
+the release base) and Google Production readiness are separate from code validation.
 
 Production remains a separate operator/Google approval task: complete accurate
 branding/homepage/privacy policy and domain verification, declare actual Calendar/
