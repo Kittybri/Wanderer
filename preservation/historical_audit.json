@@ -1,0 +1,3139 @@
+{
+  "schema_version": 1,
+  "bot": "wanderer",
+  "checkpoint": "restoration-continuation-2026-10-08",
+  "source_root": "oracle_ops/remote_snapshots/wanderer",
+  "sources": {
+    "cogs/__init__.py": "e3cffb11be589fce572b9efb02bd23d2c363924bc69ac199c4c8665f97d862bd",
+    "cogs/admin.py": "391311a0b918e3da90f4ed915fb50ddbfefc33e214c413bd5f8c2d343ad88d02",
+    "cogs/duo.py": "c96aa4f6f5123f5a35d1ef9272d3db3b36d8a3bad4eae43375f2ede474cab001",
+    "cogs/games.py": "887d2fca49427ab7a15e03337d9b2d99572afc17f35b13326b124988738a85f0",
+    "cogs/help.py": "2c66f40d71674d7ef60376e67b7f3dbf5125ee309311df701e74b36dc99eb3a0",
+    "cogs/loader.py": "e66cce0ce0178880207fbac37154b0d5d514440c8e9d59be6f225b740086241b",
+    "cogs/memory.py": "f22080ea3967c205d5d847b44c7c6096a00a026c49d935c6c338e2a106a006d0",
+    "cogs/misc.py": "23b18ed183bdbdf3c86f8130b17a55df204cec61ba29322c0ee3f31fa63490b4",
+    "cogs/settings.py": "94acff97373d0dc6583243cb62d94be659a5b9c57c830b2b8b47741249b541ec",
+    "cogs/system.py": "b8a40c38ba5877f8fac72114efaf01b7a5aa955630239e7af295b0789c76a459",
+    "cogs/utility.py": "ba7d820a37ff74296e398179dac0537717fda4128eda0857175d89fac6944c8c",
+    "wanderer_bot.py": "6197eb2ac8167247c12898e34836cc76823b26852c5b477fc5f8cada55a23435"
+  },
+  "cog_modules": [
+    "cogs/admin.py",
+    "cogs/duo.py",
+    "cogs/games.py",
+    "cogs/help.py",
+    "cogs/memory.py",
+    "cogs/misc.py",
+    "cogs/settings.py",
+    "cogs/system.py",
+    "cogs/utility.py"
+  ],
+  "dynamic_modules": [
+    {
+      "historical_source": "cogs/admin.py",
+      "source_sha256": "391311a0b918e3da90f4ed915fb50ddbfefc33e214c413bd5f8c2d343ad88d02",
+      "current_equivalent": "Direct bot.py registration and current dynamic installers; no current Cogs",
+      "classification": "RENAMED",
+      "evidence": "Recorded command surfaces are registered or explicitly renamed through current direct handlers/installers; Cog container is not required.",
+      "unresolved_commands": []
+    },
+    {
+      "historical_source": "cogs/duo.py",
+      "source_sha256": "c96aa4f6f5123f5a35d1ef9272d3db3b36d8a3bad4eae43375f2ede474cab001",
+      "current_equivalent": "Direct bot.py registration and current dynamic installers; no current Cogs",
+      "classification": "RENAMED",
+      "evidence": "Recorded command surfaces are registered or explicitly renamed through current direct handlers/installers; Cog container is not required.",
+      "unresolved_commands": []
+    },
+    {
+      "historical_source": "cogs/games.py",
+      "source_sha256": "887d2fca49427ab7a15e03337d9b2d99572afc17f35b13326b124988738a85f0",
+      "current_equivalent": "Direct bot.py registration and current dynamic installers; no current Cogs",
+      "classification": "RENAMED",
+      "evidence": "Recorded command surfaces are registered or explicitly renamed through current direct handlers/installers; Cog container is not required.",
+      "unresolved_commands": []
+    },
+    {
+      "historical_source": "cogs/help.py",
+      "source_sha256": "2c66f40d71674d7ef60376e67b7f3dbf5125ee309311df701e74b36dc99eb3a0",
+      "current_equivalent": "Direct bot.py registration and current dynamic installers; no current Cogs",
+      "classification": "RENAMED",
+      "evidence": "Recorded command surfaces are registered or explicitly renamed through current direct handlers/installers; Cog container is not required.",
+      "unresolved_commands": []
+    },
+    {
+      "historical_source": "cogs/memory.py",
+      "source_sha256": "f22080ea3967c205d5d847b44c7c6096a00a026c49d935c6c338e2a106a006d0",
+      "current_equivalent": "Direct bot.py registration and current dynamic installers; no current Cogs",
+      "classification": "RENAMED",
+      "evidence": "Recorded command surfaces are registered or explicitly renamed through current direct handlers/installers; Cog container is not required.",
+      "unresolved_commands": []
+    },
+    {
+      "historical_source": "cogs/misc.py",
+      "source_sha256": "23b18ed183bdbdf3c86f8130b17a55df204cec61ba29322c0ee3f31fa63490b4",
+      "current_equivalent": "Direct bot.py registration and current dynamic installers; no current Cogs",
+      "classification": "RENAMED",
+      "evidence": "Recorded command surfaces are registered or explicitly renamed through current direct handlers/installers; Cog container is not required.",
+      "unresolved_commands": []
+    },
+    {
+      "historical_source": "cogs/settings.py",
+      "source_sha256": "94acff97373d0dc6583243cb62d94be659a5b9c57c830b2b8b47741249b541ec",
+      "current_equivalent": "Direct bot.py registration and current dynamic installers; no current Cogs",
+      "classification": "UNSAFE_TO_RESTORE_AS_IS",
+      "evidence": "Safe available handlers mapped; remaining commands individually reviewed as unsafe, not silently omitted.",
+      "unresolved_commands": [
+        "exportface",
+        "importface"
+      ]
+    },
+    {
+      "historical_source": "cogs/system.py",
+      "source_sha256": "b8a40c38ba5877f8fac72114efaf01b7a5aa955630239e7af295b0789c76a459",
+      "current_equivalent": "Direct bot.py registration and current dynamic installers; no current Cogs",
+      "classification": "RENAMED",
+      "evidence": "Recorded command surfaces are registered or explicitly renamed through current direct handlers/installers; Cog container is not required.",
+      "unresolved_commands": []
+    },
+    {
+      "historical_source": "cogs/utility.py",
+      "source_sha256": "ba7d820a37ff74296e398179dac0537717fda4128eda0857175d89fac6944c8c",
+      "current_equivalent": "Direct bot.py registration and current dynamic installers; no current Cogs",
+      "classification": "RENAMED",
+      "evidence": "Recorded command surfaces are registered or explicitly renamed through current direct handlers/installers; Cog container is not required.",
+      "unresolved_commands": []
+    }
+  ],
+  "records": [
+    {
+      "surface": "slash",
+      "old": "dashboard",
+      "historical_source": "wanderer_bot.py",
+      "source_sha256": "6197eb2ac8167247c12898e34836cc76823b26852c5b477fc5f8cada55a23435",
+      "current_equivalent": "dashboard",
+      "classification": "PRESENT",
+      "evidence": "Verified runtime Group and child callbacks, not just a remote registration."
+    },
+    {
+      "surface": "slash",
+      "old": "world",
+      "historical_source": "wanderer_bot.py",
+      "source_sha256": "6197eb2ac8167247c12898e34836cc76823b26852c5b477fc5f8cada55a23435",
+      "current_equivalent": "world",
+      "classification": "PRESENT",
+      "evidence": "Verified runtime Group and child callbacks, not just a remote registration."
+    },
+    {
+      "surface": "slash",
+      "old": "prefs",
+      "historical_source": "wanderer_bot.py",
+      "source_sha256": "6197eb2ac8167247c12898e34836cc76823b26852c5b477fc5f8cada55a23435",
+      "current_equivalent": "prefs",
+      "classification": "PRESENT",
+      "evidence": "Verified runtime Group and child callbacks, not just a remote registration."
+    },
+    {
+      "surface": "slash",
+      "old": "duo",
+      "historical_source": "wanderer_bot.py",
+      "source_sha256": "6197eb2ac8167247c12898e34836cc76823b26852c5b477fc5f8cada55a23435",
+      "current_equivalent": "duo",
+      "classification": "PRESENT",
+      "evidence": "Verified runtime Group and child callbacks, not just a remote registration."
+    },
+    {
+      "surface": "prefix",
+      "old": "achievements",
+      "canonical": "achievements",
+      "historical_source": "cogs/duo.py",
+      "source_sha256": "c96aa4f6f5123f5a35d1ef9272d3db3b36d8a3bad4eae43375f2ede474cab001",
+      "current_equivalent": "achievements",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "gallery",
+      "canonical": "achievements",
+      "historical_source": "cogs/duo.py",
+      "source_sha256": "c96aa4f6f5123f5a35d1ef9272d3db3b36d8a3bad4eae43375f2ede474cab001",
+      "current_equivalent": "achievements",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "affection",
+      "canonical": "affection",
+      "historical_source": "cogs/settings.py",
+      "source_sha256": "94acff97373d0dc6583243cb62d94be659a5b9c57c830b2b8b47741249b541ec",
+      "current_equivalent": "affection",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "answer",
+      "canonical": "answer",
+      "historical_source": "cogs/games.py",
+      "source_sha256": "887d2fca49427ab7a15e03337d9b2d99572afc17f35b13326b124988738a85f0",
+      "current_equivalent": "answer",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "arc",
+      "canonical": "arc",
+      "historical_source": "cogs/memory.py",
+      "source_sha256": "f22080ea3967c205d5d847b44c7c6096a00a026c49d935c6c338e2a106a006d0",
+      "current_equivalent": "arc",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "arena",
+      "canonical": "arena",
+      "historical_source": "cogs/games.py",
+      "source_sha256": "887d2fca49427ab7a15e03337d9b2d99572afc17f35b13326b124988738a85f0",
+      "current_equivalent": "arena",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "argue",
+      "canonical": "argue",
+      "historical_source": "cogs/duo.py",
+      "source_sha256": "c96aa4f6f5123f5a35d1ef9272d3db3b36d8a3bad4eae43375f2ede474cab001",
+      "current_equivalent": "argue",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "backupmemory",
+      "canonical": "backupmemory",
+      "historical_source": "cogs/system.py",
+      "source_sha256": "b8a40c38ba5877f8fac72114efaf01b7a5aa955630239e7af295b0789c76a459",
+      "current_equivalent": "backupmemory",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "banchannel",
+      "canonical": "banchannel",
+      "historical_source": "cogs/admin.py",
+      "source_sha256": "391311a0b918e3da90f4ed915fb50ddbfefc33e214c413bd5f8c2d343ad88d02",
+      "current_equivalent": "banchannel",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "bannedchannels",
+      "canonical": "bannedchannels",
+      "historical_source": "cogs/admin.py",
+      "source_sha256": "391311a0b918e3da90f4ed915fb50ddbfefc33e214c413bd5f8c2d343ad88d02",
+      "current_equivalent": "bannedchannels",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "before",
+      "canonical": "before",
+      "historical_source": "cogs/memory.py",
+      "source_sha256": "f22080ea3967c205d5d847b44c7c6096a00a026c49d935c6c338e2a106a006d0",
+      "current_equivalent": "before",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "birthday",
+      "canonical": "birthday",
+      "historical_source": "cogs/settings.py",
+      "source_sha256": "94acff97373d0dc6583243cb62d94be659a5b9c57c830b2b8b47741249b541ec",
+      "current_equivalent": "birthday",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "dob",
+      "canonical": "birthday",
+      "historical_source": "cogs/settings.py",
+      "source_sha256": "94acff97373d0dc6583243cb62d94be659a5b9c57c830b2b8b47741249b541ec",
+      "current_equivalent": "birthday",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "birthdate",
+      "canonical": "birthday",
+      "historical_source": "cogs/settings.py",
+      "source_sha256": "94acff97373d0dc6583243cb62d94be659a5b9c57c830b2b8b47741249b541ec",
+      "current_equivalent": "birthday",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "setbirthday",
+      "canonical": "birthday",
+      "historical_source": "cogs/settings.py",
+      "source_sha256": "94acff97373d0dc6583243cb62d94be659a5b9c57c830b2b8b47741249b541ec",
+      "current_equivalent": "birthday",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "blockall",
+      "canonical": "blockall",
+      "historical_source": "cogs/admin.py",
+      "source_sha256": "391311a0b918e3da90f4ed915fb50ddbfefc33e214c413bd5f8c2d343ad88d02",
+      "current_equivalent": "blockall",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "blockdm",
+      "canonical": "blockdm",
+      "historical_source": "cogs/admin.py",
+      "source_sha256": "391311a0b918e3da90f4ed915fb50ddbfefc33e214c413bd5f8c2d343ad88d02",
+      "current_equivalent": "blockdm",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "both",
+      "canonical": "both",
+      "historical_source": "cogs/duo.py",
+      "source_sha256": "c96aa4f6f5123f5a35d1ef9272d3db3b36d8a3bad4eae43375f2ede474cab001",
+      "current_equivalent": "both",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "bothealth",
+      "canonical": "bothealth",
+      "historical_source": "cogs/system.py",
+      "source_sha256": "b8a40c38ba5877f8fac72114efaf01b7a5aa955630239e7af295b0789c76a459",
+      "current_equivalent": "bothealth",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "cases",
+      "canonical": "cases",
+      "historical_source": "cogs/duo.py",
+      "source_sha256": "c96aa4f6f5123f5a35d1ef9272d3db3b36d8a3bad4eae43375f2ede474cab001",
+      "current_equivalent": "cases",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "choose",
+      "canonical": "choose",
+      "historical_source": "cogs/duo.py",
+      "source_sha256": "c96aa4f6f5123f5a35d1ef9272d3db3b36d8a3bad4eae43375f2ede474cab001",
+      "current_equivalent": "choose",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "compare",
+      "canonical": "compare",
+      "historical_source": "cogs/duo.py",
+      "source_sha256": "c96aa4f6f5123f5a35d1ef9272d3db3b36d8a3bad4eae43375f2ede474cab001",
+      "current_equivalent": "compare",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "compliment",
+      "canonical": "compliment",
+      "historical_source": "cogs/games.py",
+      "source_sha256": "887d2fca49427ab7a15e03337d9b2d99572afc17f35b13326b124988738a85f0",
+      "current_equivalent": "compliment",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "confess",
+      "canonical": "confess",
+      "historical_source": "cogs/games.py",
+      "source_sha256": "887d2fca49427ab7a15e03337d9b2d99572afc17f35b13326b124988738a85f0",
+      "current_equivalent": "confess",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "conspiracy",
+      "canonical": "conspiracy",
+      "historical_source": "cogs/games.py",
+      "source_sha256": "887d2fca49427ab7a15e03337d9b2d99572afc17f35b13326b124988738a85f0",
+      "current_equivalent": "conspiracy",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "dailycard",
+      "canonical": "dailycard",
+      "historical_source": "cogs/games.py",
+      "source_sha256": "887d2fca49427ab7a15e03337d9b2d99572afc17f35b13326b124988738a85f0",
+      "current_equivalent": "dailycard",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "daily",
+      "canonical": "dailycard",
+      "historical_source": "cogs/games.py",
+      "source_sha256": "887d2fca49427ab7a15e03337d9b2d99572afc17f35b13326b124988738a85f0",
+      "current_equivalent": "dailycard",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "wanderdaily",
+      "canonical": "dailycard",
+      "historical_source": "cogs/games.py",
+      "source_sha256": "887d2fca49427ab7a15e03337d9b2d99572afc17f35b13326b124988738a85f0",
+      "current_equivalent": "dailycard",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "dare",
+      "canonical": "dare",
+      "historical_source": "cogs/games.py",
+      "source_sha256": "887d2fca49427ab7a15e03337d9b2d99572afc17f35b13326b124988738a85f0",
+      "current_equivalent": "dare",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "debate",
+      "canonical": "debate",
+      "historical_source": "cogs/games.py",
+      "source_sha256": "887d2fca49427ab7a15e03337d9b2d99572afc17f35b13326b124988738a85f0",
+      "current_equivalent": "debate",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "deleteface",
+      "canonical": "deleteface",
+      "historical_source": "cogs/settings.py",
+      "source_sha256": "94acff97373d0dc6583243cb62d94be659a5b9c57c830b2b8b47741249b541ec",
+      "current_equivalent": "deleteface",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "forgetface",
+      "canonical": "deleteface",
+      "historical_source": "cogs/settings.py",
+      "source_sha256": "94acff97373d0dc6583243cb62d94be659a5b9c57c830b2b8b47741249b541ec",
+      "current_equivalent": "deleteface",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "dm",
+      "canonical": "dm",
+      "historical_source": "cogs/utility.py",
+      "source_sha256": "ba7d820a37ff74296e398179dac0537717fda4128eda0857175d89fac6944c8c",
+      "current_equivalent": "dm",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "private",
+      "canonical": "dm",
+      "historical_source": "cogs/utility.py",
+      "source_sha256": "ba7d820a37ff74296e398179dac0537717fda4128eda0857175d89fac6944c8c",
+      "current_equivalent": "dm",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "whisper",
+      "canonical": "dm",
+      "historical_source": "cogs/utility.py",
+      "source_sha256": "ba7d820a37ff74296e398179dac0537717fda4128eda0857175d89fac6944c8c",
+      "current_equivalent": "dm",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "dmfreq",
+      "canonical": "dmfreq",
+      "historical_source": "cogs/settings.py",
+      "source_sha256": "94acff97373d0dc6583243cb62d94be659a5b9c57c830b2b8b47741249b541ec",
+      "current_equivalent": "dmfreq",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "dmgrace",
+      "canonical": "dmgrace",
+      "historical_source": "cogs/settings.py",
+      "source_sha256": "94acff97373d0dc6583243cb62d94be659a5b9c57c830b2b8b47741249b541ec",
+      "current_equivalent": "dmgrace",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "dmlist",
+      "canonical": "dmlist",
+      "historical_source": "cogs/admin.py",
+      "source_sha256": "391311a0b918e3da90f4ed915fb50ddbfefc33e214c413bd5f8c2d343ad88d02",
+      "current_equivalent": "dmlist",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "dms",
+      "canonical": "dms",
+      "historical_source": "cogs/settings.py",
+      "source_sha256": "94acff97373d0dc6583243cb62d94be659a5b9c57c830b2b8b47741249b541ec",
+      "current_equivalent": "dms",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "allowdms",
+      "canonical": "dms",
+      "historical_source": "cogs/settings.py",
+      "source_sha256": "94acff97373d0dc6583243cb62d94be659a5b9c57c830b2b8b47741249b541ec",
+      "current_equivalent": "dms",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "stopdms",
+      "canonical": "dms",
+      "historical_source": "cogs/settings.py",
+      "source_sha256": "94acff97373d0dc6583243cb62d94be659a5b9c57c830b2b8b47741249b541ec",
+      "current_equivalent": "dms",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "duel",
+      "canonical": "duel",
+      "historical_source": "cogs/games.py",
+      "source_sha256": "887d2fca49427ab7a15e03337d9b2d99572afc17f35b13326b124988738a85f0",
+      "current_equivalent": "duel",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "duet",
+      "canonical": "duet",
+      "historical_source": "cogs/duo.py",
+      "source_sha256": "c96aa4f6f5123f5a35d1ef9272d3db3b36d8a3bad4eae43375f2ede474cab001",
+      "current_equivalent": "duet",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "duoauto",
+      "canonical": "duoauto",
+      "historical_source": "cogs/settings.py",
+      "source_sha256": "94acff97373d0dc6583243cb62d94be659a5b9c57c830b2b8b47741249b541ec",
+      "current_equivalent": "duoauto",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "duostate",
+      "canonical": "duostate",
+      "historical_source": "cogs/duo.py",
+      "source_sha256": "c96aa4f6f5123f5a35d1ef9272d3db3b36d8a3bad4eae43375f2ede474cab001",
+      "current_equivalent": "duostate",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "enrollface",
+      "canonical": "enrollface",
+      "historical_source": "cogs/settings.py",
+      "source_sha256": "94acff97373d0dc6583243cb62d94be659a5b9c57c830b2b8b47741249b541ec",
+      "current_equivalent": "enrollface",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "rememberface",
+      "canonical": "enrollface",
+      "historical_source": "cogs/settings.py",
+      "source_sha256": "94acff97373d0dc6583243cb62d94be659a5b9c57c830b2b8b47741249b541ec",
+      "current_equivalent": "enrollface",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "exportface",
+      "canonical": "exportface",
+      "historical_source": "cogs/settings.py",
+      "source_sha256": "94acff97373d0dc6583243cb62d94be659a5b9c57c830b2b8b47741249b541ec",
+      "current_equivalent": "faceinfo / enrollface / deleteface",
+      "classification": "UNSAFE_TO_RESTORE_AS_IS",
+      "evidence": "Biometric template export is unsupported by the current per-user FaceProfiles API. Enrollment/recognition/deletion are present but are not export equivalents."
+    },
+    {
+      "surface": "alias",
+      "old": "faceexport",
+      "canonical": "exportface",
+      "historical_source": "cogs/settings.py",
+      "source_sha256": "94acff97373d0dc6583243cb62d94be659a5b9c57c830b2b8b47741249b541ec",
+      "current_equivalent": "faceinfo / enrollface / deleteface",
+      "classification": "UNSAFE_TO_RESTORE_AS_IS",
+      "evidence": "Biometric template export is unsupported by the current per-user FaceProfiles API. Enrollment/recognition/deletion are present but are not export equivalents."
+    },
+    {
+      "surface": "prefix",
+      "old": "faceinfo",
+      "canonical": "faceinfo",
+      "historical_source": "cogs/settings.py",
+      "source_sha256": "94acff97373d0dc6583243cb62d94be659a5b9c57c830b2b8b47741249b541ec",
+      "current_equivalent": "faceinfo",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "fixdoc",
+      "canonical": "fixdoc",
+      "historical_source": "cogs/system.py",
+      "source_sha256": "b8a40c38ba5877f8fac72114efaf01b7a5aa955630239e7af295b0789c76a459",
+      "current_equivalent": "fixdoc",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension.",
+      "scope_note": "Existing Wanderer legacy handler, if registered, is not exercised, expanded or certified by this restoration. Docs/Drive remains deferred."
+    },
+    {
+      "surface": "alias",
+      "old": "docfix",
+      "canonical": "fixdoc",
+      "historical_source": "cogs/system.py",
+      "source_sha256": "b8a40c38ba5877f8fac72114efaf01b7a5aa955630239e7af295b0789c76a459",
+      "current_equivalent": "fixdoc",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension.",
+      "scope_note": "Existing Wanderer legacy handler, if registered, is not exercised, expanded or certified by this restoration. Docs/Drive remains deferred."
+    },
+    {
+      "surface": "alias",
+      "old": "gdocfix",
+      "canonical": "fixdoc",
+      "historical_source": "cogs/system.py",
+      "source_sha256": "b8a40c38ba5877f8fac72114efaf01b7a5aa955630239e7af295b0789c76a459",
+      "current_equivalent": "fixdoc",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension.",
+      "scope_note": "Existing Wanderer legacy handler, if registered, is not exercised, expanded or certified by this restoration. Docs/Drive remains deferred."
+    },
+    {
+      "surface": "alias",
+      "old": "editdoc",
+      "canonical": "fixdoc",
+      "historical_source": "cogs/system.py",
+      "source_sha256": "b8a40c38ba5877f8fac72114efaf01b7a5aa955630239e7af295b0789c76a459",
+      "current_equivalent": "fixdoc",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension.",
+      "scope_note": "Existing Wanderer legacy handler, if registered, is not exercised, expanded or certified by this restoration. Docs/Drive remains deferred."
+    },
+    {
+      "surface": "prefix",
+      "old": "forget",
+      "canonical": "forget",
+      "historical_source": "cogs/memory.py",
+      "source_sha256": "f22080ea3967c205d5d847b44c7c6096a00a026c49d935c6c338e2a106a006d0",
+      "current_equivalent": "forget",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "fortune",
+      "canonical": "fortune",
+      "historical_source": "cogs/games.py",
+      "source_sha256": "887d2fca49427ab7a15e03337d9b2d99572afc17f35b13326b124988738a85f0",
+      "current_equivalent": "fortune",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "fortunecookie",
+      "canonical": "fortune",
+      "historical_source": "cogs/games.py",
+      "source_sha256": "887d2fca49427ab7a15e03337d9b2d99572afc17f35b13326b124988738a85f0",
+      "current_equivalent": "fortune",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "gamerank0",
+      "canonical": "gamerank0",
+      "historical_source": "cogs/games.py",
+      "source_sha256": "887d2fca49427ab7a15e03337d9b2d99572afc17f35b13326b124988738a85f0",
+      "current_equivalent": "gamerank0",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "gamerank",
+      "canonical": "gamerank0",
+      "historical_source": "cogs/games.py",
+      "source_sha256": "887d2fca49427ab7a15e03337d9b2d99572afc17f35b13326b124988738a85f0",
+      "current_equivalent": "gamerank0",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "rpgrank",
+      "canonical": "gamerank0",
+      "historical_source": "cogs/games.py",
+      "source_sha256": "887d2fca49427ab7a15e03337d9b2d99572afc17f35b13326b124988738a85f0",
+      "current_equivalent": "gamerank0",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "medals",
+      "canonical": "gamerank0",
+      "historical_source": "cogs/games.py",
+      "source_sha256": "887d2fca49427ab7a15e03337d9b2d99572afc17f35b13326b124988738a85f0",
+      "current_equivalent": "gamerank0",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "haiku",
+      "canonical": "haiku",
+      "historical_source": "cogs/games.py",
+      "source_sha256": "887d2fca49427ab7a15e03337d9b2d99572afc17f35b13326b124988738a85f0",
+      "current_equivalent": "haiku",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "importface",
+      "canonical": "importface",
+      "historical_source": "cogs/settings.py",
+      "source_sha256": "94acff97373d0dc6583243cb62d94be659a5b9c57c830b2b8b47741249b541ec",
+      "current_equivalent": "faceinfo / enrollface / deleteface",
+      "classification": "UNSAFE_TO_RESTORE_AS_IS",
+      "evidence": "Biometric template import can overwrite identity templates and bypass enrollment provenance/consent. No safe current import API or migration is authorized."
+    },
+    {
+      "surface": "alias",
+      "old": "restoreface",
+      "canonical": "importface",
+      "historical_source": "cogs/settings.py",
+      "source_sha256": "94acff97373d0dc6583243cb62d94be659a5b9c57c830b2b8b47741249b541ec",
+      "current_equivalent": "faceinfo / enrollface / deleteface",
+      "classification": "UNSAFE_TO_RESTORE_AS_IS",
+      "evidence": "Biometric template import can overwrite identity templates and bypass enrollment provenance/consent. No safe current import API or migration is authorized."
+    },
+    {
+      "surface": "prefix",
+      "old": "insidejokes",
+      "canonical": "insidejokes",
+      "historical_source": "cogs/duo.py",
+      "source_sha256": "c96aa4f6f5123f5a35d1ef9272d3db3b36d8a3bad4eae43375f2ede474cab001",
+      "current_equivalent": "insidejokes",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "jokes",
+      "canonical": "insidejokes",
+      "historical_source": "cogs/duo.py",
+      "source_sha256": "c96aa4f6f5123f5a35d1ef9272d3db3b36d8a3bad4eae43375f2ede474cab001",
+      "current_equivalent": "insidejokes",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "insult",
+      "canonical": "insult",
+      "historical_source": "cogs/utility.py",
+      "source_sha256": "ba7d820a37ff74296e398179dac0537717fda4128eda0857175d89fac6944c8c",
+      "current_equivalent": "insult",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "interrogate",
+      "canonical": "interrogate",
+      "historical_source": "cogs/duo.py",
+      "source_sha256": "c96aa4f6f5123f5a35d1ef9272d3db3b36d8a3bad4eae43375f2ede474cab001",
+      "current_equivalent": "interrogate",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "journal",
+      "canonical": "journal",
+      "historical_source": "cogs/memory.py",
+      "source_sha256": "f22080ea3967c205d5d847b44c7c6096a00a026c49d935c6c338e2a106a006d0",
+      "current_equivalent": "journal",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "judge",
+      "canonical": "judge",
+      "historical_source": "cogs/games.py",
+      "source_sha256": "887d2fca49427ab7a15e03337d9b2d99572afc17f35b13326b124988738a85f0",
+      "current_equivalent": "judge",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "leaveserver",
+      "canonical": "leaveserver",
+      "historical_source": "cogs/admin.py",
+      "source_sha256": "391311a0b918e3da90f4ed915fb50ddbfefc33e214c413bd5f8c2d343ad88d02",
+      "current_equivalent": "leaveserver",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "letter",
+      "canonical": "letter",
+      "historical_source": "cogs/games.py",
+      "source_sha256": "887d2fca49427ab7a15e03337d9b2d99572afc17f35b13326b124988738a85f0",
+      "current_equivalent": "letter",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "logs",
+      "canonical": "logs",
+      "historical_source": "cogs/admin.py",
+      "source_sha256": "391311a0b918e3da90f4ed915fb50ddbfefc33e214c413bd5f8c2d343ad88d02",
+      "current_equivalent": "logs",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "lore",
+      "canonical": "lore",
+      "historical_source": "cogs/utility.py",
+      "source_sha256": "ba7d820a37ff74296e398179dac0537717fda4128eda0857175d89fac6944c8c",
+      "current_equivalent": "lore",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "memories",
+      "canonical": "memories",
+      "historical_source": "cogs/memory.py",
+      "source_sha256": "f22080ea3967c205d5d847b44c7c6096a00a026c49d935c6c338e2a106a006d0",
+      "current_equivalent": "memories",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "memorybank",
+      "canonical": "memories",
+      "historical_source": "cogs/memory.py",
+      "source_sha256": "f22080ea3967c205d5d847b44c7c6096a00a026c49d935c6c338e2a106a006d0",
+      "current_equivalent": "memories",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "memory",
+      "canonical": "memory",
+      "historical_source": "cogs/memory.py",
+      "source_sha256": "f22080ea3967c205d5d847b44c7c6096a00a026c49d935c6c338e2a106a006d0",
+      "current_equivalent": "memory",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "mission",
+      "canonical": "mission",
+      "historical_source": "cogs/duo.py",
+      "source_sha256": "c96aa4f6f5123f5a35d1ef9272d3db3b36d8a3bad4eae43375f2ede474cab001",
+      "current_equivalent": "mission",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "mood",
+      "canonical": "mood",
+      "historical_source": "cogs/settings.py",
+      "source_sha256": "94acff97373d0dc6583243cb62d94be659a5b9c57c830b2b8b47741249b541ec",
+      "current_equivalent": "mood",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "mute",
+      "canonical": "mute",
+      "historical_source": "cogs/misc.py",
+      "source_sha256": "23b18ed183bdbdf3c86f8130b17a55df204cec61ba29322c0ee3f31fa63490b4",
+      "current_equivalent": "mute",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "silence",
+      "canonical": "mute",
+      "historical_source": "cogs/misc.py",
+      "source_sha256": "23b18ed183bdbdf3c86f8130b17a55df204cec61ba29322c0ee3f31fa63490b4",
+      "current_equivalent": "mute",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "ignore",
+      "canonical": "mute",
+      "historical_source": "cogs/misc.py",
+      "source_sha256": "23b18ed183bdbdf3c86f8130b17a55df204cec61ba29322c0ee3f31fa63490b4",
+      "current_equivalent": "mute",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "botban",
+      "canonical": "mute",
+      "historical_source": "cogs/misc.py",
+      "source_sha256": "23b18ed183bdbdf3c86f8130b17a55df204cec61ba29322c0ee3f31fa63490b4",
+      "current_equivalent": "mute",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "banfrombot",
+      "canonical": "mute",
+      "historical_source": "cogs/misc.py",
+      "source_sha256": "23b18ed183bdbdf3c86f8130b17a55df204cec61ba29322c0ee3f31fa63490b4",
+      "current_equivalent": "mute",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "nightmare",
+      "canonical": "nightmare",
+      "historical_source": "cogs/games.py",
+      "source_sha256": "887d2fca49427ab7a15e03337d9b2d99572afc17f35b13326b124988738a85f0",
+      "current_equivalent": "nightmare",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "nsfw",
+      "canonical": "nsfw",
+      "historical_source": "cogs/settings.py",
+      "source_sha256": "94acff97373d0dc6583243cb62d94be659a5b9c57c830b2b8b47741249b541ec",
+      "current_equivalent": "unrestricted",
+      "classification": "RENAMED",
+      "evidence": "Explicit user-authorized Unrestricted rename; Scaramouche commit 7ee4154 and current age-restricted-channel checks. Do not reintroduce NSFW alias."
+    },
+    {
+      "surface": "prefix",
+      "old": "opinion",
+      "canonical": "opinion",
+      "historical_source": "cogs/games.py",
+      "source_sha256": "887d2fca49427ab7a15e03337d9b2d99572afc17f35b13326b124988738a85f0",
+      "current_equivalent": "opinion",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "owneronly",
+      "canonical": "owneronly",
+      "historical_source": "cogs/admin.py",
+      "source_sha256": "391311a0b918e3da90f4ed915fb50ddbfefc33e214c413bd5f8c2d343ad88d02",
+      "current_equivalent": "owneronly",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "pincomfort",
+      "canonical": "pincomfort",
+      "historical_source": "cogs/memory.py",
+      "source_sha256": "f22080ea3967c205d5d847b44c7c6096a00a026c49d935c6c338e2a106a006d0",
+      "current_equivalent": "pincomfort",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "pinjoke",
+      "canonical": "pinjoke",
+      "historical_source": "cogs/memory.py",
+      "source_sha256": "f22080ea3967c205d5d847b44c7c6096a00a026c49d935c6c338e2a106a006d0",
+      "current_equivalent": "pinjoke",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "pinpromise",
+      "canonical": "pinpromise",
+      "historical_source": "cogs/memory.py",
+      "source_sha256": "f22080ea3967c205d5d847b44c7c6096a00a026c49d935c6c338e2a106a006d0",
+      "current_equivalent": "pinpromise",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "pinwound",
+      "canonical": "pinwound",
+      "historical_source": "cogs/memory.py",
+      "source_sha256": "f22080ea3967c205d5d847b44c7c6096a00a026c49d935c6c338e2a106a006d0",
+      "current_equivalent": "pinwound",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "poll",
+      "canonical": "poll",
+      "historical_source": "cogs/games.py",
+      "source_sha256": "887d2fca49427ab7a15e03337d9b2d99572afc17f35b13326b124988738a85f0",
+      "current_equivalent": "poll",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "possess",
+      "canonical": "possess",
+      "historical_source": "cogs/games.py",
+      "source_sha256": "887d2fca49427ab7a15e03337d9b2d99572afc17f35b13326b124988738a85f0",
+      "current_equivalent": "possess",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "proactive",
+      "canonical": "proactive",
+      "historical_source": "cogs/settings.py",
+      "source_sha256": "94acff97373d0dc6583243cb62d94be659a5b9c57c830b2b8b47741249b541ec",
+      "current_equivalent": "proactive",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "ping_me",
+      "canonical": "proactive",
+      "historical_source": "cogs/settings.py",
+      "source_sha256": "94acff97373d0dc6583243cb62d94be659a5b9c57c830b2b8b47741249b541ec",
+      "current_equivalent": "proactive",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "progress",
+      "canonical": "progress",
+      "historical_source": "cogs/memory.py",
+      "source_sha256": "f22080ea3967c205d5d847b44c7c6096a00a026c49d935c6c338e2a106a006d0",
+      "current_equivalent": "progress",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "prophecy",
+      "canonical": "prophecy",
+      "historical_source": "cogs/games.py",
+      "source_sha256": "887d2fca49427ab7a15e03337d9b2d99572afc17f35b13326b124988738a85f0",
+      "current_equivalent": "prophecy",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "quiethours",
+      "canonical": "quiethours",
+      "historical_source": "cogs/settings.py",
+      "source_sha256": "94acff97373d0dc6583243cb62d94be659a5b9c57c830b2b8b47741249b541ec",
+      "current_equivalent": "quiethours",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "rank",
+      "canonical": "rank",
+      "historical_source": "cogs/utility.py",
+      "source_sha256": "ba7d820a37ff74296e398179dac0537717fda4128eda0857175d89fac6944c8c",
+      "current_equivalent": "rank",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "rate",
+      "canonical": "rate",
+      "historical_source": "cogs/games.py",
+      "source_sha256": "887d2fca49427ab7a15e03337d9b2d99572afc17f35b13326b124988738a85f0",
+      "current_equivalent": "rate",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "reban",
+      "canonical": "reban",
+      "historical_source": "cogs/admin.py",
+      "source_sha256": "391311a0b918e3da90f4ed915fb50ddbfefc33e214c413bd5f8c2d343ad88d02",
+      "current_equivalent": "reban",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "rebanchannels",
+      "canonical": "rebanchannels",
+      "historical_source": "cogs/admin.py",
+      "source_sha256": "391311a0b918e3da90f4ed915fb50ddbfefc33e214c413bd5f8c2d343ad88d02",
+      "current_equivalent": "rebanchannels",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "rebuildmemory",
+      "canonical": "rebuildmemory",
+      "historical_source": "cogs/memory.py",
+      "source_sha256": "f22080ea3967c205d5d847b44c7c6096a00a026c49d935c6c338e2a106a006d0",
+      "current_equivalent": "rebuildmemory",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "rebuildrank",
+      "canonical": "rebuildrank",
+      "historical_source": "cogs/memory.py",
+      "source_sha256": "f22080ea3967c205d5d847b44c7c6096a00a026c49d935c6c338e2a106a006d0",
+      "current_equivalent": "rebuildrank",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "recoverrank",
+      "canonical": "rebuildrank",
+      "historical_source": "cogs/memory.py",
+      "source_sha256": "f22080ea3967c205d5d847b44c7c6096a00a026c49d935c6c338e2a106a006d0",
+      "current_equivalent": "rebuildrank",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "rankrecover",
+      "canonical": "rebuildrank",
+      "historical_source": "cogs/memory.py",
+      "source_sha256": "f22080ea3967c205d5d847b44c7c6096a00a026c49d935c6c338e2a106a006d0",
+      "current_equivalent": "rebuildrank",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "rebuildrelationship",
+      "canonical": "rebuildrelationship",
+      "historical_source": "cogs/memory.py",
+      "source_sha256": "f22080ea3967c205d5d847b44c7c6096a00a026c49d935c6c338e2a106a006d0",
+      "current_equivalent": "rebuildrelationship",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "rebuildstats",
+      "canonical": "rebuildstats",
+      "historical_source": "cogs/memory.py",
+      "source_sha256": "f22080ea3967c205d5d847b44c7c6096a00a026c49d935c6c338e2a106a006d0",
+      "current_equivalent": "rebuildstats",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "recoverstats",
+      "canonical": "rebuildstats",
+      "historical_source": "cogs/memory.py",
+      "source_sha256": "f22080ea3967c205d5d847b44c7c6096a00a026c49d935c6c338e2a106a006d0",
+      "current_equivalent": "rebuildstats",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "statsrecover",
+      "canonical": "rebuildstats",
+      "historical_source": "cogs/memory.py",
+      "source_sha256": "f22080ea3967c205d5d847b44c7c6096a00a026c49d935c6c338e2a106a006d0",
+      "current_equivalent": "rebuildstats",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "reflect",
+      "canonical": "reflect",
+      "historical_source": "cogs/memory.py",
+      "source_sha256": "f22080ea3967c205d5d847b44c7c6096a00a026c49d935c6c338e2a106a006d0",
+      "current_equivalent": "reflect",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "relationship",
+      "canonical": "relationship",
+      "historical_source": "cogs/memory.py",
+      "source_sha256": "f22080ea3967c205d5d847b44c7c6096a00a026c49d935c6c338e2a106a006d0",
+      "current_equivalent": "relationship",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "remember",
+      "canonical": "remember",
+      "historical_source": "cogs/memory.py",
+      "source_sha256": "f22080ea3967c205d5d847b44c7c6096a00a026c49d935c6c338e2a106a006d0",
+      "current_equivalent": "remember",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "remind",
+      "canonical": "remind",
+      "historical_source": "cogs/utility.py",
+      "source_sha256": "ba7d820a37ff74296e398179dac0537717fda4128eda0857175d89fac6944c8c",
+      "current_equivalent": "remind",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "remindme",
+      "canonical": "remind",
+      "historical_source": "cogs/utility.py",
+      "source_sha256": "ba7d820a37ff74296e398179dac0537717fda4128eda0857175d89fac6944c8c",
+      "current_equivalent": "remind",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "reset",
+      "canonical": "reset",
+      "historical_source": "cogs/settings.py",
+      "source_sha256": "94acff97373d0dc6583243cb62d94be659a5b9c57c830b2b8b47741249b541ec",
+      "current_equivalent": "reset",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "wipe",
+      "canonical": "reset",
+      "historical_source": "cogs/settings.py",
+      "source_sha256": "94acff97373d0dc6583243cb62d94be659a5b9c57c830b2b8b47741249b541ec",
+      "current_equivalent": "reset",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "riddle",
+      "canonical": "riddle",
+      "historical_source": "cogs/games.py",
+      "source_sha256": "887d2fca49427ab7a15e03337d9b2d99572afc17f35b13326b124988738a85f0",
+      "current_equivalent": "riddle",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "roast",
+      "canonical": "roast",
+      "historical_source": "cogs/games.py",
+      "source_sha256": "887d2fca49427ab7a15e03337d9b2d99572afc17f35b13326b124988738a85f0",
+      "current_equivalent": "roast",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "roastbattle",
+      "canonical": "roast",
+      "historical_source": "cogs/games.py",
+      "source_sha256": "887d2fca49427ab7a15e03337d9b2d99572afc17f35b13326b124988738a85f0",
+      "current_equivalent": "roast",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "rpdepth",
+      "canonical": "rpdepth",
+      "historical_source": "cogs/settings.py",
+      "source_sha256": "94acff97373d0dc6583243cb62d94be659a5b9c57c830b2b8b47741249b541ec",
+      "current_equivalent": "rpdepth",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "rpg0",
+      "canonical": "rpg0",
+      "historical_source": "cogs/games.py",
+      "source_sha256": "887d2fca49427ab7a15e03337d9b2d99572afc17f35b13326b124988738a85f0",
+      "current_equivalent": "rpg0",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "rpg",
+      "canonical": "rpg0",
+      "historical_source": "cogs/games.py",
+      "source_sha256": "887d2fca49427ab7a15e03337d9b2d99572afc17f35b13326b124988738a85f0",
+      "current_equivalent": "rpg0",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "quest0",
+      "canonical": "rpg0",
+      "historical_source": "cogs/games.py",
+      "source_sha256": "887d2fca49427ab7a15e03337d9b2d99572afc17f35b13326b124988738a85f0",
+      "current_equivalent": "rpg0",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "harbinger0",
+      "canonical": "rpg0",
+      "historical_source": "cogs/games.py",
+      "source_sha256": "887d2fca49427ab7a15e03337d9b2d99572afc17f35b13326b124988738a85f0",
+      "current_equivalent": "rpg0",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "rpg0reset",
+      "canonical": "rpg0reset",
+      "historical_source": "cogs/games.py",
+      "source_sha256": "887d2fca49427ab7a15e03337d9b2d99572afc17f35b13326b124988738a85f0",
+      "current_equivalent": "rpg0reset",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "rpgreset0",
+      "canonical": "rpg0reset",
+      "historical_source": "cogs/games.py",
+      "source_sha256": "887d2fca49427ab7a15e03337d9b2d99572afc17f35b13326b124988738a85f0",
+      "current_equivalent": "rpg0reset",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "rpgreset",
+      "canonical": "rpg0reset",
+      "historical_source": "cogs/games.py",
+      "source_sha256": "887d2fca49427ab7a15e03337d9b2d99572afc17f35b13326b124988738a85f0",
+      "current_equivalent": "rpg0reset",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "rpgstats0",
+      "canonical": "rpgstats0",
+      "historical_source": "cogs/games.py",
+      "source_sha256": "887d2fca49427ab7a15e03337d9b2d99572afc17f35b13326b124988738a85f0",
+      "current_equivalent": "rpgstats0",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "queststats0",
+      "canonical": "rpgstats0",
+      "historical_source": "cogs/games.py",
+      "source_sha256": "887d2fca49427ab7a15e03337d9b2d99572afc17f35b13326b124988738a85f0",
+      "current_equivalent": "rpgstats0",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "rpgstats",
+      "canonical": "rpgstats0",
+      "historical_source": "cogs/games.py",
+      "source_sha256": "887d2fca49427ab7a15e03337d9b2d99572afc17f35b13326b124988738a85f0",
+      "current_equivalent": "rpgstats0",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "scene",
+      "canonical": "scene",
+      "historical_source": "cogs/duo.py",
+      "source_sha256": "c96aa4f6f5123f5a35d1ef9272d3db3b36d8a3bad4eae43375f2ede474cab001",
+      "current_equivalent": "scene",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "search",
+      "canonical": "search",
+      "historical_source": "cogs/utility.py",
+      "source_sha256": "ba7d820a37ff74296e398179dac0537717fda4128eda0857175d89fac6944c8c",
+      "current_equivalent": "search",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "find",
+      "canonical": "search",
+      "historical_source": "cogs/utility.py",
+      "source_sha256": "ba7d820a37ff74296e398179dac0537717fda4128eda0857175d89fac6944c8c",
+      "current_equivalent": "search",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "lookup",
+      "canonical": "search",
+      "historical_source": "cogs/utility.py",
+      "source_sha256": "ba7d820a37ff74296e398179dac0537717fda4128eda0857175d89fac6944c8c",
+      "current_equivalent": "search",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "servers",
+      "canonical": "servers",
+      "historical_source": "cogs/admin.py",
+      "source_sha256": "391311a0b918e3da90f4ed915fb50ddbfefc33e214c413bd5f8c2d343ad88d02",
+      "current_equivalent": "servers",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "ship",
+      "canonical": "ship",
+      "historical_source": "cogs/games.py",
+      "source_sha256": "887d2fca49427ab7a15e03337d9b2d99572afc17f35b13326b124988738a85f0",
+      "current_equivalent": "ship",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "solve",
+      "canonical": "solve",
+      "historical_source": "cogs/utility.py",
+      "source_sha256": "ba7d820a37ff74296e398179dac0537717fda4128eda0857175d89fac6944c8c",
+      "current_equivalent": "solve",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "math",
+      "canonical": "solve",
+      "historical_source": "cogs/utility.py",
+      "source_sha256": "ba7d820a37ff74296e398179dac0537717fda4128eda0857175d89fac6944c8c",
+      "current_equivalent": "solve",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "essay",
+      "canonical": "solve",
+      "historical_source": "cogs/utility.py",
+      "source_sha256": "ba7d820a37ff74296e398179dac0537717fda4128eda0857175d89fac6944c8c",
+      "current_equivalent": "solve",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "write",
+      "canonical": "solve",
+      "historical_source": "cogs/utility.py",
+      "source_sha256": "ba7d820a37ff74296e398179dac0537717fda4128eda0857175d89fac6944c8c",
+      "current_equivalent": "solve",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "spar",
+      "canonical": "spar",
+      "historical_source": "cogs/games.py",
+      "source_sha256": "887d2fca49427ab7a15e03337d9b2d99572afc17f35b13326b124988738a85f0",
+      "current_equivalent": "spar",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "speaker",
+      "canonical": "speaker",
+      "historical_source": "cogs/duo.py",
+      "source_sha256": "c96aa4f6f5123f5a35d1ef9272d3db3b36d8a3bad4eae43375f2ede474cab001",
+      "current_equivalent": "speaker",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "activespeaker",
+      "canonical": "speaker",
+      "historical_source": "cogs/duo.py",
+      "source_sha256": "c96aa4f6f5123f5a35d1ef9272d3db3b36d8a3bad4eae43375f2ede474cab001",
+      "current_equivalent": "speaker",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "stalk",
+      "canonical": "stalk",
+      "historical_source": "cogs/games.py",
+      "source_sha256": "887d2fca49427ab7a15e03337d9b2d99572afc17f35b13326b124988738a85f0",
+      "current_equivalent": "stalk",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "stats",
+      "canonical": "stats",
+      "historical_source": "cogs/utility.py",
+      "source_sha256": "ba7d820a37ff74296e398179dac0537717fda4128eda0857175d89fac6944c8c",
+      "current_equivalent": "stats",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "status",
+      "canonical": "status",
+      "historical_source": "cogs/system.py",
+      "source_sha256": "b8a40c38ba5877f8fac72114efaf01b7a5aa955630239e7af295b0789c76a459",
+      "current_equivalent": "status",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "aistatus",
+      "canonical": "status",
+      "historical_source": "cogs/system.py",
+      "source_sha256": "b8a40c38ba5877f8fac72114efaf01b7a5aa955630239e7af295b0789c76a459",
+      "current_equivalent": "status",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "wanderstatus",
+      "canonical": "status",
+      "historical_source": "cogs/system.py",
+      "source_sha256": "b8a40c38ba5877f8fac72114efaf01b7a5aa955630239e7af295b0789c76a459",
+      "current_equivalent": "status",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "story",
+      "canonical": "story",
+      "historical_source": "cogs/games.py",
+      "source_sha256": "887d2fca49427ab7a15e03337d9b2d99572afc17f35b13326b124988738a85f0",
+      "current_equivalent": "story",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "summarize",
+      "canonical": "summarize",
+      "historical_source": "cogs/games.py",
+      "source_sha256": "887d2fca49427ab7a15e03337d9b2d99572afc17f35b13326b124988738a85f0",
+      "current_equivalent": "summarize",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "recap",
+      "canonical": "summarize",
+      "historical_source": "cogs/games.py",
+      "source_sha256": "887d2fca49427ab7a15e03337d9b2d99572afc17f35b13326b124988738a85f0",
+      "current_equivalent": "summarize",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "tarot",
+      "canonical": "tarot",
+      "historical_source": "cogs/games.py",
+      "source_sha256": "887d2fca49427ab7a15e03337d9b2d99572afc17f35b13326b124988738a85f0",
+      "current_equivalent": "tarot",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "cards",
+      "canonical": "tarot",
+      "historical_source": "cogs/games.py",
+      "source_sha256": "887d2fca49427ab7a15e03337d9b2d99572afc17f35b13326b124988738a85f0",
+      "current_equivalent": "tarot",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "tarotreading",
+      "canonical": "tarot",
+      "historical_source": "cogs/games.py",
+      "source_sha256": "887d2fca49427ab7a15e03337d9b2d99572afc17f35b13326b124988738a85f0",
+      "current_equivalent": "tarot",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "wandertarot",
+      "canonical": "tarot",
+      "historical_source": "cogs/games.py",
+      "source_sha256": "887d2fca49427ab7a15e03337d9b2d99572afc17f35b13326b124988738a85f0",
+      "current_equivalent": "tarot",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "tarothistory",
+      "canonical": "tarothistory",
+      "historical_source": "cogs/games.py",
+      "source_sha256": "887d2fca49427ab7a15e03337d9b2d99572afc17f35b13326b124988738a85f0",
+      "current_equivalent": "tarothistory",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "wandererhistory",
+      "canonical": "tarothistory",
+      "historical_source": "cogs/games.py",
+      "source_sha256": "887d2fca49427ab7a15e03337d9b2d99572afc17f35b13326b124988738a85f0",
+      "current_equivalent": "tarothistory",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "tarotsettings",
+      "canonical": "tarotsettings",
+      "historical_source": "cogs/games.py",
+      "source_sha256": "887d2fca49427ab7a15e03337d9b2d99572afc17f35b13326b124988738a85f0",
+      "current_equivalent": "tarotsettings",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "wandersettings",
+      "canonical": "tarotsettings",
+      "historical_source": "cogs/games.py",
+      "source_sha256": "887d2fca49427ab7a15e03337d9b2d99572afc17f35b13326b124988738a85f0",
+      "current_equivalent": "tarotsettings",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "tedtalk",
+      "canonical": "tedtalk",
+      "historical_source": "cogs/system.py",
+      "source_sha256": "b8a40c38ba5877f8fac72114efaf01b7a5aa955630239e7af295b0789c76a459",
+      "current_equivalent": "tedtalk",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "teach",
+      "canonical": "tedtalk",
+      "historical_source": "cogs/system.py",
+      "source_sha256": "b8a40c38ba5877f8fac72114efaf01b7a5aa955630239e7af295b0789c76a459",
+      "current_equivalent": "tedtalk",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "lecture",
+      "canonical": "tedtalk",
+      "historical_source": "cogs/system.py",
+      "source_sha256": "b8a40c38ba5877f8fac72114efaf01b7a5aa955630239e7af295b0789c76a459",
+      "current_equivalent": "tedtalk",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "explain",
+      "canonical": "tedtalk",
+      "historical_source": "cogs/system.py",
+      "source_sha256": "b8a40c38ba5877f8fac72114efaf01b7a5aa955630239e7af295b0789c76a459",
+      "current_equivalent": "tedtalk",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "therapy",
+      "canonical": "therapy",
+      "historical_source": "cogs/games.py",
+      "source_sha256": "887d2fca49427ab7a15e03337d9b2d99572afc17f35b13326b124988738a85f0",
+      "current_equivalent": "therapy",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "timezone",
+      "canonical": "timezone",
+      "historical_source": "cogs/settings.py",
+      "source_sha256": "94acff97373d0dc6583243cb62d94be659a5b9c57c830b2b8b47741249b541ec",
+      "current_equivalent": "timezone",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "translate",
+      "canonical": "translate",
+      "historical_source": "cogs/utility.py",
+      "source_sha256": "ba7d820a37ff74296e398179dac0537717fda4128eda0857175d89fac6944c8c",
+      "current_equivalent": "translate",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "trial",
+      "canonical": "trial",
+      "historical_source": "cogs/duo.py",
+      "source_sha256": "c96aa4f6f5123f5a35d1ef9272d3db3b36d8a3bad4eae43375f2ede474cab001",
+      "current_equivalent": "trial",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "trivia",
+      "canonical": "trivia",
+      "historical_source": "cogs/games.py",
+      "source_sha256": "887d2fca49427ab7a15e03337d9b2d99572afc17f35b13326b124988738a85f0",
+      "current_equivalent": "trivia",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "trust",
+      "canonical": "trust",
+      "historical_source": "cogs/settings.py",
+      "source_sha256": "94acff97373d0dc6583243cb62d94be659a5b9c57c830b2b8b47741249b541ec",
+      "current_equivalent": "trust",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "truthdare",
+      "canonical": "truthdare",
+      "historical_source": "cogs/duo.py",
+      "source_sha256": "c96aa4f6f5123f5a35d1ef9272d3db3b36d8a3bad4eae43375f2ede474cab001",
+      "current_equivalent": "truthdare",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "tod",
+      "canonical": "truthdare",
+      "historical_source": "cogs/duo.py",
+      "source_sha256": "c96aa4f6f5123f5a35d1ef9272d3db3b36d8a3bad4eae43375f2ede474cab001",
+      "current_equivalent": "truthdare",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "unbanchannel",
+      "canonical": "unbanchannel",
+      "historical_source": "cogs/admin.py",
+      "source_sha256": "391311a0b918e3da90f4ed915fb50ddbfefc33e214c413bd5f8c2d343ad88d02",
+      "current_equivalent": "unbanchannel",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "unblockdm",
+      "canonical": "unblockdm",
+      "historical_source": "cogs/admin.py",
+      "source_sha256": "391311a0b918e3da90f4ed915fb50ddbfefc33e214c413bd5f8c2d343ad88d02",
+      "current_equivalent": "unblockdm",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "unmute",
+      "canonical": "unmute",
+      "historical_source": "cogs/misc.py",
+      "source_sha256": "23b18ed183bdbdf3c86f8130b17a55df204cec61ba29322c0ee3f31fa63490b4",
+      "current_equivalent": "unmute",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "unsilence",
+      "canonical": "unmute",
+      "historical_source": "cogs/misc.py",
+      "source_sha256": "23b18ed183bdbdf3c86f8130b17a55df204cec61ba29322c0ee3f31fa63490b4",
+      "current_equivalent": "unmute",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "botunban",
+      "canonical": "unmute",
+      "historical_source": "cogs/misc.py",
+      "source_sha256": "23b18ed183bdbdf3c86f8130b17a55df204cec61ba29322c0ee3f31fa63490b4",
+      "current_equivalent": "unmute",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "unbanfrombot",
+      "canonical": "unmute",
+      "historical_source": "cogs/misc.py",
+      "source_sha256": "23b18ed183bdbdf3c86f8130b17a55df204cec61ba29322c0ee3f31fa63490b4",
+      "current_equivalent": "unmute",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "utility",
+      "canonical": "utility",
+      "historical_source": "cogs/settings.py",
+      "source_sha256": "94acff97373d0dc6583243cb62d94be659a5b9c57c830b2b8b47741249b541ec",
+      "current_equivalent": "utility",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "verdict",
+      "canonical": "verdict",
+      "historical_source": "cogs/games.py",
+      "source_sha256": "887d2fca49427ab7a15e03337d9b2d99572afc17f35b13326b124988738a85f0",
+      "current_equivalent": "verdict",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "voice",
+      "canonical": "voice",
+      "historical_source": "cogs/system.py",
+      "source_sha256": "b8a40c38ba5877f8fac72114efaf01b7a5aa955630239e7af295b0789c76a459",
+      "current_equivalent": "voice",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "speak",
+      "canonical": "voice",
+      "historical_source": "cogs/system.py",
+      "source_sha256": "b8a40c38ba5877f8fac72114efaf01b7a5aa955630239e7af295b0789c76a459",
+      "current_equivalent": "voice",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "say",
+      "canonical": "voice",
+      "historical_source": "cogs/system.py",
+      "source_sha256": "b8a40c38ba5877f8fac72114efaf01b7a5aa955630239e7af295b0789c76a459",
+      "current_equivalent": "voice",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "wander",
+      "canonical": "wander",
+      "historical_source": "cogs/memory.py",
+      "source_sha256": "f22080ea3967c205d5d847b44c7c6096a00a026c49d935c6c338e2a106a006d0",
+      "current_equivalent": "wander",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "wanhelp",
+      "canonical": "wanhelp",
+      "historical_source": "cogs/help.py",
+      "source_sha256": "2c66f40d71674d7ef60376e67b7f3dbf5125ee309311df701e74b36dc99eb3a0",
+      "current_equivalent": "wanhelp",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "wandererhelp",
+      "canonical": "wanhelp",
+      "historical_source": "cogs/help.py",
+      "source_sha256": "2c66f40d71674d7ef60376e67b7f3dbf5125ee309311df701e74b36dc99eb3a0",
+      "current_equivalent": "wanhelp",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "alias",
+      "old": "commands",
+      "canonical": "wanhelp",
+      "historical_source": "cogs/help.py",
+      "source_sha256": "2c66f40d71674d7ef60376e67b7f3dbf5125ee309311df701e74b36dc99eb3a0",
+      "current_equivalent": "wanhelp",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "weather",
+      "canonical": "weather",
+      "historical_source": "cogs/utility.py",
+      "source_sha256": "ba7d820a37ff74296e398179dac0537717fda4128eda0857175d89fac6944c8c",
+      "current_equivalent": "weather",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "whoami",
+      "canonical": "whoami",
+      "historical_source": "cogs/settings.py",
+      "source_sha256": "94acff97373d0dc6583243cb62d94be659a5b9c57c830b2b8b47741249b541ec",
+      "current_equivalent": "whoami",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "whois",
+      "canonical": "whois",
+      "historical_source": "cogs/admin.py",
+      "source_sha256": "391311a0b918e3da90f4ed915fb50ddbfefc33e214c413bd5f8c2d343ad88d02",
+      "current_equivalent": "whois",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "world",
+      "canonical": "world",
+      "historical_source": "cogs/duo.py",
+      "source_sha256": "c96aa4f6f5123f5a35d1ef9272d3db3b36d8a3bad4eae43375f2ede474cab001",
+      "current_equivalent": "world",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "prefix",
+      "old": "worldadd",
+      "canonical": "worldadd",
+      "historical_source": "cogs/duo.py",
+      "source_sha256": "c96aa4f6f5123f5a35d1ef9272d3db3b36d8a3bad4eae43375f2ede474cab001",
+      "current_equivalent": "worldadd",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "slash",
+      "old": "dailycard",
+      "historical_source": "wanderer_bot.py",
+      "source_sha256": "6197eb2ac8167247c12898e34836cc76823b26852c5b477fc5f8cada55a23435",
+      "current_equivalent": "dailycard",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime slash tree contains this qualified command; callback/group wiring inspected."
+    },
+    {
+      "surface": "slash",
+      "old": "dashboard achievements",
+      "historical_source": "wanderer_bot.py",
+      "source_sha256": "6197eb2ac8167247c12898e34836cc76823b26852c5b477fc5f8cada55a23435",
+      "current_equivalent": "dashboard achievements",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime slash tree contains this qualified command; callback/group wiring inspected."
+    },
+    {
+      "surface": "slash",
+      "old": "dashboard arc",
+      "historical_source": "wanderer_bot.py",
+      "source_sha256": "6197eb2ac8167247c12898e34836cc76823b26852c5b477fc5f8cada55a23435",
+      "current_equivalent": "dashboard arc",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime slash tree contains this qualified command; callback/group wiring inspected."
+    },
+    {
+      "surface": "slash",
+      "old": "dashboard duostate",
+      "historical_source": "wanderer_bot.py",
+      "source_sha256": "6197eb2ac8167247c12898e34836cc76823b26852c5b477fc5f8cada55a23435",
+      "current_equivalent": "dashboard duostate",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime slash tree contains this qualified command; callback/group wiring inspected."
+    },
+    {
+      "surface": "slash",
+      "old": "dashboard relationship",
+      "historical_source": "wanderer_bot.py",
+      "source_sha256": "6197eb2ac8167247c12898e34836cc76823b26852c5b477fc5f8cada55a23435",
+      "current_equivalent": "dashboard relationship",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime slash tree contains this qualified command; callback/group wiring inspected."
+    },
+    {
+      "surface": "slash",
+      "old": "dashboard scene",
+      "historical_source": "wanderer_bot.py",
+      "source_sha256": "6197eb2ac8167247c12898e34836cc76823b26852c5b477fc5f8cada55a23435",
+      "current_equivalent": "dashboard scene",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime slash tree contains this qualified command; callback/group wiring inspected."
+    },
+    {
+      "surface": "slash",
+      "old": "duo start",
+      "historical_source": "wanderer_bot.py",
+      "source_sha256": "6197eb2ac8167247c12898e34836cc76823b26852c5b477fc5f8cada55a23435",
+      "current_equivalent": "duo start",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime slash tree contains this qualified command; callback/group wiring inspected."
+    },
+    {
+      "surface": "slash",
+      "old": "duo state",
+      "historical_source": "wanderer_bot.py",
+      "source_sha256": "6197eb2ac8167247c12898e34836cc76823b26852c5b477fc5f8cada55a23435",
+      "current_equivalent": "duo state",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime slash tree contains this qualified command; callback/group wiring inspected."
+    },
+    {
+      "surface": "slash",
+      "old": "prefs duoauto",
+      "historical_source": "wanderer_bot.py",
+      "source_sha256": "6197eb2ac8167247c12898e34836cc76823b26852c5b477fc5f8cada55a23435",
+      "current_equivalent": "prefs duoauto",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime slash tree contains this qualified command; callback/group wiring inspected."
+    },
+    {
+      "surface": "slash",
+      "old": "prefs rpdepth",
+      "historical_source": "wanderer_bot.py",
+      "source_sha256": "6197eb2ac8167247c12898e34836cc76823b26852c5b477fc5f8cada55a23435",
+      "current_equivalent": "prefs rpdepth",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime slash tree contains this qualified command; callback/group wiring inspected."
+    },
+    {
+      "surface": "slash",
+      "old": "prefs speaker",
+      "historical_source": "wanderer_bot.py",
+      "source_sha256": "6197eb2ac8167247c12898e34836cc76823b26852c5b477fc5f8cada55a23435",
+      "current_equivalent": "prefs speaker",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime slash tree contains this qualified command; callback/group wiring inspected."
+    },
+    {
+      "surface": "slash",
+      "old": "prefs utility",
+      "historical_source": "wanderer_bot.py",
+      "source_sha256": "6197eb2ac8167247c12898e34836cc76823b26852c5b477fc5f8cada55a23435",
+      "current_equivalent": "prefs utility",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime slash tree contains this qualified command; callback/group wiring inspected."
+    },
+    {
+      "surface": "slash",
+      "old": "prefs voice",
+      "historical_source": "wanderer_bot.py",
+      "source_sha256": "6197eb2ac8167247c12898e34836cc76823b26852c5b477fc5f8cada55a23435",
+      "current_equivalent": "prefs voice",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime slash tree contains this qualified command; callback/group wiring inspected."
+    },
+    {
+      "surface": "slash",
+      "old": "tarot",
+      "historical_source": "wanderer_bot.py",
+      "source_sha256": "6197eb2ac8167247c12898e34836cc76823b26852c5b477fc5f8cada55a23435",
+      "current_equivalent": "tarot",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime slash tree contains this qualified command; callback/group wiring inspected."
+    },
+    {
+      "surface": "slash",
+      "old": "tarothistory",
+      "historical_source": "wanderer_bot.py",
+      "source_sha256": "6197eb2ac8167247c12898e34836cc76823b26852c5b477fc5f8cada55a23435",
+      "current_equivalent": "tarothistory",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime slash tree contains this qualified command; callback/group wiring inspected."
+    },
+    {
+      "surface": "slash",
+      "old": "tarotsettings",
+      "historical_source": "wanderer_bot.py",
+      "source_sha256": "6197eb2ac8167247c12898e34836cc76823b26852c5b477fc5f8cada55a23435",
+      "current_equivalent": "tarotsettings",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime slash tree contains this qualified command; callback/group wiring inspected."
+    },
+    {
+      "surface": "slash",
+      "old": "wanderer",
+      "historical_source": "wanderer_bot.py",
+      "source_sha256": "6197eb2ac8167247c12898e34836cc76823b26852c5b477fc5f8cada55a23435",
+      "current_equivalent": "wanderer",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime slash tree contains this qualified command; callback/group wiring inspected."
+    },
+    {
+      "surface": "slash",
+      "old": "world add",
+      "historical_source": "wanderer_bot.py",
+      "source_sha256": "6197eb2ac8167247c12898e34836cc76823b26852c5b477fc5f8cada55a23435",
+      "current_equivalent": "world add",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime slash tree contains this qualified command; callback/group wiring inspected."
+    },
+    {
+      "surface": "slash",
+      "old": "world cases",
+      "historical_source": "wanderer_bot.py",
+      "source_sha256": "6197eb2ac8167247c12898e34836cc76823b26852c5b477fc5f8cada55a23435",
+      "current_equivalent": "world cases",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime slash tree contains this qualified command; callback/group wiring inspected."
+    },
+    {
+      "surface": "slash",
+      "old": "world state",
+      "historical_source": "wanderer_bot.py",
+      "source_sha256": "6197eb2ac8167247c12898e34836cc76823b26852c5b477fc5f8cada55a23435",
+      "current_equivalent": "world state",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime slash tree contains this qualified command; callback/group wiring inspected."
+    },
+    {
+      "surface": "help",
+      "old": "!affection",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "affection",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!answer",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "answer",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!arc",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "arc",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!arena",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "arena",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!argue",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "argue",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!before",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "before",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!both",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "both",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!compare",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "compare",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!compliment",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "compliment",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!confess",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "confess",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!conspiracy",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "conspiracy",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!dailycard",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "dailycard",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!dare",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "dare",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!debate",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "debate",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!deleteface",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "deleteface",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!dm",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "dm",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!dms",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "dms",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!duel",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "duel",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!duet",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "duet",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!duoauto",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "duoauto",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!duostate",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "duostate",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!enrollface",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "enrollface",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!essay",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "solve",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!exportface",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "faceinfo / enrollface / deleteface",
+      "classification": "UNSAFE_TO_RESTORE_AS_IS",
+      "evidence": "Biometric template export is unsupported by the current per-user FaceProfiles API. Enrollment/recognition/deletion are present but are not export equivalents."
+    },
+    {
+      "surface": "help",
+      "old": "!faceinfo",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "faceinfo",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!forget",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "forget",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!fortune",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "fortune",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!gamerank",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "gamerank0",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!haiku",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "haiku",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!importface",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "faceinfo / enrollface / deleteface",
+      "classification": "UNSAFE_TO_RESTORE_AS_IS",
+      "evidence": "Biometric template import can overwrite identity templates and bypass enrollment provenance/consent. No safe current import API or migration is authorized."
+    },
+    {
+      "surface": "help",
+      "old": "!insult",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "insult",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!journal",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "journal",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!judge",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "judge",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!letter",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "letter",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!lore",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "lore",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!math",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "solve",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!memories",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "memories",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!memory",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "memory",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!mood",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "mood",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!mute",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "mute",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!nightmare",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "nightmare",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!nsfw",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "unrestricted",
+      "classification": "RENAMED",
+      "evidence": "Explicit user-authorized Unrestricted rename; Scaramouche commit 7ee4154 and current age-restricted-channel checks. Do not reintroduce NSFW alias."
+    },
+    {
+      "surface": "help",
+      "old": "!opinion",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "opinion",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!pincomfort",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "pincomfort",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!pinjoke",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "pinjoke",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!pinpromise",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "pinpromise",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!pinwound",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "pinwound",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!poll",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "poll",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!possess",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "possess",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!proactive",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "proactive",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!progress",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "progress",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!prophecy",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "prophecy",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!rank",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "rank",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!rate",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "rate",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!reflect",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "reflect",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!relationship",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "relationship",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!remember",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "remember",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!remind",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "remind",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!reset",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "reset",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!riddle",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "riddle",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!roast",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "roast",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!rpdepth",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "rpdepth",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!rpg",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "rpg0",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!rpg0",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "rpg0",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!rpg0reset",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "rpg0reset",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!rpgstats0",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "rpgstats0",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!say",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "voice",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!search",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "search",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!ship",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "ship",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!solve",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "solve",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!spar",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "spar",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!speak",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "voice",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!speaker",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "speaker",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!stalk",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "stalk",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!stats",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "stats",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!story",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "story",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!summarize",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "summarize",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!tarot",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "tarot",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!tarothistory",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "tarothistory",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!tarotsettings",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "tarotsettings",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!tedtalk",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "tedtalk",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!therapy",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "therapy",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!translate",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "translate",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!trivia",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "trivia",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!trust",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "trust",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!unmute",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "unmute",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!utility",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "utility",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!verdict",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "verdict",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!voice",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "voice",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!wander",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "wander",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    },
+    {
+      "surface": "help",
+      "old": "!weather",
+      "historical_source": "help functions in snapshot bot.py / cogs/help.py",
+      "current_equivalent": "weather",
+      "classification": "PRESENT",
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+    }
+  ],
+  "unresolved_count": 6,
+  "scope_note": "Safe restoration closure. Registration is not certification of inherited legacy handlers. Google Production/Phase 2 remain paused. See RESTORATION_REVIEW.md for behavior adaptations, inherited risks, and automated versus live evidence.",
+  "admin_review": [
+    {
+      "name": "backupmemory",
+      "current_equivalent": "backupmemory",
+      "authorization": "Historical owner checks (some fail open if OWNER_ID unset)",
+      "restoration_disposition": "PRESENT_INHERITED_NOT_NEWLY_RESTORED",
+      "reason": "Legacy raw local/shared database backups can include credentials and deleted/private content. Current selfbackup/persistence cover local diagnostics only, not equivalent shared export. Retention, encryption and deletion fencing are prerequisites."
+    },
+    {
+      "name": "banchannel",
+      "current_equivalent": "banchannel",
+      "authorization": "Historical owner checks (some fail open if OWNER_ID unset)",
+      "restoration_disposition": "PRESENT_INHERITED_NOT_NEWLY_RESTORED",
+      "reason": "Legacy persistent bot-channel ban requires admission checks across normal replies, duo, jobs and voice. Current Scaramouche has no matching ban backend; a command-only port would falsely claim enforcement."
+    },
+    {
+      "name": "unbanchannel",
+      "current_equivalent": "unbanchannel",
+      "authorization": "Historical owner checks (some fail open if OWNER_ID unset)",
+      "restoration_disposition": "PRESENT_INHERITED_NOT_NEWLY_RESTORED",
+      "reason": "Companion to the absent persistent channel-admission backend; do not restore a no-op unblock control."
+    },
+    {
+      "name": "bannedchannels",
+      "current_equivalent": "bannedchannels",
+      "authorization": "Historical owner checks (some fail open if OWNER_ID unset)",
+      "restoration_disposition": "PRESENT_INHERITED_NOT_NEWLY_RESTORED",
+      "reason": "Inventory of the absent legacy channel-ban store; no safe equivalent state to report."
+    },
+    {
+      "name": "rebanchannels",
+      "current_equivalent": "rebanchannels",
+      "authorization": "Historical owner checks (some fail open if OWNER_ID unset)",
+      "restoration_disposition": "PRESENT_INHERITED_NOT_NEWLY_RESTORED",
+      "reason": "Infers channel bans by scanning old messages; ambiguous text can recreate stale administrative state without confirmation."
+    },
+    {
+      "name": "blockall",
+      "current_equivalent": "blockall",
+      "authorization": "Historical owner checks (some fail open if OWNER_ID unset)",
+      "restoration_disposition": "PRESENT_INHERITED_NOT_NEWLY_RESTORED",
+      "reason": "Bulk blocks users selected from cached guild membership and sends unsolicited farewells; lacks exact scoped confirmation and current cross-path enforcement."
+    },
+    {
+      "name": "reban",
+      "current_equivalent": "reban",
+      "authorization": "Historical owner checks (some fail open if OWNER_ID unset)",
+      "restoration_disposition": "PRESENT_INHERITED_NOT_NEWLY_RESTORED",
+      "reason": "Bulk global DM blocking based on inferred membership lacks exact scoped confirmation and the current missing admission backend."
+    },
+    {
+      "name": "blockdm",
+      "current_equivalent": "blockdm",
+      "authorization": "Historical owner checks (some fail open if OWNER_ID unset)",
+      "restoration_disposition": "PRESENT_INHERITED_NOT_NEWLY_RESTORED",
+      "reason": "Legacy numeric/name targeting is ambiguous and mutates global DM access with unsolicited outbound messages; missing current admission backend and exact confirmation."
+    },
+    {
+      "name": "unblockdm",
+      "current_equivalent": "unblockdm",
+      "authorization": "Historical owner checks (some fail open if OWNER_ID unset)",
+      "restoration_disposition": "PRESENT_INHERITED_NOT_NEWLY_RESTORED",
+      "reason": "Legacy ambiguous global target selection and missing current DM block backend; cannot safely promise restored access."
+    },
+    {
+      "name": "dmlist",
+      "current_equivalent": "dmlist",
+      "authorization": "Historical owner checks (some fail open if OWNER_ID unset)",
+      "restoration_disposition": "PRESENT_INHERITED_NOT_NEWLY_RESTORED",
+      "reason": "Enumerates private DM-only identities and relationship/message metadata for the owner. No current privacy-scoped export authorization or redaction contract."
+    },
+    {
+      "name": "logs",
+      "current_equivalent": "logs",
+      "authorization": "Historical owner checks (some fail open if OWNER_ID unset)",
+      "restoration_disposition": "PRESENT_INHERITED_NOT_NEWLY_RESTORED",
+      "reason": "Exports another user's raw chat history to the owner. Can disclose secrets/private content; no current subject-scoped export, redaction or deletion guard."
+    },
+    {
+      "name": "whois",
+      "current_equivalent": "whois",
+      "authorization": "Historical owner checks (some fail open if OWNER_ID unset)",
+      "restoration_disposition": "PRESENT_INHERITED_NOT_NEWLY_RESTORED",
+      "reason": "Aggregates global stored identities, message counts and shared-server membership; current privacy architecture does not authorize this cross-user profile export."
+    },
+    {
+      "name": "owneronly",
+      "current_equivalent": "owneronly",
+      "authorization": "Historical owner checks (some fail open if OWNER_ID unset)",
+      "restoration_disposition": "PRESENT_INHERITED_NOT_NEWLY_RESTORED",
+      "reason": "Legacy in-memory global switch is not enforced by all current event/command/background paths. A partial port is unsafe and misleading."
+    },
+    {
+      "name": "leaveserver",
+      "current_equivalent": "leaveserver",
+      "authorization": "Historical owner checks (some fail open if OWNER_ID unset)",
+      "restoration_disposition": "PRESENT_INHERITED_NOT_NEWLY_RESTORED",
+      "reason": "Immediately leaves a guild selected by mutable index/name without durable exact-target confirmation. Membership mutation is not restored as an unrestricted owner action."
+    },
+    {
+      "name": "rebuildmemory",
+      "current_equivalent": "rebuildmemory",
+      "authorization": "Historical owner/manage-guild history replay",
+      "restoration_disposition": "PRESENT_INHERITED_NOT_NEWLY_RESTORED",
+      "reason": "Bulk replay of visible Discord history may resurrect forgotten content or another user's state. Needs tombstone-aware, scoped confirmed recovery."
+    },
+    {
+      "name": "rebuildrank",
+      "current_equivalent": "rebuildrank",
+      "authorization": "Historical owner/manage-guild history replay",
+      "restoration_disposition": "PRESENT_INHERITED_NOT_NEWLY_RESTORED",
+      "reason": "Historical rank recovery replays other users' history without deletion fences or exact scoped confirmation; current relationship diagnostics are not recovery equivalents."
+    },
+    {
+      "name": "rebuildstats",
+      "current_equivalent": "rebuildstats",
+      "authorization": "Historical owner/manage-guild history replay",
+      "restoration_disposition": "PRESENT_INHERITED_NOT_NEWLY_RESTORED",
+      "reason": "Historical statistics recovery replays other users' history without deletion fences or exact scoped confirmation; no safe current replay backend."
+    },
+    {
+      "name": "rebuildrelationship",
+      "current_equivalent": "rebuildrelationship",
+      "authorization": "Historical owner/manage-guild history replay",
+      "restoration_disposition": "PRESENT_INHERITED_NOT_NEWLY_RESTORED",
+      "reason": "Recomputes relationships from historical content without deletion fences or exact scoped confirmation; may recreate deleted relationship state."
+    },
+    {
+      "name": "fixdoc",
+      "current_equivalent": "fixdoc",
+      "authorization": "Historical owner checks (some fail open if OWNER_ID unset)",
+      "restoration_disposition": "PRESENT_INHERITED_NOT_NEWLY_RESTORED",
+      "reason": "INTENTIONALLY_DEFERRED_PHASE_2: Google Docs/Drive writes are outside this batch. Do not restore service-account writes or broaden Calendar/Tasks scopes."
+    },
+    {
+      "name": "exportface",
+      "current_equivalent": null,
+      "authorization": "Historical owner checks (some fail open if OWNER_ID unset)",
+      "restoration_disposition": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "Biometric template export is unsupported by the current per-user FaceProfiles API. Enrollment/recognition/deletion are present but are not export equivalents."
+    },
+    {
+      "name": "importface",
+      "current_equivalent": null,
+      "authorization": "Historical owner checks (some fail open if OWNER_ID unset)",
+      "restoration_disposition": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "Biometric template import can overwrite identity templates and bypass enrollment provenance/consent. No safe current import API or migration is authorized."
+    }
+  ]
+}

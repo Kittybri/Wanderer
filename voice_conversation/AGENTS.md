@@ -1,0 +1,2 @@
+# Voice preservation
+Inherit root AGENTS.md. Preserve receive/transcribe/targeting/TTS/playback, interruption modes, DAVE encryption, speaker attribution, self/partner filtering, greeting and leave/rejoin behavior. Command-restoration tasks may touch registration only, not voice architecture. Keep privacy cancellation and delivered-memory semantics. No live voice tests without explicit authorization.
