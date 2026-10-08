@@ -1,5 +1,10 @@
 # Preservation and command restoration audit — 2026-10-07
 
+> Historical checkpoint. Superseded for the 2026-10-08 safe restoration by
+> RESTORATION_REVIEW.md, the updated preservation JSON manifests, and the canonical
+> Scaramouche STAGING_VALIDATION.md live closure. Safe restoration is complete;
+> unsafe/deferred surfaces remain explicitly unresolved, not silently removed.
+
 ## Scope and verdict
 Preservation infrastructure is implemented for wanderer. No Google Production,
 Phase 2, OAuth configuration, voice architecture, database architecture, or
