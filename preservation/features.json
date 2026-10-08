@@ -1,0 +1,438 @@
+{
+  "schema_version": 1,
+  "bot": "wanderer",
+  "components": {
+    "CHAOS": [
+      "server_chaos.service",
+      "ServerChaos"
+    ],
+    "CLOUD_INTEGRATIONS": [
+      "connections.runtime",
+      "ConnectedGoogleRuntime"
+    ],
+    "CONNECTIONS": [
+      "connections.service",
+      "ConnectedAccountService"
+    ],
+    "CONNECTIONS_UI": [
+      "connections.discord_ui",
+      "ConnectionsController"
+    ],
+    "FACE_PROFILES": [
+      "face_controls",
+      "FaceProfiles"
+    ],
+    "HOME": [
+      "home.bot_integration",
+      "HomeBot"
+    ],
+    "PC": [
+      "home.companion_bot",
+      "CompanionBot"
+    ],
+    "PROVIDER_STATUS": [
+      "restored_status",
+      "ProviderStatus"
+    ],
+    "TAROT": [
+      "tarot_commands",
+      "TarotController"
+    ],
+    "VOICE_CONVERSATION": [
+      "voice_conversation.integration",
+      "VoiceConversation"
+    ],
+    "WORLD": [
+      "persistent_world",
+      "PersistentWorld"
+    ],
+    "mem": [
+      "memory",
+      "Memory"
+    ]
+  },
+  "features": {
+    "tarot": {
+      "status": "PRESENT",
+      "prefix": [
+        "tarot",
+        "dailycard",
+        "tarothistory",
+        "tarotsettings"
+      ],
+      "wiring": [
+        "TAROT.payload",
+        "TAROT.session",
+        "TAROT_STORE.forget"
+      ],
+      "callable": [
+        "TAROT.payload",
+        "TAROT.session",
+        "TAROT_STORE.forget"
+      ],
+      "privacy_stages": [
+        "tarot",
+        "tarot_final"
+      ]
+    },
+    "rpg/games": {
+      "status": "PRESENT",
+      "prefix": [
+        "rpg0",
+        "rpgstats0",
+        "rpg0reset",
+        "gamerank0"
+      ],
+      "wiring": [
+        "mem.get_rpg_state",
+        "mem.save_rpg_state",
+        "_rpg_handle_choice"
+      ],
+      "callable": [
+        "mem.get_rpg_state",
+        "mem.save_rpg_state",
+        "_rpg_handle_choice"
+      ],
+      "privacy_stages": [
+        "memory_local"
+      ]
+    },
+    "party_games": {
+      "status": "PRESENT",
+      "prefix": [
+        "arena",
+        "trivia",
+        "answer",
+        "wanchaos"
+      ],
+      "wiring": [
+        "CHAOS.install"
+      ],
+      "callable": [
+        "CHAOS.install"
+      ],
+      "privacy_stages": [
+        "server_chaos"
+      ]
+    },
+    "birthdays": {
+      "status": "PRESENT",
+      "prefix": [
+        "birthday"
+      ],
+      "wiring": [
+        "mem.set_birthday",
+        "mem.clear_birthday",
+        "mem.get_birthdays_due"
+      ],
+      "callable": [
+        "mem.set_birthday",
+        "mem.clear_birthday",
+        "mem.get_birthdays_due"
+      ],
+      "privacy_stages": [
+        "memory_local"
+      ]
+    },
+    "voice": {
+      "status": "PRESENT",
+      "prefix": [
+        "voice",
+        "vcparty",
+        "vcgame"
+      ],
+      "wiring": [
+        "VOICE_CONVERSATION.command",
+        "VOICE_CONVERSATION.voice_state"
+      ],
+      "callable": [
+        "VOICE_CONVERSATION.command",
+        "VOICE_CONVERSATION.voice_state"
+      ],
+      "privacy_stages": [
+        "voice_social"
+      ]
+    },
+    "connected_accounts": {
+      "status": "PRESENT",
+      "prefix": [
+        "connections",
+        "google"
+      ],
+      "wiring": [
+        "CONNECTIONS.authorize",
+        "CONNECTIONS.forget",
+        "CONNECTIONS_UI.panel"
+      ],
+      "callable": [
+        "CONNECTIONS.authorize",
+        "CONNECTIONS.forget",
+        "CONNECTIONS_UI.panel"
+      ],
+      "privacy_stages": [
+        "connected_accounts",
+        "connected_accounts_final"
+      ]
+    },
+    "calendar/tasks": {
+      "status": "PRESENT",
+      "prefix": [
+        "calendar list",
+        "calendar add",
+        "calendar confirm",
+        "tasks list",
+        "tasks add",
+        "tasks confirm"
+      ],
+      "wiring": [
+        "CLOUD_INTEGRATIONS.forget"
+      ],
+      "callable": [
+        "CLOUD_INTEGRATIONS.forget"
+      ],
+      "privacy_stages": [
+        "connected_proposals"
+      ]
+    },
+    "privacy_deletion": {
+      "status": "PRESENT",
+      "prefix": [
+        "forget",
+        "reset"
+      ],
+      "wiring": [
+        "PRIVACY_DELETION.is_pending",
+        "mem.reset_user_local",
+        "mem.reset_user_shared"
+      ],
+      "callable": [
+        "PRIVACY_DELETION.is_pending",
+        "mem.reset_user_local",
+        "mem.reset_user_shared"
+      ],
+      "privacy_stages": [
+        "memory_local",
+        "memory_shared"
+      ]
+    },
+    "memory": {
+      "status": "PRESENT",
+      "prefix": [
+        "remember",
+        "memories",
+        "pinpromise",
+        "pinwound",
+        "pincomfort",
+        "pinjoke"
+      ],
+      "wiring": [
+        "mem.get_user",
+        "mem.add_memory_event"
+      ],
+      "callable": [
+        "mem.get_user",
+        "mem.add_memory_event"
+      ],
+      "privacy_stages": [
+        "memory_local"
+      ]
+    },
+    "relationships": {
+      "status": "PRESENT",
+      "prefix": [
+        "relationship",
+        "arc",
+        "stats",
+        "affection",
+        "trust"
+      ],
+      "wiring": [
+        "mem.get_user"
+      ],
+      "callable": [
+        "mem.get_user"
+      ],
+      "privacy_stages": [
+        "memory_local"
+      ]
+    },
+    "duo": {
+      "status": "PRESENT",
+      "prefix": [
+        "both",
+        "duet",
+        "argue",
+        "compare",
+        "duostate"
+      ],
+      "wiring": [
+        "mem.get_duo_session",
+        "mem.set_channel_speaker_mode"
+      ],
+      "callable": [
+        "mem.get_duo_session",
+        "mem.set_channel_speaker_mode"
+      ],
+      "privacy_stages": [
+        "memory_shared"
+      ]
+    },
+    "search": {
+      "status": "PRESENT",
+      "prefix": [
+        "search",
+        "weather",
+        "lore"
+      ],
+      "wiring": [
+        "get_response"
+      ],
+      "callable": [
+        "get_response"
+      ],
+      "privacy_stages": []
+    },
+    "home/device": {
+      "status": "PRESENT",
+      "prefix": [
+        "home",
+        "home do",
+        "home confirm",
+        "pc"
+      ],
+      "wiring": [
+        "HOME.action",
+        "PC.install"
+      ],
+      "callable": [
+        "HOME.action",
+        "PC.install"
+      ],
+      "privacy_stages": [
+        "companion"
+      ]
+    },
+    "media/vision": {
+      "status": "PRESENT",
+      "prefix": [
+        "tedtalk",
+        "enrollface",
+        "recognizeface",
+        "deleteface"
+      ],
+      "wiring": [
+        "FACE_PROFILES.delete"
+      ],
+      "callable": [
+        "FACE_PROFILES.delete"
+      ],
+      "privacy_stages": [
+        "face_memory"
+      ]
+    },
+    "document_tools": {
+      "status": "PRESENT",
+      "prefix": [
+        "fixdoc",
+        "tedtalk"
+      ],
+      "wiring": [
+        "_run_docfix_request"
+      ],
+      "callable": [
+        "_run_docfix_request"
+      ],
+      "privacy_stages": [],
+      "notes": "Legacy registration remains; direct Docs writes are not Phase 1 Connected Accounts. Not invoked/tested live here; requires separate security work before recommending use."
+    },
+    "recovery/admin": {
+      "status": "PRESENT",
+      "prefix": [
+        "bothealth",
+        "backupmemory",
+        "rebuildmemory",
+        "rebuildrank"
+      ],
+      "wiring": [
+        "mem.backup_now"
+      ],
+      "callable": [
+        "mem.backup_now"
+      ],
+      "privacy_stages": [],
+      "notes": "Registration verified; legacy rebuild/admin security not certified by preservation contract."
+    },
+    "provider_status": {
+      "status": "PRESENT",
+      "prefix": [
+        "status"
+      ],
+      "wiring": [
+        "PROVIDER_STATUS.command",
+        "PROVIDER_STATUS.state"
+      ],
+      "callable": [
+        "PROVIDER_STATUS.command",
+        "PROVIDER_STATUS.state"
+      ],
+      "privacy_stages": []
+    },
+    "cloud_integrations": {
+      "status": "PRESENT",
+      "prefix": [
+        "integrations",
+        "githubissue"
+      ],
+      "wiring": [
+        "CLOUD_INTEGRATIONS.forget"
+      ],
+      "callable": [
+        "CLOUD_INTEGRATIONS.forget"
+      ],
+      "privacy_stages": []
+    },
+    "command_help": {
+      "status": "PRESENT",
+      "prefix": [
+        "wanhelp"
+      ],
+      "wiring": [
+        "help_cmd"
+      ],
+      "callable": [
+        "help_cmd"
+      ],
+      "privacy_stages": []
+    },
+    "character": {
+      "status": "PRESENT",
+      "prefix": [],
+      "wiring": [
+        "get_response"
+      ],
+      "callable": [
+        "get_response"
+      ],
+      "privacy_stages": []
+    },
+    "dashboard": {
+      "status": "PRESENT",
+      "prefix": [
+        "achievements",
+        "scene",
+        "world"
+      ],
+      "wiring": [
+        "slash_relationship.callback",
+        "slash_arc.callback",
+        "slash_world_state.callback"
+      ],
+      "callable": [
+        "slash_relationship.callback",
+        "slash_arc.callback",
+        "slash_world_state.callback"
+      ],
+      "privacy_stages": []
+    }
+  }
+}

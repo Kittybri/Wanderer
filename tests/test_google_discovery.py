@@ -76,7 +76,11 @@ def test_actual_character_help_prominently_lists_google_without_embed_overflow()
     source = ast.parse(Path("bot.py").read_text())
     function = next(node for node in source.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "help_cmd")
     function.decorator_list = []
-    namespace = {"discord": discord, "log_error": lambda *args: pytest.fail("Help failed")}
+    # Focused Google presentation test; actual registry coverage is in test_preservation.
+    registry = SimpleNamespace(walk_commands=lambda: [],
+                               tree=SimpleNamespace(walk_commands=lambda: []))
+    namespace = {"discord": discord, "bot": registry,
+                 "log_error": lambda *args: pytest.fail("Help failed")}
     exec(compile(ast.Module(body=[function], type_ignores=[]), "bot.py", "exec"), namespace)
     ctx = SimpleNamespace(send=AsyncMock())
     asyncio.run(namespace["help_cmd"](ctx))

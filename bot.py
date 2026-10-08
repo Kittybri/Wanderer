@@ -9612,9 +9612,9 @@ async def help_cmd(ctx):
                    "• He reads the channel — knows what's been discussed"),
             inline=False)
         e3.set_footer(text="Wanderer Bot | Groq AI + Fish Audio")
-        await ctx.send(embed=e1)
-        await ctx.send(embed=e2)
-        await ctx.send(embed=e3)
+        from command_help import public_catalog
+        from help_delivery import send_help
+        await send_help(ctx, [e1, e2, e3] + public_catalog(bot))
     except Exception as e:
         log_error("help_cmd", e)
         try: await ctx.send("Something went wrong displaying commands.")
@@ -10432,6 +10432,9 @@ PRIVACY_DELETION = PrivacyDeletionCoordinator(mem.db_path, {
 })
 
 from tarot_commands import TarotController
+from restored_status import ProviderStatus
+PROVIDER_STATUS = ProviderStatus(bot, BOT_NAME, groq_client, OWNER_ID).install()
+
 TAROT = TarotController(
     bot, BOT_NAME, groq_client, GROQ_MODEL, os.path.dirname(mem.db_path),
     PRIVACY_DELETION.is_pending, credential_disclosure, store=TAROT_STORE,
