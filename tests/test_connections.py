@@ -697,6 +697,12 @@ async def test_actual_bot_command_registration_and_privacy_wiring(monkeypatch, t
         assert module.bot.get_command(name), name
     names = [command.qualified_name for command in module.bot.walk_commands()]
     assert len(names) == len(set(names))
+    # Freeze the complete registered surface, not only the new feature's names.
+    from pathlib import Path
+    import json
+    expected = json.loads(Path("tests/current_command_surface.json").read_text())
+    assert set(expected["prefix"]) <= set(module.bot.all_commands)
+    assert set(expected["slash"]) <= {c.name for c in module.bot.tree.get_commands()}
     assert module.CLOUD_INTEGRATIONS.connections is module.CONNECTIONS
     assert module.bot.tree.get_command("google")
     assert module.CONNECTIONS.store.path == module.mem.shared_db_path

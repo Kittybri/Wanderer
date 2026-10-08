@@ -8692,6 +8692,7 @@ async def forget_cmd(ctx, *, topic: str = None):
         await _setup(ctx)
         result = await mem.forget_memory_matches(ctx.author.id, topic)
         result["scene"] = await mem.forget_scene_state_matches(ctx.channel.id, topic)
+        result["tarot"] = await TAROT_STORE.forget(ctx.author.id, topic)
         await CHAOS.forget(ctx.author.id)
         await VOICE_CONVERSATION.features.forget_user(ctx.author.id)
         await PC.require_forget(ctx.author.id)
@@ -9516,6 +9517,8 @@ async def help_cmd(ctx):
         e1 = discord.Embed(title="Commands (1/3) — Talk & Fight", description="*I'll say this once.*", color=c)
         from connections.discord_ui import GOOGLE_HELP
         e1.description += "\n\n" + GOOGLE_HELP
+        from tarot_commands import TAROT_HELP
+        e1.description += "\n\n" + TAROT_HELP + "\nPrefix: !tarot · !dailycard · !tarothistory · !tarotsettings"
         for n, v in [
             ("🚶 `!wander`", "A thought while walking — unique to Wanderer"),
             ("🪞 `!reflect <topic>`", "A genuine, layered take — unique to Wanderer"),
@@ -10408,7 +10411,11 @@ async def _delete_face_stage(uid):
     await FACE_PROFILES.delete(uid)
 
 
+from tarot_system import TarotStore
+TAROT_STORE = TarotStore(os.getenv("TAROT_DB_PATH") or os.path.join(os.path.dirname(mem.db_path), "tarot.sqlite3"))
+
 PRIVACY_DELETION = PrivacyDeletionCoordinator(mem.db_path, {
+    "tarot": TAROT_STORE.forget,
     "connected_accounts": CONNECTIONS.forget,
     "connected_proposals": CLOUD_INTEGRATIONS.forget,
     "memory_local": mem.reset_user_local,
@@ -10421,7 +10428,14 @@ PRIVACY_DELETION = PrivacyDeletionCoordinator(mem.db_path, {
     "memory_local_final": mem.reset_user_local,
     "memory_shared_final": mem.reset_user_shared,
     "connected_accounts_final": CONNECTIONS.forget,
+    "tarot_final": TAROT_STORE.forget,
 })
+
+from tarot_commands import TarotController
+TAROT = TarotController(
+    bot, BOT_NAME, groq_client, GROQ_MODEL, os.path.dirname(mem.db_path),
+    PRIVACY_DELETION.is_pending, credential_disclosure, store=TAROT_STORE,
+).install()
 
 from connections.discord_ui import ConnectionsController
 from connections.cloud_commands import install_google_commands
