@@ -129,3 +129,53 @@ canonical Scaramouche STAGING_VALIDATION.md once performed.
   A new permission-test selector was refined to use command decorators rather than
   a duplicated Python callback name. A dashboard contract correctly required the
   callable .callback on decorated slash Command objects. All final checks pass.
+
+## Preservation deployment evidence — 2026-10-07 23:50 PDT
+
+Exact tested/deployed functional SHAs:
+- Scaramouche: `041775ac6997e032d219a8a1eb4b64ae4df842f4`
+- Wanderer: `ae9d740ceab6c0cc40a71a3eed3d3be5a6152752`
+
+Both candidates also passed actual runtime preservation import/help/wiring checks
+on Oracle before restart. Existing 80-tarot.conf remains intact; the new
+85-preservation.conf changes only the bot WorkingDirectory. Prior releases remain
+available; rollback moves only 85-preservation.conf aside, reloads systemd, and
+restarts the two bots. No database migration or provider write was introduced.
+
+Post-restart both bots and the unchanged callback service are active; NRestarts=0
+and inspected new-start error counts=0 for all three. One controlled restart per
+bot, zero callback restarts. Bot start time: 2026-10-08 06:50:46 UTC.
+Host: 337/951 MiB RAM available, 186/3062 MiB swap used.
+Bot-local and shared SQLite quick_check results: ok; original Tarot DB: ok.
+
+Internal before/after comparisons confirm Google connected-account, bot-grant and
+connection-session rows unchanged; protected Google configuration hashes unchanged;
+callback process/working directory unchanged. Tarot preferences, daily draws and
+saved-history rows unchanged. HTTPS callback HTTP 200, successful TLS verification.
+No OAuth/production-prep/credential/DNS configuration or physical/voice action.
+
+Discord global registration API shows all four Tarot slash roots and /google for
+both bots. Both still have ten remote slash roots. Scaramouche's five legacy
+remote roots remain stale relative to its missing local handlers; this is NOT a
+slash-restoration pass for dashboard/world/prefs/duo/scaramouche. No human Tarot
+button click or provider-status invocation was observed here.
+
+Full local suites: Scaramouche 803 passed, 1 skipped, 1 warning (125.49s);
+Wanderer 347 passed, 1 skipped, 1 warning (73.13s). Nine preservation tests and
+20 Tarot tests per repository pass. Compile/import, alias/slash/help/module and
+feature validation, privacy/isolation/authorization/credential/arbitration suite
+coverage, and whitespace checks pass. Whole-tree secret-pattern scan found no
+real credential; Wanderer's sole flagged file contains known detector fixtures.
+
+GitHub Preservation checks passed for both candidate heads. Repair PRs #24 and
+#11 remain draft, open and mergeable; no merge performed. The inherited
+Scaramouche Cloudflare Workers check was still in progress at the inspected
+checkpoint and is separate from these successful code/test checks.
+
+**State: PRESERVATION_INSTALLED_RESTORATION_INCOMPLETE.**
+Historical name/registration inventory is complete for the recorded snapshots;
+full behavior restoration is not complete. Remaining features and security/scope
+dependencies are retained in PRESERVATION_RESTORATION_AUDIT.md and
+preservation/historical_audit.json. Do not resume Google Production/Phase 2
+automatically or interpret the current supported manifest as proof that omitted
+legacy functionality has been restored.
