@@ -1,1 +1,10 @@
-[]
+[
+  {
+    "authorization": "Current user attachment ae3e2cc9-b08b-4740-ad19-858ce1b43da0: restore only safe behavior; defer Docs/Drive and unsafe biometric/recovery paths.",
+    "removed_surfaces": [],
+    "reason": "No currently registered feature removed. Historical missing unsafe paths remain explicitly unresolved; safe restoration adapts private scope, exact ownership and deletion fencing.",
+    "replacement": "RESTORATION_REVIEW.md; existing Unrestricted rename retained; Docs/Drive deferred to Phase 2; FaceProfiles enrollment/recognition/deletion remain, not an import/export equivalent.",
+    "privacy_impact": "No Google credential/scope changes, no legacy bulk history replay or biometric import/export, no other-user birthday registration. Private legacy RPG dates/progress are not published into guessed guilds.",
+    "validation": "Full suites, preservation negative cases, registration/import checks and staging evidence recorded in STAGING_VALIDATION.md."
+  }
+]

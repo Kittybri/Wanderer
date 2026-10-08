@@ -2070,32 +2070,38 @@
     {
       "surface": "prefix",
       "name": "exportface",
-      "status": "UNSAFE_TO_RESTORE_AS_IS"
+      "classification": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "Biometric template export is unsupported by the current per-user FaceProfiles API. Enrollment/recognition/deletion are present but are not export equivalents."
     },
     {
       "surface": "alias",
       "name": "faceexport",
-      "status": "UNSAFE_TO_RESTORE_AS_IS"
+      "classification": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "Biometric template export is unsupported by the current per-user FaceProfiles API. Enrollment/recognition/deletion are present but are not export equivalents."
     },
     {
       "surface": "prefix",
       "name": "importface",
-      "status": "UNSAFE_TO_RESTORE_AS_IS"
+      "classification": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "Biometric template import can overwrite identity templates and bypass enrollment provenance/consent. No safe current import API or migration is authorized."
     },
     {
       "surface": "alias",
       "name": "restoreface",
-      "status": "UNSAFE_TO_RESTORE_AS_IS"
+      "classification": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "Biometric template import can overwrite identity templates and bypass enrollment provenance/consent. No safe current import API or migration is authorized."
     },
     {
       "surface": "help",
       "name": "!exportface",
-      "status": "UNSAFE_TO_RESTORE_AS_IS"
+      "classification": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "Biometric template export is unsupported by the current per-user FaceProfiles API. Enrollment/recognition/deletion are present but are not export equivalents."
     },
     {
       "surface": "help",
       "name": "!importface",
-      "status": "UNSAFE_TO_RESTORE_AS_IS"
+      "classification": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "Biometric template import can overwrite identity templates and bypass enrollment provenance/consent. No safe current import API or migration is authorized."
     }
   ],
   "listeners": {

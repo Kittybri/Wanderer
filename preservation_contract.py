@@ -124,9 +124,13 @@ def removal_errors(before, after, changes):
     expected_unresolved = {(r["surface"], r["name"]) for r in before.get("unresolved_surfaces", [])}
     retained = {(r["surface"], r["name"]) for r in after.get("unresolved_surfaces", [])}
     # Resolving an omission is valid; silently forgetting it is not.
+    supported_prefix = set(after.get("prefix", {}))
+    for canonical, spec in after.get("prefix", {}).items():
+        parent = canonical.rsplit(" ", 1)[0] + " " if " " in canonical else ""
+        supported_prefix.update(parent + alias for alias in spec.get("aliases", []))
     for surface, name in expected_unresolved - retained:
-        kind = "slash" if surface == "slash" else "prefix"
-        if name.lstrip("!") not in after.get(kind, {}):
+        supported = set(after.get("slash", {})) if surface == "slash" else supported_prefix
+        if name.lstrip("!") not in supported:
             removed.add(f"unresolved:{surface}:{name}")
     allowed = set()
     for record in changes:

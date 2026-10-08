@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "bot": "wanderer",
-  "checkpoint": "2736093",
+  "checkpoint": "restoration-continuation-2026-10-08",
   "source_root": "oracle_ops/remote_snapshots/wanderer",
   "sources": {
     "cogs/__init__.py": "e3cffb11be589fce572b9efb02bd23d2c363924bc69ac199c4c8665f97d862bd",
@@ -34,7 +34,7 @@
       "source_sha256": "391311a0b918e3da90f4ed915fb50ddbfefc33e214c413bd5f8c2d343ad88d02",
       "current_equivalent": "Direct bot.py registration and current dynamic installers; no current Cogs",
       "classification": "RENAMED",
-      "evidence": "Recorded module commands present or renamed; container removal is not feature loss.",
+      "evidence": "Recorded command surfaces are registered or explicitly renamed through current direct handlers/installers; Cog container is not required.",
       "unresolved_commands": []
     },
     {
@@ -42,7 +42,7 @@
       "source_sha256": "c96aa4f6f5123f5a35d1ef9272d3db3b36d8a3bad4eae43375f2ede474cab001",
       "current_equivalent": "Direct bot.py registration and current dynamic installers; no current Cogs",
       "classification": "RENAMED",
-      "evidence": "Recorded module commands present or renamed; container removal is not feature loss.",
+      "evidence": "Recorded command surfaces are registered or explicitly renamed through current direct handlers/installers; Cog container is not required.",
       "unresolved_commands": []
     },
     {
@@ -50,7 +50,7 @@
       "source_sha256": "887d2fca49427ab7a15e03337d9b2d99572afc17f35b13326b124988738a85f0",
       "current_equivalent": "Direct bot.py registration and current dynamic installers; no current Cogs",
       "classification": "RENAMED",
-      "evidence": "Recorded module commands present or renamed; container removal is not feature loss.",
+      "evidence": "Recorded command surfaces are registered or explicitly renamed through current direct handlers/installers; Cog container is not required.",
       "unresolved_commands": []
     },
     {
@@ -58,7 +58,7 @@
       "source_sha256": "2c66f40d71674d7ef60376e67b7f3dbf5125ee309311df701e74b36dc99eb3a0",
       "current_equivalent": "Direct bot.py registration and current dynamic installers; no current Cogs",
       "classification": "RENAMED",
-      "evidence": "Recorded module commands present or renamed; container removal is not feature loss.",
+      "evidence": "Recorded command surfaces are registered or explicitly renamed through current direct handlers/installers; Cog container is not required.",
       "unresolved_commands": []
     },
     {
@@ -66,7 +66,7 @@
       "source_sha256": "f22080ea3967c205d5d847b44c7c6096a00a026c49d935c6c338e2a106a006d0",
       "current_equivalent": "Direct bot.py registration and current dynamic installers; no current Cogs",
       "classification": "RENAMED",
-      "evidence": "Recorded module commands present or renamed; container removal is not feature loss.",
+      "evidence": "Recorded command surfaces are registered or explicitly renamed through current direct handlers/installers; Cog container is not required.",
       "unresolved_commands": []
     },
     {
@@ -74,15 +74,15 @@
       "source_sha256": "23b18ed183bdbdf3c86f8130b17a55df204cec61ba29322c0ee3f31fa63490b4",
       "current_equivalent": "Direct bot.py registration and current dynamic installers; no current Cogs",
       "classification": "RENAMED",
-      "evidence": "Recorded module commands present or renamed; container removal is not feature loss.",
+      "evidence": "Recorded command surfaces are registered or explicitly renamed through current direct handlers/installers; Cog container is not required.",
       "unresolved_commands": []
     },
     {
       "historical_source": "cogs/settings.py",
       "source_sha256": "94acff97373d0dc6583243cb62d94be659a5b9c57c830b2b8b47741249b541ec",
       "current_equivalent": "Direct bot.py registration and current dynamic installers; no current Cogs",
-      "classification": "ACCIDENTALLY_MISSING",
-      "evidence": "Some module commands remain unresolved.",
+      "classification": "UNSAFE_TO_RESTORE_AS_IS",
+      "evidence": "Safe available handlers mapped; remaining commands individually reviewed as unsafe, not silently omitted.",
       "unresolved_commands": [
         "exportface",
         "importface"
@@ -93,7 +93,7 @@
       "source_sha256": "b8a40c38ba5877f8fac72114efaf01b7a5aa955630239e7af295b0789c76a459",
       "current_equivalent": "Direct bot.py registration and current dynamic installers; no current Cogs",
       "classification": "RENAMED",
-      "evidence": "Recorded module commands present or renamed; container removal is not feature loss.",
+      "evidence": "Recorded command surfaces are registered or explicitly renamed through current direct handlers/installers; Cog container is not required.",
       "unresolved_commands": []
     },
     {
@@ -101,7 +101,7 @@
       "source_sha256": "ba7d820a37ff74296e398179dac0537717fda4128eda0857175d89fac6944c8c",
       "current_equivalent": "Direct bot.py registration and current dynamic installers; no current Cogs",
       "classification": "RENAMED",
-      "evidence": "Recorded module commands present or renamed; container removal is not feature loss.",
+      "evidence": "Recorded command surfaces are registered or explicitly renamed through current direct handlers/installers; Cog container is not required.",
       "unresolved_commands": []
     }
   ],
@@ -620,7 +620,7 @@
       "source_sha256": "94acff97373d0dc6583243cb62d94be659a5b9c57c830b2b8b47741249b541ec",
       "current_equivalent": "faceinfo / enrollface / deleteface",
       "classification": "UNSAFE_TO_RESTORE_AS_IS",
-      "evidence": "Private user-scoped face_controls generation guards replace legacy owner/global template access (Scaramouche 7ca9c84). Export/import removal authorization is not conclusively established; do not call it intentional solely from absence."
+      "evidence": "Biometric template export is unsupported by the current per-user FaceProfiles API. Enrollment/recognition/deletion are present but are not export equivalents."
     },
     {
       "surface": "alias",
@@ -630,7 +630,7 @@
       "source_sha256": "94acff97373d0dc6583243cb62d94be659a5b9c57c830b2b8b47741249b541ec",
       "current_equivalent": "faceinfo / enrollface / deleteface",
       "classification": "UNSAFE_TO_RESTORE_AS_IS",
-      "evidence": "Private user-scoped face_controls generation guards replace legacy owner/global template access (Scaramouche 7ca9c84). Export/import removal authorization is not conclusively established; do not call it intentional solely from absence."
+      "evidence": "Biometric template export is unsupported by the current per-user FaceProfiles API. Enrollment/recognition/deletion are present but are not export equivalents."
     },
     {
       "surface": "prefix",
@@ -650,7 +650,8 @@
       "source_sha256": "b8a40c38ba5877f8fac72114efaf01b7a5aa955630239e7af295b0789c76a459",
       "current_equivalent": "fixdoc",
       "classification": "PRESENT",
-      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension.",
+      "scope_note": "Existing Wanderer legacy handler, if registered, is not exercised, expanded or certified by this restoration. Docs/Drive remains deferred."
     },
     {
       "surface": "alias",
@@ -660,7 +661,8 @@
       "source_sha256": "b8a40c38ba5877f8fac72114efaf01b7a5aa955630239e7af295b0789c76a459",
       "current_equivalent": "fixdoc",
       "classification": "PRESENT",
-      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension.",
+      "scope_note": "Existing Wanderer legacy handler, if registered, is not exercised, expanded or certified by this restoration. Docs/Drive remains deferred."
     },
     {
       "surface": "alias",
@@ -670,7 +672,8 @@
       "source_sha256": "b8a40c38ba5877f8fac72114efaf01b7a5aa955630239e7af295b0789c76a459",
       "current_equivalent": "fixdoc",
       "classification": "PRESENT",
-      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension.",
+      "scope_note": "Existing Wanderer legacy handler, if registered, is not exercised, expanded or certified by this restoration. Docs/Drive remains deferred."
     },
     {
       "surface": "alias",
@@ -680,7 +683,8 @@
       "source_sha256": "b8a40c38ba5877f8fac72114efaf01b7a5aa955630239e7af295b0789c76a459",
       "current_equivalent": "fixdoc",
       "classification": "PRESENT",
-      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension."
+      "evidence": "Actual runtime command/alias resolves to current handler; behavior safety is a separate audit dimension.",
+      "scope_note": "Existing Wanderer legacy handler, if registered, is not exercised, expanded or certified by this restoration. Docs/Drive remains deferred."
     },
     {
       "surface": "prefix",
@@ -770,7 +774,7 @@
       "source_sha256": "94acff97373d0dc6583243cb62d94be659a5b9c57c830b2b8b47741249b541ec",
       "current_equivalent": "faceinfo / enrollface / deleteface",
       "classification": "UNSAFE_TO_RESTORE_AS_IS",
-      "evidence": "Private user-scoped face_controls generation guards replace legacy owner/global template access (Scaramouche 7ca9c84). Export/import removal authorization is not conclusively established; do not call it intentional solely from absence."
+      "evidence": "Biometric template import can overwrite identity templates and bypass enrollment provenance/consent. No safe current import API or migration is authorized."
     },
     {
       "surface": "alias",
@@ -780,7 +784,7 @@
       "source_sha256": "94acff97373d0dc6583243cb62d94be659a5b9c57c830b2b8b47741249b541ec",
       "current_equivalent": "faceinfo / enrollface / deleteface",
       "classification": "UNSAFE_TO_RESTORE_AS_IS",
-      "evidence": "Private user-scoped face_controls generation guards replace legacy owner/global template access (Scaramouche 7ca9c84). Export/import removal authorization is not conclusively established; do not call it intentional solely from absence."
+      "evidence": "Biometric template import can overwrite identity templates and bypass enrollment provenance/consent. No safe current import API or migration is authorized."
     },
     {
       "surface": "prefix",
@@ -2442,7 +2446,7 @@
       "historical_source": "help functions in snapshot bot.py / cogs/help.py",
       "current_equivalent": "faceinfo / enrollface / deleteface",
       "classification": "UNSAFE_TO_RESTORE_AS_IS",
-      "evidence": "Private user-scoped face_controls generation guards replace legacy owner/global template access (Scaramouche 7ca9c84). Export/import removal authorization is not conclusively established; do not call it intentional solely from absence."
+      "evidence": "Biometric template export is unsupported by the current per-user FaceProfiles API. Enrollment/recognition/deletion are present but are not export equivalents."
     },
     {
       "surface": "help",
@@ -2490,7 +2494,7 @@
       "historical_source": "help functions in snapshot bot.py / cogs/help.py",
       "current_equivalent": "faceinfo / enrollface / deleteface",
       "classification": "UNSAFE_TO_RESTORE_AS_IS",
-      "evidence": "Private user-scoped face_controls generation guards replace legacy owner/global template access (Scaramouche 7ca9c84). Export/import removal authorization is not conclusively established; do not call it intentional solely from absence."
+      "evidence": "Biometric template import can overwrite identity templates and bypass enrollment provenance/consent. No safe current import API or migration is authorized."
     },
     {
       "surface": "help",
@@ -2982,5 +2986,154 @@
     }
   ],
   "unresolved_count": 6,
-  "scope_note": "PRESENT means registration and identified implementation, not live exercise or a blanket security attestation. Original engine snapshots exceed early available Git command coverage. No intentional removals inferred without evidence."
+  "scope_note": "Safe restoration closure. Registration is not certification of inherited legacy handlers. Google Production/Phase 2 remain paused. See RESTORATION_REVIEW.md for behavior adaptations, inherited risks, and automated versus live evidence.",
+  "admin_review": [
+    {
+      "name": "backupmemory",
+      "current_equivalent": "backupmemory",
+      "authorization": "Historical owner checks (some fail open if OWNER_ID unset)",
+      "restoration_disposition": "PRESENT_INHERITED_NOT_NEWLY_RESTORED",
+      "reason": "Legacy raw local/shared database backups can include credentials and deleted/private content. Current selfbackup/persistence cover local diagnostics only, not equivalent shared export. Retention, encryption and deletion fencing are prerequisites."
+    },
+    {
+      "name": "banchannel",
+      "current_equivalent": "banchannel",
+      "authorization": "Historical owner checks (some fail open if OWNER_ID unset)",
+      "restoration_disposition": "PRESENT_INHERITED_NOT_NEWLY_RESTORED",
+      "reason": "Legacy persistent bot-channel ban requires admission checks across normal replies, duo, jobs and voice. Current Scaramouche has no matching ban backend; a command-only port would falsely claim enforcement."
+    },
+    {
+      "name": "unbanchannel",
+      "current_equivalent": "unbanchannel",
+      "authorization": "Historical owner checks (some fail open if OWNER_ID unset)",
+      "restoration_disposition": "PRESENT_INHERITED_NOT_NEWLY_RESTORED",
+      "reason": "Companion to the absent persistent channel-admission backend; do not restore a no-op unblock control."
+    },
+    {
+      "name": "bannedchannels",
+      "current_equivalent": "bannedchannels",
+      "authorization": "Historical owner checks (some fail open if OWNER_ID unset)",
+      "restoration_disposition": "PRESENT_INHERITED_NOT_NEWLY_RESTORED",
+      "reason": "Inventory of the absent legacy channel-ban store; no safe equivalent state to report."
+    },
+    {
+      "name": "rebanchannels",
+      "current_equivalent": "rebanchannels",
+      "authorization": "Historical owner checks (some fail open if OWNER_ID unset)",
+      "restoration_disposition": "PRESENT_INHERITED_NOT_NEWLY_RESTORED",
+      "reason": "Infers channel bans by scanning old messages; ambiguous text can recreate stale administrative state without confirmation."
+    },
+    {
+      "name": "blockall",
+      "current_equivalent": "blockall",
+      "authorization": "Historical owner checks (some fail open if OWNER_ID unset)",
+      "restoration_disposition": "PRESENT_INHERITED_NOT_NEWLY_RESTORED",
+      "reason": "Bulk blocks users selected from cached guild membership and sends unsolicited farewells; lacks exact scoped confirmation and current cross-path enforcement."
+    },
+    {
+      "name": "reban",
+      "current_equivalent": "reban",
+      "authorization": "Historical owner checks (some fail open if OWNER_ID unset)",
+      "restoration_disposition": "PRESENT_INHERITED_NOT_NEWLY_RESTORED",
+      "reason": "Bulk global DM blocking based on inferred membership lacks exact scoped confirmation and the current missing admission backend."
+    },
+    {
+      "name": "blockdm",
+      "current_equivalent": "blockdm",
+      "authorization": "Historical owner checks (some fail open if OWNER_ID unset)",
+      "restoration_disposition": "PRESENT_INHERITED_NOT_NEWLY_RESTORED",
+      "reason": "Legacy numeric/name targeting is ambiguous and mutates global DM access with unsolicited outbound messages; missing current admission backend and exact confirmation."
+    },
+    {
+      "name": "unblockdm",
+      "current_equivalent": "unblockdm",
+      "authorization": "Historical owner checks (some fail open if OWNER_ID unset)",
+      "restoration_disposition": "PRESENT_INHERITED_NOT_NEWLY_RESTORED",
+      "reason": "Legacy ambiguous global target selection and missing current DM block backend; cannot safely promise restored access."
+    },
+    {
+      "name": "dmlist",
+      "current_equivalent": "dmlist",
+      "authorization": "Historical owner checks (some fail open if OWNER_ID unset)",
+      "restoration_disposition": "PRESENT_INHERITED_NOT_NEWLY_RESTORED",
+      "reason": "Enumerates private DM-only identities and relationship/message metadata for the owner. No current privacy-scoped export authorization or redaction contract."
+    },
+    {
+      "name": "logs",
+      "current_equivalent": "logs",
+      "authorization": "Historical owner checks (some fail open if OWNER_ID unset)",
+      "restoration_disposition": "PRESENT_INHERITED_NOT_NEWLY_RESTORED",
+      "reason": "Exports another user's raw chat history to the owner. Can disclose secrets/private content; no current subject-scoped export, redaction or deletion guard."
+    },
+    {
+      "name": "whois",
+      "current_equivalent": "whois",
+      "authorization": "Historical owner checks (some fail open if OWNER_ID unset)",
+      "restoration_disposition": "PRESENT_INHERITED_NOT_NEWLY_RESTORED",
+      "reason": "Aggregates global stored identities, message counts and shared-server membership; current privacy architecture does not authorize this cross-user profile export."
+    },
+    {
+      "name": "owneronly",
+      "current_equivalent": "owneronly",
+      "authorization": "Historical owner checks (some fail open if OWNER_ID unset)",
+      "restoration_disposition": "PRESENT_INHERITED_NOT_NEWLY_RESTORED",
+      "reason": "Legacy in-memory global switch is not enforced by all current event/command/background paths. A partial port is unsafe and misleading."
+    },
+    {
+      "name": "leaveserver",
+      "current_equivalent": "leaveserver",
+      "authorization": "Historical owner checks (some fail open if OWNER_ID unset)",
+      "restoration_disposition": "PRESENT_INHERITED_NOT_NEWLY_RESTORED",
+      "reason": "Immediately leaves a guild selected by mutable index/name without durable exact-target confirmation. Membership mutation is not restored as an unrestricted owner action."
+    },
+    {
+      "name": "rebuildmemory",
+      "current_equivalent": "rebuildmemory",
+      "authorization": "Historical owner/manage-guild history replay",
+      "restoration_disposition": "PRESENT_INHERITED_NOT_NEWLY_RESTORED",
+      "reason": "Bulk replay of visible Discord history may resurrect forgotten content or another user's state. Needs tombstone-aware, scoped confirmed recovery."
+    },
+    {
+      "name": "rebuildrank",
+      "current_equivalent": "rebuildrank",
+      "authorization": "Historical owner/manage-guild history replay",
+      "restoration_disposition": "PRESENT_INHERITED_NOT_NEWLY_RESTORED",
+      "reason": "Historical rank recovery replays other users' history without deletion fences or exact scoped confirmation; current relationship diagnostics are not recovery equivalents."
+    },
+    {
+      "name": "rebuildstats",
+      "current_equivalent": "rebuildstats",
+      "authorization": "Historical owner/manage-guild history replay",
+      "restoration_disposition": "PRESENT_INHERITED_NOT_NEWLY_RESTORED",
+      "reason": "Historical statistics recovery replays other users' history without deletion fences or exact scoped confirmation; no safe current replay backend."
+    },
+    {
+      "name": "rebuildrelationship",
+      "current_equivalent": "rebuildrelationship",
+      "authorization": "Historical owner/manage-guild history replay",
+      "restoration_disposition": "PRESENT_INHERITED_NOT_NEWLY_RESTORED",
+      "reason": "Recomputes relationships from historical content without deletion fences or exact scoped confirmation; may recreate deleted relationship state."
+    },
+    {
+      "name": "fixdoc",
+      "current_equivalent": "fixdoc",
+      "authorization": "Historical owner checks (some fail open if OWNER_ID unset)",
+      "restoration_disposition": "PRESENT_INHERITED_NOT_NEWLY_RESTORED",
+      "reason": "INTENTIONALLY_DEFERRED_PHASE_2: Google Docs/Drive writes are outside this batch. Do not restore service-account writes or broaden Calendar/Tasks scopes."
+    },
+    {
+      "name": "exportface",
+      "current_equivalent": null,
+      "authorization": "Historical owner checks (some fail open if OWNER_ID unset)",
+      "restoration_disposition": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "Biometric template export is unsupported by the current per-user FaceProfiles API. Enrollment/recognition/deletion are present but are not export equivalents."
+    },
+    {
+      "name": "importface",
+      "current_equivalent": null,
+      "authorization": "Historical owner checks (some fail open if OWNER_ID unset)",
+      "restoration_disposition": "UNSAFE_TO_RESTORE_AS_IS",
+      "reason": "Biometric template import can overwrite identity templates and bypass enrollment provenance/consent. No safe current import API or migration is authorized."
+    }
+  ]
 }

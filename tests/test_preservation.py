@@ -110,6 +110,14 @@ def test_historical_audit_and_expected_surface_are_complete():
     assert len(audit["sources"]) >= 12
     assert next(r for r in audit["records"] if r["old"] == "nsfw")["classification"] == "RENAMED"
 
+def test_resolving_a_missing_alias_requires_an_actual_registered_alias():
+    before = {"unresolved_surfaces": [{"surface":"alias","name":"quest1"}]}
+    assert removal_errors(before, {}, []) == ["unresolved:alias:quest1"]
+    after = {"prefix":{"rpg1":{"aliases":["quest1"]}}}
+    assert removal_errors(before, after, []) == []
+    after["prefix"]["rpg1"]["aliases"] = []
+    assert removal_errors(before, after, []) == ["unresolved:alias:quest1"]
+
 @pytest.mark.parametrize("name", ["Scaramouche", "Wanderer"])
 @run
 async def test_status_is_read_only_distinct_and_private(name):

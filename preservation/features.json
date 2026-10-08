@@ -343,7 +343,7 @@
         "_run_docfix_request"
       ],
       "privacy_stages": [],
-      "notes": "Legacy registration remains; direct Docs writes are not Phase 1 Connected Accounts. Not invoked/tested live here; requires separate security work before recommending use."
+      "notes": "Existing legacy document handler is retained but not exercised or security-certified. Google Docs/Drive writes remain intentionally deferred to Phase 2; no new scopes or provider writes. See RESTORATION_REVIEW.md."
     },
     "recovery/admin": {
       "status": "PRESENT",
@@ -360,7 +360,7 @@
         "mem.backup_now"
       ],
       "privacy_stages": [],
-      "notes": "Registration verified; legacy rebuild/admin security not certified by preservation contract."
+      "notes": "Existing admin/recovery surfaces remain registered, not newly restored. Historical authorization/privacy/confirmation risks are individually recorded in historical_audit.json.admin_review; PRESENT is not blanket security certification."
     },
     "provider_status": {
       "status": "PRESENT",
