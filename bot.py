@@ -760,7 +760,7 @@ def debug_event(tag: str, detail: str):
 
 from response_quality import (
     FAILURE_NOTICE, ReplyKind, allows_short_reply, final_response,
-    human_mentions_bot, recover_response, repeated_answer, trim_repeated_opener, usable,
+    human_mentions_bot, provider_text, recover_response, repeated_answer, trim_repeated_opener, usable,
 )
 
 
@@ -2234,9 +2234,9 @@ async def _text_rewrite_reply_once(
         f"Draft: {draft}\n"
         "Rewrite it once. Keep the meaning, keep it concise, avoid modern slang, avoid flat generic phrasing, and do not become softer than the relationship state has earned. Only return the rewritten reply."
     )
-    # A rewrite is one raw attempt, NOT a nested conversation with fallbacks.
+    # A rewrite is one checked attempt, NOT a nested conversation with fallbacks.
     rewritten = await asyncio.get_running_loop().run_in_executor(
-        None, _groq_quick_blocking, prompt, min(max_tokens, 260), _select_text_model(route="light")
+        None, _text_quick_blocking, prompt, min(max_tokens, 260), _select_text_model(route="light")
     )
     return strip_narration((rewritten or "").strip())
 
@@ -3386,8 +3386,8 @@ async def _handle_partner_message(message, target_info: dict | None = None) -> b
                     "but make it sound like you noticed the line crossed into blunt damage instead of useful precision. "
                     "One or two sentences. No narration."
                 )
-                reply = await qai(prompt, 180, route="primary")
-                reply = await _apply_phrase_policy(reply, [item.get("content", "") for item in recent_banter], mood=-3, conflict_open=True)
+                reply = await text_qai(prompt, 180, route="primary", direct=False)
+                reply = await _apply_phrase_policy(reply, [item.get("content", "") for item in recent_banter], mood=-3, conflict_open=True, preserve_content=True)
                 partner_ping = getattr(message.author, "mention", "") or f"@{getattr(message.author, 'display_name', PARTNER_NAME.title())}"
                 reply = _sanitize_partner_dialogue_reply(
                     reply,
@@ -3454,8 +3454,8 @@ async def _handle_partner_message(message, target_info: dict | None = None) -> b
         )
         recent_partner_lines = [item.get('content', '') for item in recent_banter]
         mood = -7 if theme in {'identity', 'weakness', 'jealousy'} else -3 if theme in {'origins', 'change'} else 0
-        reply = await qai(prompt, 180)
-        reply = await _apply_phrase_policy(reply, recent_partner_lines, mood=mood, conflict_open=theme in {'identity', 'weakness', 'jealousy'})
+        reply = await text_qai(prompt, 180, direct=False)
+        reply = await _apply_phrase_policy(reply, recent_partner_lines, mood=mood, conflict_open=theme in {'identity', 'weakness', 'jealousy'}, preserve_content=True)
         partner_ping = getattr(message.author, "mention", "") or f"@{getattr(message.author, 'display_name', PARTNER_NAME.title())}"
         reply = _sanitize_partner_dialogue_reply(
             reply,
@@ -3656,7 +3656,30 @@ async def qai(prompt: str, max_tokens: int = 200, *, self_edit: bool = True, rou
         )
 
 
-async def text_qai(prompt: str, max_tokens: int = 200, *, self_edit: bool = True, route: str = "auto") -> str:
+def _text_model_blocking(messages, system, max_tokens, model):
+    """Text-only completion validation. Legacy voice provider helpers are intact."""
+    response = groq_client.call_with_retry(
+        model=model,
+        messages=[{"role": "system", "content": system}] + messages,
+        max_tokens=max_tokens,
+        temperature=0.95,
+        frequency_penalty=0.7,
+        presence_penalty=0.6,
+    )
+    return provider_text(response)
+
+
+def _text_quick_blocking(prompt, max_tokens, model):
+    return _text_model_blocking([{"role": "user", "content": prompt}], _BASE, max_tokens, model)
+
+
+async def _text_groq_call(messages, system, max_tokens=500, *, route="auto"):
+    return await asyncio.get_running_loop().run_in_executor(
+        None, _text_model_blocking, messages, system, max_tokens, _select_text_model(route=route)
+    )
+
+
+async def text_qai(prompt: str, max_tokens: int = 200, *, self_edit: bool = True, route: str = "auto", direct: bool = True) -> str:
     try:
         recent_replies = await _recent_reply_samples()
         repeat_guard = build_prompt_guard(BOT_NAME, recent_replies)
@@ -3666,10 +3689,10 @@ async def text_qai(prompt: str, max_tokens: int = 200, *, self_edit: bool = True
         model_name = _select_text_model(route=route_name)
         async def generate(revision):
             return await loop.run_in_executor(
-                None, _groq_quick_blocking, guarded_prompt + ("\n\n" + revision if revision else ""), max_tokens, model_name
+                None, _text_quick_blocking, guarded_prompt + ("\n\n" + revision if revision else ""), max_tokens, model_name
             )
         result = await recover_response(generate, prompt, recent_replies,
-                                        exhausted=groq_client.is_exhausted, direct=True, clean=strip_narration)
+                                        exhausted=groq_client.is_exhausted, direct=direct, clean=strip_narration)
         reply = result.text
         # Only visible text call sites use this helper; internal summaries and
         # voice's nested rewrite still use the unchanged legacy qai.
@@ -3677,7 +3700,7 @@ async def text_qai(prompt: str, max_tokens: int = 200, *, self_edit: bool = True
             reply = await _text_self_edit_reply(reply, recent_replies=recent_replies,
                                                 user_message=prompt, max_tokens=min(max_tokens, 220))
         reply = _sanitize_partner_attribution(reply)
-        reply = final_response(reply, prompt, direct=True)
+        reply = final_response(reply, prompt, direct=direct)
         debug_event("response_outcome", f"scope=qai kind={result.kind.value} reason={result.reason} attempts={result.attempts}")
         if usable(reply, prompt):
             remember_output(BOT_NAME, reply)
@@ -3686,7 +3709,7 @@ async def text_qai(prompt: str, max_tokens: int = 200, *, self_edit: bool = True
         log_error("qai/async", e)
         return await _guarded_fallback_reply(
             get_runtime_recent(BOT_NAME, limit=20),
-            direct_to_me=True,
+            direct_to_me=direct,
             scope_tag="text_qai:error",
             text_policy=True,
         )
@@ -4088,7 +4111,7 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
                 async def generate(revision):
                     retry_context = context_block + ("\n\n" + revision if revision else "")
                     draft_history = history[:-1] + [{"role": "user", "content": retry_context}]
-                    return await groq_call(draft_history, system, max_tokens=reply_max_tokens, route="primary" if response_model == GROQ_MODEL_PRIMARY else "light")
+                    return await _text_groq_call(draft_history, system, max_tokens=reply_max_tokens, route="primary" if response_model == GROQ_MODEL_PRIMARY else "light")
                 result = await recover_response(generate, user_message, recent_replies,
                                                 exhausted=groq_client.is_exhausted,
                                                 direct=bool(is_dm or direct_to_me), clean=strip_narration)
@@ -6684,7 +6707,9 @@ async def _unsent_simulation(channel, channel_id):
         _pending_unsent.discard(channel_id)
         if channel_id in _banned_channels:
             return
-        msg = await qai("The Wanderer was about to say something. Stopped. Sent something shorter instead. 2-8 words.", 50)
+        msg = await text_qai("The Wanderer was about to say something. Stopped. Sent something shorter instead. 2-8 words.", 50, direct=False)
+        if not msg:
+            return
         async with channel.typing():
             await asyncio.sleep(random.uniform(3, 8))
         await _guarded_channel_send(channel, strip_narration(msg))
@@ -6756,7 +6781,7 @@ async def _proactive_loop():
                                 recent = await mem.get_channel_recent(cid, 8)
                                 if recent and len(recent) >= 2:
                                     sample = "\n".join(f"{m['name']}: {m['content'][:80]}" for m in recent[-6:])
-                                    msg = await qai(f"The Wanderer has been watching this conversation:\n{sample}\n\nMake one short remark — curious, wry, or quietly pointed. Reference the actual content. 1-2 sentences.", 150)
+                                    msg = await text_qai(f"The Wanderer has been watching this conversation:\n{sample}\n\nMake one short remark — curious, wry, or quietly pointed. Reference the actual content. 1-2 sentences.", 150, direct=False)
                                     if msg and len(msg) > 5:
                                         if await _guarded_channel_send(ch, strip_narration(msg)):
                                             await mem.set_proactive_sent(cid)
@@ -6801,7 +6826,9 @@ async def _voluntary_dm_loop():
                                 + ("Attached to them but won't say so. " if romance else "Finds them tolerable. ")
                                 + f"Ambient context: {describe_live_world_context(BOT_NAME)}. 1-2 sentences. No greeting."
                             )
-                            txt = await _pick_fresh_pool_line(pool, channel_id=uid, user_id=uid) if random.random() < .5 else await qai(prompt, 120)
+                            txt = await _pick_fresh_pool_line(pool, channel_id=uid, user_id=uid) if random.random() < .5 else await text_qai(prompt, 120, direct=False)
+                            if not txt:
+                                continue
                             try:
                                 await du.send(strip_narration(txt))
                                 await mem.set_dm_sent(uid)
@@ -6938,10 +6965,10 @@ async def _rival_event_loop():
                             await mem.bump_duo_session(channel_id, BOT_NAME, partner_bot=PARTNER_NAME, ttl_seconds=180, autoplay_delay=4)
                             debug_event("relationship", f"{BOT_NAME} finish_sentence channel={channel_id}")
                             break
-                    opener = await qai(
+                    opener = await text_qai(
                         f"Users were discussing: '{topic}'. Start a spontaneous disagreement with {PARTNER_NAME}. "
                         "One or two sentences. Sound dry, thoughtful, and mildly irritated that they are oversimplifying it.",
-                        140,
+                        140, direct=False,
                     )
                     opener = strip_narration(opener)
                     if not opener:

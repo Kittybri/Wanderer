@@ -131,3 +131,59 @@ failure has been tested offline; do not deliberately exhaust the shared live
 provider quota or disrupt voice to simulate it.
 
 Checkpoint status: `WANDERER_TEXT_STILL_BLOCKED` (live text checks only).
+
+## Live continuation and targeted correction (2026-10-09)
+
+The login blocker above was cleared. Initial checks used the approved disposable
+Kittybi account in General (`1486228109027180597`) of the private Wanderer guild.
+These results are historical evidence for candidate `0813e0f`, not a final pass:
+
+- Greeting: PASS. Request `1558013447717785764`, reply `1558013458484568095`:
+  “All set. What's the test?”
+- Factual explanation: FAIL, incomplete sentence. Request `1558013559022034995`,
+  reply `1558013572729147443` stopped after “so the ice becomes”.
+- Direct follow-up: PASS. Request `1558013707592794135`, reply
+  `1558013723640332332` correctly explained lower density and displacement.
+- Subsequent background/partner output exposed remaining legacy recovery paths:
+  `1558049066078834689` (“Try that again without the recycled opener.”),
+  `1558049129089990667` (“Say what you mean.”), and
+  `1558149157028495384` (“I am listening. Briefly.”).
+
+The factual request logged a self-edit but its provider finish metadata was not
+retained. Inspection reproduced acceptance of a `finish_reason=length` partial
+rewrite; this is a demonstrated mechanism, not a claim that the historical
+provider finish reason is known. Text generation/rewrite now checks for normal
+completion before accepting content. A truncated rewrite preserves the complete
+original; failed first generation follows bounded recovery. Legacy voice provider
+extraction is unchanged and explicitly covered by the regression test.
+
+The text-only partner handler, unsent simulation, proactive loop, voluntary-DM
+loop and rival-event loop now use checked text recovery. Ambient failures yield
+no fabricated reply; direct failures retain the honest service notice. Partner
+phrase handling preserves content. Existing session ownership, eligibility,
+timing, static personality pools and loop suppression are unchanged. Unrelated
+RPG/birthday/internal-summary `qai` callers and voice remain on their prior path.
+
+New tests cover non-normal provider finish reasons, keeping a complete original
+after a truncated rewrite, direct-versus-ambient failure, unsent-task cleanup
+without a send, and all five migrated background/partner routes.
+
+One initial full-suite run had 435 passes, one skip and one failure caused by the
+sandbox denying a localhost bind in the existing callback test. The suite was
+rerun with localhost access and passed; this was not a code regression. No callback
+code, credentials, or configuration was changed.
+
+Final pre-deployment checks for the corrected candidate:
+
+- Full suite: **440 passed, 1 skipped**, 81.86 seconds.
+- Focused response/arbitration/preservation/voice suite: **223 passed, 1 skipped**,
+  37.97 seconds. New response/voice-boundary coverage totals 92 tests.
+- Existing skip: optional real Opus coverage without `VOICE_OPUS_LIBRARY`;
+  existing warning: local urllib3/LibreSSL build.
+- Runtime command/import validation: 177 prefix commands, 25 slash entries,
+  help 30,935 characters, zero manifest errors.
+- Compile: pass (temporary writable bytecode-cache path used after the sandbox
+  denied the default macOS cache); `git diff --check`: pass.
+- Staged six-file credential scan: zero findings; additional key-pattern scan
+  across all seven batch files: zero findings.
+- Voice legacy AST and byte-hash checks pass without updating the baseline.

@@ -9,6 +9,48 @@ from test_release_hardening import load_runtime
 from response_quality import FAILURE_NOTICE
 
 
+@pytest.mark.parametrize("direct,expected", [(False, ""), (True, FAILURE_NOTICE)])
+def test_quick_text_failure_distinguishes_ambient_from_direct(runtime, monkeypatch, direct, expected):
+    mod, loop, _ = runtime
+    monkeypatch.setattr(mod, "_text_quick_blocking", lambda *args: "Try that again without the recycled opener.")
+    assert loop.run_until_complete(mod.text_qai("Explain why ice floats", direct=direct)) == expected
+
+
+def test_unsent_failure_does_not_post_or_keep_pending_state(runtime, monkeypatch):
+    mod, loop, _ = runtime
+    monkeypatch.setattr(mod.asyncio, "sleep", AsyncMock())
+    generate = AsyncMock(return_value="")
+    monkeypatch.setattr(mod, "text_qai", generate)
+    send = AsyncMock()
+    monkeypatch.setattr(mod, "_guarded_channel_send", send)
+    mod._pending_unsent.add(202)
+    loop.run_until_complete(mod._unsent_simulation(NS(id=202), 202))
+    assert generate.call_args.kwargs["direct"] is False
+    send.assert_not_awaited()
+    assert 202 not in mod._pending_unsent
+
+
+def test_background_and_partner_text_routes_use_checked_recovery():
+    import ast
+    from pathlib import Path
+    tree = ast.parse((Path(__file__).parents[1] / "bot.py").read_text())
+    names = {"_handle_partner_message", "_unsent_simulation", "_proactive_loop", "_voluntary_dm_loop", "_rival_event_loop"}
+    checked = set()
+    for function in tree.body:
+        if not isinstance(function, ast.AsyncFunctionDef) or function.name not in names:
+            continue
+        calls = [node for node in ast.walk(function) if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)]
+        assert not any(node.func.id == "qai" for node in calls)
+        generated = [node for node in calls if node.func.id == "text_qai"]
+        assert generated
+        assert all(any(kw.arg == "direct" and isinstance(kw.value, ast.Constant) and kw.value.value is False for kw in node.keywords) for node in generated)
+        for node in calls:
+            if node.func.id == "_apply_phrase_policy":
+                assert any(kw.arg == "preserve_content" and isinstance(kw.value, ast.Constant) and kw.value.value is True for kw in node.keywords)
+        checked.add(function.name)
+    assert checked == names
+
+
 @pytest.fixture
 def runtime(monkeypatch, tmp_path):
     mod, loop = load_runtime(monkeypatch, tmp_path)
@@ -44,7 +86,7 @@ def runtime(monkeypatch, tmp_path):
 def test_actual_text_generation_keeps_question_and_answer(runtime, monkeypatch, prompt, answer):
     mod, loop, user = runtime
     generate = AsyncMock(return_value=answer)
-    monkeypatch.setattr(mod, "groq_call", generate)
+    monkeypatch.setattr(mod, "_text_groq_call", generate)
     reply = loop.run_until_complete(mod.get_text_response(101, 202, prompt, user, "Synthetic", "<@101>", defer_delivery=True))
     assert reply == answer
     generate.assert_awaited_once()
@@ -62,7 +104,7 @@ def test_actual_text_generation_keeps_question_and_answer(runtime, monkeypatch, 
 def test_actual_pipeline_retries_bounded_and_never_leaks(runtime, monkeypatch, drafts, expected):
     mod, loop, user = runtime
     generate = AsyncMock(side_effect=drafts)
-    monkeypatch.setattr(mod, "groq_call", generate)
+    monkeypatch.setattr(mod, "_text_groq_call", generate)
     reply = loop.run_until_complete(mod.get_text_response(101, 202, "What is the capital of France?", user, "Synthetic", "<@101>"))
     assert reply == expected
     assert generate.await_count == 2
@@ -73,7 +115,7 @@ def test_actual_pipeline_retries_bounded_and_never_leaks(runtime, monkeypatch, d
 def test_actual_pipeline_exhaustion_and_search_failure(runtime, monkeypatch):
     mod, loop, user = runtime
     generate = AsyncMock()
-    monkeypatch.setattr(mod, "groq_call", generate)
+    monkeypatch.setattr(mod, "_text_groq_call", generate)
     monkeypatch.setattr(mod.groq_client, "is_exhausted", lambda: True)
     for _ in range(2):
         assert loop.run_until_complete(mod.get_text_response(101, 202, "Explain rain", user, "Synthetic", "<@101>")) == FAILURE_NOTICE
@@ -89,7 +131,7 @@ def test_actual_pipeline_keeps_repeated_draft_when_second_is_empty(runtime, monk
     answer = "Paris is the capital of France."
     monkeypatch.setattr(mod, "_recent_reply_samples", AsyncMock(return_value=[answer]))
     generate = AsyncMock(side_effect=[answer, ""])
-    monkeypatch.setattr(mod, "groq_call", generate)
+    monkeypatch.setattr(mod, "_text_groq_call", generate)
     assert loop.run_until_complete(mod.get_text_response(101, 202, "What is the capital of France?", user, "Synthetic", "<@101>")) == answer
     assert generate.await_count == 2
 

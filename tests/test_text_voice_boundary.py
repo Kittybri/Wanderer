@@ -144,3 +144,21 @@ def test_boundary_passes_all_arguments_and_propagates_cancellation(monkeypatch, 
     finally:
         loop.close()
         asyncio.set_event_loop(None)
+
+
+def test_provider_truncated_rewrite_keeps_complete_original(monkeypatch, tmp_path):
+    runtime, loop = load_runtime(monkeypatch, tmp_path)
+    original = "Ice forms an open crystal lattice and becomes less dense than water. That lets it float."
+    truncated = SimpleNamespace(choices=[SimpleNamespace(
+        finish_reason="length", message=SimpleNamespace(content="When water freezes its molecules arrange into a lattice that occupies more space, so the ice becomes"))])
+    monkeypatch.setattr(runtime.groq_client, "is_exhausted", lambda: False)
+    monkeypatch.setattr(runtime.groq_client, "call_with_retry", lambda **kwargs: truncated)
+    monkeypatch.setattr(runtime, "_self_edit_issues", lambda *a, **k: ["too modern"])
+    try:
+        result = loop.run_until_complete(runtime._text_self_edit_reply(original, recent_replies=[], user_message="Why does ice float?"))
+        assert result == original
+        # Voice's original extraction remains unchanged even for length-limited output.
+        assert runtime._groq_quick_blocking("synthetic", 140) == truncated.choices[0].message.content
+    finally:
+        loop.close()
+        asyncio.set_event_loop(None)

@@ -9,6 +9,7 @@ from response_quality import (
     FAILURE_NOTICE, ReplyKind, allows_short_reply, classify_reply, final_response,
     human_mentions_bot, internal_instruction, recover_response, repeated_answer,
     trim_repeated_opener,
+    provider_text, IncompleteTextResponse,
 )
 
 
@@ -91,3 +92,13 @@ def test_both_mentions_belong_to_the_human_event_not_partner_reply():
     assert not human_mentions_bot(partner, 1)
     message.mentions = [SimpleNamespace(id=2)]
     assert not human_mentions_bot(message, 1)
+
+
+@pytest.mark.parametrize("finish_reason", ["length", "tool_calls", "function_call"])
+def test_incomplete_provider_results_are_not_successful_answers(finish_reason):
+    response = SimpleNamespace(choices=[SimpleNamespace(finish_reason=finish_reason, message=SimpleNamespace(content="so the ice becomes"))])
+    with pytest.raises(IncompleteTextResponse):
+        provider_text(response)
+    response.choices[0].finish_reason = "stop"
+    response.choices[0].message.content = "Ice is less dense than liquid water."
+    assert provider_text(response) == "Ice is less dense than liquid water."

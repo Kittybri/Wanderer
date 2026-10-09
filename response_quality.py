@@ -19,6 +19,17 @@ class ReplyKind(str, Enum):
     SILENCE = "intentional_silence"
 
 
+class IncompleteTextResponse(ValueError):
+    """Provider stopped before completing its answer; never a valid rewrite."""
+
+
+def provider_text(response):
+    choice = response.choices[0]
+    if choice.finish_reason != "stop":
+        raise IncompleteTextResponse("Text completion did not finish normally")
+    return (choice.message.content or "").strip()
+
+
 FAILURE_NOTICE = "I couldn't get an answer from the service just now. Ask me again shortly."
 RETRY_INSTRUCTION = (
     "INTERNAL REVISION ONLY: Answer the original request above. Keep its facts, "
