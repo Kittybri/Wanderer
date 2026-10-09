@@ -99,3 +99,35 @@ Deployment and live evidence will be appended here. The older combined
 edited in this Wanderer-only batch. No Scaramouche, Google, voice infrastructure,
 database migration, dependency or restored-feature implementation change is part
 of this repair. No real provider writes or Discord voice actions are authorized.
+
+## Staging deployment evidence (2026-10-08)
+
+Functional candidate deployed: `0813e0f38ff574b4d158cb788db28351784a0d05`.
+Working directory: `/opt/scara-wanderer-staging-fallback/releases/wanderer-text-0813e0f38ff5`.
+
+- Exact committed archive deployed; runtime preservation probe passed on Oracle.
+- `wanderer-staging`: active, gateway/readiness marker observed, zero startup
+  tracebacks, zero automatic restarts; one authorized controlled restart.
+- Scaramouche and connection-service PIDs/working directories unchanged;
+  neither was restarted.
+- Original environment files and existing Wanderer systemd drop-ins compared
+  before/after by hashes held only in memory: unchanged. Only the new Wanderer
+  working-directory/release-label override was installed; no voice settings changed.
+- Connected-account, bot-grant and OAuth-session rows compared in memory:
+  unchanged. No credentials or private row data recorded in evidence.
+- SQLite `quick_check`: `ok` for Wanderer, shared-state and Tarot stores.
+- No provider writes, Google configuration changes or live voice actions.
+- Re-running pytest inside the production virtualenv was unavailable because
+  pytest is not installed there. No runtime dependencies were installed or
+  changed. The complete/focused results above are from the committed candidate
+  in the local test environment; the Oracle runtime import/manifest probe passed.
+
+Live TEXT verification is **pending human Discord login**. The approved staging
+channel opens an account chooser requesting login for both staging accounts.
+No synthetic live messages have been sent, so no live response-quality pass is
+claimed. Remaining sequence: casual greeting, harmless substantive/factual
+question, direct follow-up, opener-similarity exercise, both-bot mention. Provider
+failure has been tested offline; do not deliberately exhaust the shared live
+provider quota or disrupt voice to simulate it.
+
+Checkpoint status: `WANDERER_TEXT_STILL_BLOCKED` (live text checks only).
