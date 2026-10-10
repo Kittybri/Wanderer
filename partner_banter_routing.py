@@ -26,6 +26,7 @@ def jealousy_context(partner_name: str, bystander_name: str) -> str:
 def coherent_partner_reply(
     text: str, partner_name: str, bystander_name: str = "",
     bystander_mention: str = "",
+    *, turn=None,
 ) -> str:
     """Reject explicit false speech attribution, not ordinary jealousy.
 
@@ -33,6 +34,11 @@ def coherent_partner_reply(
     What cannot happen is crediting that person with the partner's opinion.
     This is a conservative guard, not a substitute for conversational evals.
     """
+    if turn is not None and (
+        turn.speaker_kind != turn.addressee_kind
+        or turn.speaker_id != turn.addressee_id
+    ):
+        return ""
     text = (text or "").strip()
     if not text:
         return ""
@@ -120,3 +126,15 @@ async def resolve_duo_reply_anchor(channel, source_message_id: int | None, fallb
 def romance_ping_chosen(draw: float) -> bool:
     """The original conditional 45% chance; caller draws only with a target."""
     return float(draw) < 0.45
+
+def authoritative_turn_context(turn: TurnEnvelope) -> str:
+    """Source-verified attribution facts, separate from character/persona prose."""
+    if turn.speaker_kind != turn.addressee_kind or turn.speaker_id != turn.addressee_id:
+        raise ValueError("invalid primary speaker/addressee attribution")
+    return (
+        "AUTHORITATIVE_DISCORD_TURN: "
+        f"message_id={turn.source_message_id}; "
+        f"speaker={turn.speaker_kind}; primary_addressee={turn.addressee_kind}; "
+        f"romance_reference_is_secondary={turn.romance_target_id is not None}. "
+        "Do not attribute the speaker's words to the romance-mode human."
+    )
