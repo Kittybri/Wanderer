@@ -47,6 +47,7 @@ from grounded_search import (
     format_url_preview_context,
     search_web,
 )
+from docfix_guard import DocFixPending
 from google_docs_bridge import (
     fetch_google_doc,
     google_docs_ready,
@@ -4838,51 +4839,78 @@ async def _rewrite_google_doc_text(display_name: str, original_text: str, instru
     return cleaned if cleaned else original_text
 
 
+_DOCFIX_PENDING = DocFixPending(ttl_seconds=600, limit=12)
+
+
 async def _run_docfix_request(ctx, doc_and_instructions: str = ""):
-    await _setup(ctx)
-    doc_link, instructions = _split_docfix_args(doc_and_instructions)
-    if not doc_link:
-        await safe_reply(
-            ctx,
-            "Send a Google Docs link with the command. Example: `!fixdoc <google-doc-link> tighten the wording but keep the meaning`.",
-        )
+    # Legacy service-account access is not user-bound OAuth: operator-only
+    # until the separate Docs Phase 2 authorization design is completed.
+    if not OWNER_ID or ctx.author.id != OWNER_ID:
+        await safe_reply(ctx, "Google Docs editing is currently limited to the bot operator.")
         return
-    ready, reason = google_docs_ready()
-    share_email = service_account_email()
-    await ctx.reply(
-        random.choice(
-            [
-                "Alright. I'll read through it and smooth out the wording. Give me a minute.",
-                "I'm going through the document now. Let me fix it properly.",
-                "I'll revise it in the doc itself. Wait.",
-            ]
+    raw = (doc_and_instructions or "").strip()
+    if raw.lower().startswith("confirm "):
+        if ctx.guild is not None:
+            await safe_reply(ctx, "Confirm document edits in your Discord DM, not a public channel.")
+            return
+        token = raw.split(None, 1)[1].strip()
+        record = _DOCFIX_PENDING.take(ctx.author.id, token)
+        if not record:
+            await safe_reply(ctx, "That document preview expired or was already used. Start a new !fixdoc request.")
+            return
+        current = await asyncio.to_thread(fetch_google_doc, record["url"], max_chars=0)
+        if (current.get("doc_id") != record["doc_id"]
+                or current.get("revision_id") != record["revision"]
+                or current.get("text") != record["original"]):
+            await safe_reply(ctx, "The Google Doc changed after your preview. Nothing was written; start again.")
+            return
+        # Google Docs' writeControl protects against edits between read and write.
+        await asyncio.to_thread(
+            overwrite_google_doc, record["url"], record["revision_text"],
+            required_revision_id=record["revision"],
         )
-    )
-    async with ctx.typing():
-        if ready:
-            doc = await asyncio.get_event_loop().run_in_executor(None, lambda: fetch_google_doc(doc_link))
-            if not (doc.get("text") or "").strip():
-                await safe_send(ctx, "The Google Doc is empty, or there was nothing readable in it.")
-                return
-            revised = await _rewrite_google_doc_text(ctx.author.display_name, doc["text"], instructions)
-            result = await asyncio.get_event_loop().run_in_executor(None, lambda: overwrite_google_doc(doc_link, revised))
-        else:
-            result = await remote_fix_google_doc(
-                doc_link,
-                bot_name=BOT_NAME,
-                display_name=ctx.author.display_name,
-                instructions=instructions,
-            )
-    if ready:
-        await safe_send(
-            ctx,
-            f"It's updated. I revised `{result['title']}` in place. If Google blocks access later, share the doc with `{share_email}` as an editor.",
+        await safe_reply(ctx, "Your confirmed Google Doc edit was applied.")
+        return
+
+    await _setup(ctx)
+    doc_link, instructions = _split_docfix_args(raw)
+    if not doc_link:
+        await safe_reply(ctx, "Use !fixdoc <Google Doc link> [instructions], then confirm privately.")
+        return
+    if not ctx.guild is None:
+        await safe_reply(ctx, "For document privacy, send !fixdoc in my Discord DM.")
+        return
+    if not google_docs_ready()[0]:
+        await safe_reply(ctx, "The legacy document worker cannot safely confirm writes. A local Google Docs service account is required for previews.")
+        return
+    document = await asyncio.to_thread(fetch_google_doc, doc_link, max_chars=0)
+    original = document.get("text") or ""
+    revision = document.get("revision_id")
+    if not revision or not original.strip() or len(original) > 10000:
+        await safe_reply(ctx, "This document cannot be safely previewed (empty, oversized or missing revision). No changes were made.")
+        return
+    proposed = await _rewrite_google_doc_text(ctx.author.display_name, original, instructions)
+    if not proposed.strip() or len(proposed) > 16000:
+        await safe_reply(ctx, "The proposed edit is empty or too large to review safely. Nothing was written.")
+        return
+    token = _DOCFIX_PENDING.create(ctx.author.id, {
+        "url": doc_link, "doc_id": document["doc_id"], "revision": revision,
+        "original": original, "revision_text": proposed,
+    })
+    # Show the entire proposed text as a private attachment, not a snippet.
+    import io
+    preview = discord.File(io.BytesIO(proposed.encode("utf-8")), filename="google-doc-proposed-edit.txt")
+    try:
+        await ctx.author.send(
+            "This is a PREVIEW. Your original Google Doc is unchanged. "
+            "Review the complete attached text, then send `!fixdoc confirm " + token
+            + "` here within 10 minutes to approve the exact preview. "
+            "Do not forward the private preview or confirmation token.",
+            file=preview, allowed_mentions=discord.AllowedMentions.none(),
         )
-    else:
-        await safe_send(
-            ctx,
-            f"It's updated. I revised `{result['title']}` through the worker because Railway does not have the Google credential yet. If access fails, share the doc with `{share_email}` as an editor. Local note: {reason}",
-        )
+    except (discord.Forbidden, discord.HTTPException):
+        _DOCFIX_PENDING.take(ctx.author.id, token)
+        await safe_reply(ctx, "I couldn't DM the preview. Nothing was written.")
 
 
 def _weathervideo_time_hint(use_duo: bool) -> str:
@@ -6020,7 +6048,7 @@ async def _handle_message_pipeline(message):
             await _handle_partner_message(message, target_info=await _partner_message_target_info(message))
             return
 
-        if (not message.author.bot) and (not ctx.valid) and _looks_like_docfix_request(raw_stripped):
+        if (not message.author.bot) and (not ctx.valid) and raw_stripped.lower().startswith("!fixdoc "):
             await _run_docfix_request(ctx, raw_stripped)
             return
 
@@ -8318,7 +8346,7 @@ async def fixdoc_cmd(ctx, *, doc_and_instructions: str = ""):
         await _run_docfix_request(ctx, doc_and_instructions)
     except Exception as e:
         log_error("fixdoc_cmd", e)
-        await safe_reply(ctx, f"I couldn't update that Google Doc. {e}")
+        await safe_reply(ctx, "I couldn't update that Google Doc. No write was confirmed. Check the owner log.")
 
 
 @bot.command(name="dare")
