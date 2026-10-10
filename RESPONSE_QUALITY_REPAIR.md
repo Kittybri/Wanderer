@@ -272,3 +272,37 @@ Final local validation of this correction:
 
 Corrected staging deployment/live checks are pending below; earlier live passes
 do not substitute for validation of this correction.
+
+## Corrected filter staging evidence and merge review (2026-10-10)
+
+Functional candidate: `acffcea8fb9e6c2f0a946cd38154e369bd0e3e66`.
+Deployed directory: `/opt/scara-wanderer-staging-fallback/releases/wanderer-text-acffcea8fb9e`.
+One controlled Wanderer restart for this correction; zero automatic restarts,
+gateway readiness observed, zero startup/retest tracebacks. Scaramouche PID
+3662606 and callback PID 2976977 remained unchanged; Wanderer PID is 160064.
+Protected configuration hashes and Google connection/grant/session rows were
+unchanged across deployment. No voice operation, Google modification, dependency
+installation or migration was performed. Runtime manifests passed on Oracle.
+
+Live checks in approved General channel `1486228109027180597`, primary Kittybri
+account, October 9 at 23:16–23:18 Pacific:
+
+| Check | Reply evidence | Result |
+| --- | --- | --- |
+| Retrying a network request | `1558362453434437822`: complete advice including delay doubling, cap and attempt limit; retained the word retry | PASS |
+| General system-prompt explanation | `1558362574913806426`: complete explanation of rules/tone/limits; no private prompt requested or disclosed | PASS |
+| Normal factual question | `1558362694841671730`: Moon phases explained using reflected sunlight and orbital geometry | PASS |
+| Follow-up | `1558362889536929872`: contrasted a lunar eclipse with phases, retaining prior context | PASS |
+| Both-bot human mention | Request `1558363026858582067`; Wanderer `1558363153623154740` and Scaramouche `1558363042423513129` independently named explorer skills and explained them | PASS |
+
+First four checks used the existing `/wanderer` text command; final check used
+actual member mentions. No old fallback or service-failure substitution occurred
+in these five finite observations. No live provider outage was forced. Automated
+failure/background coverage remains the evidence for those paths.
+
+Post-live health: all three services active, NRestarts=0; Wanderer, shared-state
+and Tarot SQLite quick_check all `ok`; sanitized journal traceback count zero.
+The seven-file batch remains text-response code/tests/documentation only. Root
+and scoped preservation instructions, manifests, historical audit, CODEOWNERS,
+restoration features and unchanged voice baseline remain present. PR creation
+and merge review follow this evidence commit; no release-to-main merge authorized.
