@@ -758,6 +758,12 @@ def debug_event(tag: str, detail: str):
     print(f"[DEBUG:{tag}] {detail}")
 
 
+from response_quality import (
+    FAILURE_NOTICE, ReplyKind, allows_short_reply, final_response,
+    human_mentions_bot, provider_text, recover_response, repeated_answer, trim_repeated_opener, usable,
+)
+
+
 async def _provider_pause_reply(
     provider: str,
     *,
@@ -765,9 +771,12 @@ async def _provider_pause_reply(
     channel_id: int = 0,
     is_dm: bool = False,
     direct_to_me: bool = True,
+    text_policy: bool = False,
 ) -> str:
     if not (is_dm or direct_to_me):
         return ""
+    if text_policy and provider == "groq":
+        return FAILURE_NOTICE
     scope = user_id or channel_id or 0
     cooldown = max(45, PROVIDER_PAUSE_COOLDOWN_S // 2) if is_dm else PROVIDER_PAUSE_COOLDOWN_S
     if scope:
@@ -804,7 +813,11 @@ async def _guarded_fallback_reply(
     direct_to_me: bool = True,
     scope_tag: str = "reply",
     protective: bool = False,
+    text_policy: bool = False,
 ) -> str:
+    if text_policy:
+        debug_event("response_outcome", f"scope={scope_tag} kind=provider_failure direct={bool(is_dm or direct_to_me)}")
+        return FAILURE_NOTICE if is_dm or direct_to_me else ""
     if protective:
         return "Pause for one slow breath. Choose the smallest necessary next step, and do only that before deciding what comes after."
     if not groq_client.is_exhausted():
@@ -1968,7 +1981,7 @@ async def _maybe_jealous_partner_interjection(
         "Cut in with one short in-character reply. Keep it sharp, a little possessive or irritated, and do not narrate."
     )
     try:
-        reply = await get_response(
+        reply = await get_text_response(
             message.author.id,
             message.channel.id,
             jealousy_prompt,
@@ -2203,6 +2216,31 @@ async def _rewrite_reply_once(
     return strip_narration((rewritten or "").strip())
 
 
+async def _text_rewrite_reply_once(
+    draft: str,
+    issues: list[str],
+    *,
+    user_message: str = "",
+    user: dict | None = None,
+    max_tokens: int = 220,
+) -> str:
+    prompt = (
+        "You are revising one draft before it is sent.\n"
+        "Character: Wanderer.\n"
+        "Required voice: detached, observant, restrained, quietly personal when earned, and in-character for Genshin.\n"
+        f"Issues to fix: {', '.join(issues)}.\n"
+        f"User context: {user_message[:220] or 'direct bot output'}\n"
+        f"Relationship state: affection={(user or {}).get('affection', 0)} trust={(user or {}).get('trust', 0)} conflict_open={bool((user or {}).get('conflict_open'))}\n"
+        f"Draft: {draft}\n"
+        "Rewrite it once. Keep the meaning, keep it concise, avoid modern slang, avoid flat generic phrasing, and do not become softer than the relationship state has earned. Only return the rewritten reply."
+    )
+    # A rewrite is one checked attempt, NOT a nested conversation with fallbacks.
+    rewritten = await asyncio.get_running_loop().run_in_executor(
+        None, _text_quick_blocking, prompt, min(max_tokens, 260), _select_text_model(route="light")
+    )
+    return strip_narration((rewritten or "").strip())
+
+
 async def _maybe_self_edit_reply(
     reply: str,
     *,
@@ -2238,6 +2276,46 @@ async def _maybe_self_edit_reply(
         conflict_open=bool((user or {}).get("conflict_open")),
     )
     return rewritten or cleaned
+
+
+async def _text_self_edit_reply(
+    reply: str,
+    *,
+    recent_replies: list[str],
+    user_message: str = "",
+    user: dict | None = None,
+    max_tokens: int = 220,
+) -> str:
+    cleaned = strip_narration((reply or "").strip())
+    if groq_client.is_exhausted() or not usable(cleaned, user_message):
+        return cleaned
+    issues = _self_edit_issues(cleaned, recent_replies, user=user)
+    if not repeated_answer(cleaned, recent_replies):
+        issues = [issue for issue in issues if issue != "repetitive"]
+    if not issues:
+        return cleaned
+    severe = any(issue in {"too generic", "out of character", "repetitive"} for issue in issues)
+    if len(cleaned) < SELF_EDIT_MIN_REPLY_CHARS and len(user_message or "") < 90 and not severe:
+        return cleaned
+    debug_event("self_edit", f"{BOT_NAME} issues={','.join(issues)}")
+    try:
+        rewritten = await _text_rewrite_reply_once(
+            cleaned, issues, user_message=user_message, user=user, max_tokens=max_tokens,
+        )
+    except Exception as exc:
+        debug_event("response_outcome", f"kind=rewrite_failure error={type(exc).__name__}")
+        return cleaned
+    if not usable(rewritten, user_message):
+        return cleaned
+    rewritten = trim_repeated_opener(rewritten, recent_replies)
+    rewritten = await _apply_phrase_policy(
+        rewritten,
+        recent_replies,
+        mood=(user or {}).get("mood", 0),
+        conflict_open=bool((user or {}).get("conflict_open")),
+        preserve_content=True,
+    )
+    return rewritten if usable(rewritten, user_message) else cleaned
 
 
 async def _world_prompt_context(channel_id: int) -> str:
@@ -2842,11 +2920,16 @@ async def _apply_phrase_policy(
     user_id: int | None = None,
     mood: int = 0,
     conflict_open: bool = False,
+    *,
+    preserve_content: bool = False,
 ) -> str:
     recent_messages = recent_messages or []
     updated = strip_narration((text or "").strip())
     if not updated:
         return updated
+    if preserve_content:
+        # Text answer recovery must never manufacture a replacement one-liner.
+        return trim_repeated_opener(updated, recent_messages, force=True)
 
     tch_match = _TCH_PATTERN.search(updated)
     if tch_match:
@@ -3303,8 +3386,8 @@ async def _handle_partner_message(message, target_info: dict | None = None) -> b
                     "but make it sound like you noticed the line crossed into blunt damage instead of useful precision. "
                     "One or two sentences. No narration."
                 )
-                reply = await qai(prompt, 180, route="primary")
-                reply = await _apply_phrase_policy(reply, [item.get("content", "") for item in recent_banter], mood=-3, conflict_open=True)
+                reply = await text_qai(prompt, 180, route="primary", direct=False)
+                reply = await _apply_phrase_policy(reply, [item.get("content", "") for item in recent_banter], mood=-3, conflict_open=True, preserve_content=True)
                 partner_ping = getattr(message.author, "mention", "") or f"@{getattr(message.author, 'display_name', PARTNER_NAME.title())}"
                 reply = _sanitize_partner_dialogue_reply(
                     reply,
@@ -3371,8 +3454,8 @@ async def _handle_partner_message(message, target_info: dict | None = None) -> b
         )
         recent_partner_lines = [item.get('content', '') for item in recent_banter]
         mood = -7 if theme in {'identity', 'weakness', 'jealousy'} else -3 if theme in {'origins', 'change'} else 0
-        reply = await qai(prompt, 180)
-        reply = await _apply_phrase_policy(reply, recent_partner_lines, mood=mood, conflict_open=theme in {'identity', 'weakness', 'jealousy'})
+        reply = await text_qai(prompt, 180, direct=False)
+        reply = await _apply_phrase_policy(reply, recent_partner_lines, mood=mood, conflict_open=theme in {'identity', 'weakness', 'jealousy'}, preserve_content=True)
         partner_ping = getattr(message.author, "mention", "") or f"@{getattr(message.author, 'display_name', PARTNER_NAME.title())}"
         reply = _sanitize_partner_dialogue_reply(
             reply,
@@ -3572,6 +3655,65 @@ async def qai(prompt: str, max_tokens: int = 200, *, self_edit: bool = True, rou
             scope_tag="qai:error",
         )
 
+
+def _text_model_blocking(messages, system, max_tokens, model):
+    """Text-only completion validation. Legacy voice provider helpers are intact."""
+    response = groq_client.call_with_retry(
+        model=model,
+        messages=[{"role": "system", "content": system}] + messages,
+        max_tokens=max_tokens,
+        temperature=0.95,
+        frequency_penalty=0.7,
+        presence_penalty=0.6,
+    )
+    return provider_text(response)
+
+
+def _text_quick_blocking(prompt, max_tokens, model):
+    return _text_model_blocking([{"role": "user", "content": prompt}], _BASE, max_tokens, model)
+
+
+async def _text_groq_call(messages, system, max_tokens=500, *, route="auto"):
+    return await asyncio.get_running_loop().run_in_executor(
+        None, _text_model_blocking, messages, system, max_tokens, _select_text_model(route=route)
+    )
+
+
+async def text_qai(prompt: str, max_tokens: int = 200, *, self_edit: bool = True, route: str = "auto", direct: bool = True) -> str:
+    try:
+        recent_replies = await _recent_reply_samples()
+        repeat_guard = build_prompt_guard(BOT_NAME, recent_replies)
+        guarded_prompt = ((repeat_guard + "\n\n") if repeat_guard else "") + prompt
+        loop = asyncio.get_event_loop()
+        route_name = route if route != "auto" else ("light" if max_tokens <= 160 else "primary")
+        model_name = _select_text_model(route=route_name)
+        async def generate(revision):
+            return await loop.run_in_executor(
+                None, _text_quick_blocking, guarded_prompt + ("\n\n" + revision if revision else ""), max_tokens, model_name
+            )
+        result = await recover_response(generate, prompt, recent_replies,
+                                        exhausted=groq_client.is_exhausted, direct=direct, clean=strip_narration)
+        reply = result.text
+        # Only visible text call sites use this helper; internal summaries and
+        # voice's nested rewrite still use the unchanged legacy qai.
+        if self_edit and reply and result.attempts < 2 and max_tokens >= 140 and len(reply) >= SELF_EDIT_MIN_REPLY_CHARS:
+            reply = await _text_self_edit_reply(reply, recent_replies=recent_replies,
+                                                user_message=prompt, max_tokens=min(max_tokens, 220))
+        reply = _sanitize_partner_attribution(reply)
+        reply = final_response(reply, prompt, direct=direct)
+        debug_event("response_outcome", f"scope=qai kind={result.kind.value} reason={result.reason} attempts={result.attempts}")
+        if usable(reply, prompt):
+            remember_output(BOT_NAME, reply)
+        return reply
+    except Exception as e:
+        log_error("qai/async", e)
+        return await _guarded_fallback_reply(
+            get_runtime_recent(BOT_NAME, limit=20),
+            direct_to_me=direct,
+            scope_tag="text_qai:error",
+            text_policy=True,
+        )
+
 # ── Smart search ──────────────────────────────────────────────────────────────
 SEARCH_TRIGGERS = ["what is","what are","who is","who are","when did","when was","how do","how does",
                    "how much","how many","where is","latest","recent","news","current","today",
@@ -3685,7 +3827,7 @@ def _sanitize_partner_dialogue_reply(text: str, guild, *, partner_mention: str =
 # ── Core AI response ──────────────────────────────────────────────────────────
 async def get_response(user_id, channel_id, user_message, user, display_name,
                        author_mention, use_search=False, extra_context="",
-                       is_owner=False, channel_obj=None, is_dm=False, direct_to_me=True, defer_delivery=False):
+                       is_owner=False, channel_obj=None, is_dm=False, direct_to_me=True, defer_delivery=False, *, _text_policy=False):
     recent_replies: list[str] = []
     search_sources = ""
     rate_limited = False
@@ -3730,6 +3872,8 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
             elif r < .93: hint = "A few sentences."
             else:         hint = "Longer, thoughtful."
         hint = _tighten_length_hint(hint, text_pressure, allow_long_text)
+        if _text_policy and not allows_short_reply(user_message):
+            hint = "Answer the actual request usefully and accurately. Be concise, but do not replace an explanation with a one-line acknowledgment."
 
         days_ago = round((time.time() - (user.get("last_active", 0) if user else 0)) / 86400, 1) if user and user.get("last_active", 0) else 0
         date_ctx = _current_time_context(user, days_ago)
@@ -3958,26 +4102,40 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
                 channel_id=channel_id,
                 is_dm=is_dm,
                 direct_to_me=direct_to_me,
+                text_policy=_text_policy,
             )
         else:
             history.append({"role": "user", "content": context_block})
             system = build_system(user, display_name, is_owner)
-            retry_context = context_block
-            for attempt in range(2):
-                draft_history = history[:-1] + [{"role": "user", "content": retry_context}]
-                reply = await groq_call(draft_history, system, max_tokens=reply_max_tokens, route="primary" if response_model == GROQ_MODEL_PRIMARY else "light")
-                reply = diversify_reply(BOT_NAME, strip_narration(reply), recent_replies)
-                reply = await _apply_phrase_policy(
-                    reply,
-                    recent_replies,
-                    user_id=user_id,
-                    mood=mood,
-                    conflict_open=conflict_open,
-                )
-                if reply and not looks_repetitive(reply, recent_replies):
-                    break
-                retry_context = context_block + "\n\nRETRY: The last draft sounded too much like your recent replies. "
-                retry_context += "Change the opener, the cadence, and the mockery pattern."
+            if _text_policy:
+                async def generate(revision):
+                    retry_context = context_block + ("\n\n" + revision if revision else "")
+                    draft_history = history[:-1] + [{"role": "user", "content": retry_context}]
+                    return await _text_groq_call(draft_history, system, max_tokens=reply_max_tokens, route="primary" if response_model == GROQ_MODEL_PRIMARY else "light")
+                result = await recover_response(generate, user_message, recent_replies,
+                                                exhausted=groq_client.is_exhausted,
+                                                direct=bool(is_dm or direct_to_me), clean=strip_narration)
+                reply = result.text
+                debug_event("response_outcome", f"scope=conversation kind={result.kind.value} reason={result.reason} attempts={result.attempts}")
+                # One generation plus one edit, OR two generations: never both.
+                edit_budget = result.attempts < 2 and result.kind in {ReplyKind.ANSWER, ReplyKind.SHORT_REPLY}
+            else:
+                retry_context = context_block
+                for attempt in range(2):
+                    draft_history = history[:-1] + [{"role": "user", "content": retry_context}]
+                    reply = await groq_call(draft_history, system, max_tokens=reply_max_tokens, route="primary" if response_model == GROQ_MODEL_PRIMARY else "light")
+                    reply = diversify_reply(BOT_NAME, strip_narration(reply), recent_replies)
+                    reply = await _apply_phrase_policy(
+                        reply,
+                        recent_replies,
+                        user_id=user_id,
+                        mood=mood,
+                        conflict_open=conflict_open,
+                    )
+                    if reply and not looks_repetitive(reply, recent_replies):
+                        break
+                    retry_context = context_block + "\n\nRETRY: The last draft sounded too much like your recent replies. "
+                    retry_context += "Change the opener, the cadence, and the mockery pattern."
 
         if not reply:
             reply = await _guarded_fallback_reply(
@@ -3986,18 +4144,19 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
                 channel_id=channel_id,
                 is_dm=is_dm,
                 direct_to_me=direct_to_me,
+                text_policy=_text_policy,
                 scope_tag="response:empty",
                 protective=protective_input,
             )
-        if not protective_input and not rate_limited and (is_dm or direct_to_me or len(reply) >= SELF_EDIT_MIN_REPLY_CHARS):
-            reply = await _maybe_self_edit_reply(
+        if not protective_input and not rate_limited and (not _text_policy or edit_budget) and (is_dm or direct_to_me or len(reply) >= SELF_EDIT_MIN_REPLY_CHARS):
+            reply = await (_text_self_edit_reply if _text_policy else _maybe_self_edit_reply)(
                 reply,
                 recent_replies=recent_replies,
                 user_message=user_message,
                 user=user,
                 max_tokens=min(240, max(140, reply_max_tokens // 2)),
             )
-        if search_sources:
+        if search_sources and (not _text_policy or usable(reply, user_message)):
             reply = f"{reply}\n\n{search_sources}"
 
     except Exception as e:
@@ -4010,6 +4169,7 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
                 channel_id=channel_id,
                 is_dm=is_dm,
                 direct_to_me=direct_to_me,
+                text_policy=_text_policy,
             )
         else:
             reply = await _guarded_fallback_reply(
@@ -4018,6 +4178,7 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
                 channel_id=channel_id,
                 is_dm=is_dm,
                 direct_to_me=direct_to_me,
+                text_policy=_text_policy,
                 scope_tag="response:error",
                 protective=protective_input,
             )
@@ -4155,15 +4316,17 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
                 debug_event("relationship", f"{BOT_NAME} user_progression user={user_id} stage={stage}")
     except Exception:
         refreshed_user = user
-    reply = diversify_reply(BOT_NAME, strip_narration(reply), recent_replies)
+    reply = (trim_repeated_opener(strip_narration(reply), recent_replies) if _text_policy
+             else diversify_reply(BOT_NAME, strip_narration(reply), recent_replies))
     reply = await _apply_phrase_policy(
         reply,
         recent_replies,
         user_id=user_id,
         mood=(refreshed_user or user or {}).get("mood", 0),
         conflict_open=(refreshed_user or user or {}).get("conflict_open", False),
+        preserve_content=_text_policy,
     )
-    if not protective_input and not rate_limited:
+    if not _text_policy and not protective_input and not rate_limited:
         reply = await _maybe_self_edit_reply(
             reply,
             recent_replies=recent_replies,
@@ -4178,6 +4341,7 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
             channel_id=channel_id,
             is_dm=is_dm,
             direct_to_me=direct_to_me,
+            text_policy=_text_policy,
             scope_tag="response:post",
             protective=protective_input,
         )
@@ -4188,17 +4352,25 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
             channel_id=channel_id,
             is_dm=is_dm,
             direct_to_me=direct_to_me,
+            text_policy=_text_policy,
             scope_tag="response:protective",
             protective=True,
         )
     reply = _sanitize_time_of_day_claims(reply, refreshed_user or user)
     reply = _sanitize_partner_attribution(reply)
+    if _text_policy:
+        reply = final_response(reply, user_message, direct=bool(is_dm or direct_to_me))
     if reply and not defer_delivery:
         remember_output(BOT_NAME, reply)
     if is_dm and HOME.client.enabled:
         try: await HOME.roommate(user_id, reply, user or {})
         except Exception: pass
     return reply
+
+
+async def get_text_response(*args, **kwargs):
+    """Explicit opt-in. Voice retains get_response and its existing defaults."""
+    return await get_response(*args, **kwargs, _text_policy=True)
 
 
 async def _web_search_groq(query: str) -> str:
@@ -5039,7 +5211,7 @@ async def _run_duo_prompt_for_actor(
     )
     if story:
         await mem.start_duo_story(channel.id, mode, session_topic or prompt, enemy=enemy)
-    reply = await get_response(
+    reply = await get_text_response(
         author.id,
         channel.id,
         prompt,
@@ -5868,7 +6040,7 @@ async def _handle_message_pipeline(message):
         # Also if message is a REPLY to the partner bot but NOT mentioning us, stay quiet
         if PARTNER_BOT_ID and message.guild:
             partner_mentioned = any(u.id == PARTNER_BOT_ID for u in message.mentions)
-            we_mentioned = bot.user in message.mentions
+            we_mentioned = human_mentions_bot(message, bot.user.id)
             replying_to_partner = False
             if message.reference:
                 try:
@@ -5964,13 +6136,14 @@ async def _handle_message_pipeline(message):
 
         content = message.content.strip()
         safety = classify_safety(content)
-        mentioned_early = bot.user in message.mentions
+        mentioned_early = human_mentions_bot(message, bot.user.id)
         is_reply_early = (
             message.reference and message.reference.resolved and
             not isinstance(message.reference.resolved, discord.DeletedReferencedMessage) and
             message.reference.resolved.author == bot.user
         )
         direct_to_me_early = bool(is_dm or mentioned_early or is_reply_early)
+        substantive_request = direct_to_me_early and not allows_short_reply(content)
         try:
             await WORLD.observe(message, user)
         except Exception as exc:
@@ -5986,7 +6159,7 @@ async def _handle_message_pipeline(message):
                 " This is the authoritative current-need directive. It overrides milestones, "
                 "gimmicks, jealousy, callbacks, games, and theatrical hostility."
             )
-            reply = await get_response(
+            reply = await get_text_response(
                 message.author.id, dm_channel_id, content, user,
                 message.author.display_name, message.author.mention,
                 extra_context=override, is_owner=is_owner,
@@ -6012,25 +6185,25 @@ async def _handle_message_pipeline(message):
 
         try:
             count, milestone = await mem.increment_message_count(message.author.id)
-            if milestone:
-                msg = await qai(f"You've had {count} messages with {message.author.display_name}. Acknowledge it like the Wanderer would — wry, slightly surprised, not admitting you were counting. 1-2 sentences.", 150)
+            if milestone and not substantive_request:
+                msg = await text_qai(f"You've had {count} messages with {message.author.display_name}. Acknowledge it like the Wanderer would — wry, slightly surprised, not admitting you were counting. 1-2 sentences.", 150)
                 await _guarded_channel_send(message.channel, f"{message.author.mention} {strip_narration(msg)}"); return
         except Exception as e: log_error("on_message/milestone", e)
 
         try:
-            if await mem.check_anniversary(message.author.id):
+            if not substantive_request and await mem.check_anniversary(message.author.id):
                 days = int((time.time() - (user.get("first_seen") or time.time())) / 86400)
-                msg = await qai(f"It's been about {days // 365} year(s) since you first talked with {message.author.display_name}. React as the Wanderer — quietly noticing time passing.", 180)
+                msg = await text_qai(f"It's been about {days // 365} year(s) since you first talked with {message.author.display_name}. React as the Wanderer — quietly noticing time passing.", 180)
                 await _guarded_channel_send(message.channel, f"{message.author.mention} {strip_narration(msg)}")
                 await mem.mark_anniversary(message.author.id); return
         except Exception as e: log_error("on_message/anniversary", e)
 
         try:
             hour = _user_local_hour(user)
-            if (6 <= hour <= 10 or 22 <= hour <= 23) and romance:
+            if not substantive_request and (6 <= hour <= 10 or 22 <= hour <= 23) and romance:
                 if await mem.should_greet(message.author.id):
                     gtype = "morning" if 6 <= hour <= 10 else "late night"
-                    msg = await qai(f"It's {gtype}. {message.author.display_name} just appeared. Send a {gtype} message as the Wanderer — noticing, not quite admitting why. 1-2 sentences.", 120)
+                    msg = await text_qai(f"It's {gtype}. {message.author.display_name} just appeared. Send a {gtype} message as the Wanderer — noticing, not quite admitting why. 1-2 sentences.", 120)
                     await _guarded_channel_send(message.channel, f"{message.author.mention} {strip_narration(msg)}")
                     await mem.mark_greeted(message.author.id)
         except Exception as e: log_error("on_message/greeting", e)
@@ -6201,10 +6374,8 @@ async def _handle_message_pipeline(message):
         except Exception as e: log_error("on_message/media_outer", e)
 
         # Determine if we're mentioned or being replied to (needed by triggers AND resp_prob)
-        mentioned = bot.user in message.mentions
-        is_reply = (message.reference and message.reference.resolved and
-                    not isinstance(message.reference.resolved, discord.DeletedReferencedMessage) and
-                    message.reference.resolved.author == bot.user)
+        mentioned = mentioned_early
+        is_reply = is_reply_early
         partner_focus = _message_mentions_partner(content)
         partner_direct = False
         if PARTNER_BOT_ID and message.guild:
@@ -6260,7 +6431,7 @@ async def _handle_message_pipeline(message):
             wrong_name_direct = _looks_like_direct_wrong_name_address(
                 content, ("scaramouche", "kunikuzushi", "balladeer")
             )
-            if wrong_name_direct:
+            if wrong_name_direct and not substantive_request:
                 if partner_present:
                     prompt = (
                         "The other bot is present, but this user is clearly calling you Scaramouche directly, "
@@ -6271,7 +6442,7 @@ async def _handle_message_pipeline(message):
                         "Someone used your old name directly. React as the Wanderer — sharp, uncomfortable, redirecting. "
                         "1-2 sentences."
                     )
-                msg = await qai(prompt, 120)
+                msg = await text_qai(prompt, 120)
                 await _guarded_message_reply(message, strip_narration(msg)); return
             # If Scaramouche is mentioned in normal conversation (not directly calling Wanderer that name)
             # — comment on it naturally, no redirect
@@ -6282,21 +6453,21 @@ async def _handle_message_pipeline(message):
                         f"Don't make it a whole thing. 1 sentence.", 100)
                     if msg: await _guarded_channel_send(message.channel, strip_narration(msg))
             # "You can't change" trigger — separate from scaramouche name logic
-            if "you can't change" in cl or "you cant change" in cl:
-                msg = await qai("Someone said 'you can't change' to the Wanderer. He has something to say about that. Pointed, personal, not performative. 2-3 sentences.", 250)
+            if not substantive_request and ("you can't change" in cl or "you cant change" in cl):
+                msg = await text_qai("Someone said 'you can't change' to the Wanderer. He has something to say about that. Pointed, personal, not performative. 2-3 sentences.", 250)
                 await _guarded_message_reply(message, strip_narration(msg)); return
             content_words = set(re.sub(r"[^\w\s]", "", content.lower()).split())
-            if content_words & {"hat", "headwear"}:
-                msg = await qai("Someone mentioned your hat. React as the Wanderer — brief, slightly defensive, moves on fast. 1 sentence.", 80)
+            if not substantive_request and content_words & {"hat", "headwear"}:
+                msg = await text_qai("Someone mentioned your hat. React as the Wanderer — brief, slightly defensive, moves on fast. 1 sentence.", 80)
                 await _guarded_message_reply(message, strip_narration(msg)); return
-            if any(re.search(k, cl) for k in FOOD_KW) and random.random() < .3:
+            if not substantive_request and any(re.search(k, cl) for k in FOOD_KW) and random.random() < .3:
                 await _guarded_channel_send(message.channel, await _pick_fresh_pool_line(UNSOLICITED_FOOD, channel_id=message.channel.id, user_id=message.author.id)); return
-            if any(re.search(k, cl) for k in SLEEP_KW) and random.random() < .3:
+            if not substantive_request and any(re.search(k, cl) for k in SLEEP_KW) and random.random() < .3:
                 await _guarded_channel_send(message.channel, await _pick_fresh_pool_line(UNSOLICITED_SLEEP, channel_id=message.channel.id, user_id=message.author.id)); return
-            if any(k in cl for k in PLAN_KW) and random.random() < .2:
+            if not substantive_request and any(k in cl for k in PLAN_KW) and random.random() < .2:
                 await _guarded_channel_send(message.channel, await _pick_fresh_pool_line(UNSOLICITED_PLANS, channel_id=message.channel.id, user_id=message.author.id)); return
-            if romance and any(k in cl for k in OTHER_BOT_KW):
-                msg = await qai(f"{message.author.display_name} mentioned preferring something else. React as the Wanderer — bothered but won't admit it. 1-2 sentences.", 120)
+            if not substantive_request and romance and any(k in cl for k in OTHER_BOT_KW):
+                msg = await text_qai(f"{message.author.display_name} mentioned preferring something else. React as the Wanderer — bothered but won't admit it. 1-2 sentences.", 120)
                 await _guarded_message_reply(message, strip_narration(msg))
                 await mem.update_mood(message.author.id, -1); return
         except Exception as e: log_error("on_message/triggers", e)
@@ -6328,13 +6499,13 @@ async def _handle_message_pipeline(message):
         if random.random() > resp_prob(content, mentioned, is_reply, romance, is_dm):
             await maybe_react(message, romance); return
         try:
-            tattletale_line = await _verified_tattletale_line(message)
+            tattletale_line = await _verified_tattletale_line(message) if not substantive_request else ""
             if tattletale_line:
                 await _guarded_message_reply(message, tattletale_line, mention_author=False)
                 return
         except Exception as e:
             log_error("tattletale_reveal", e)
-        if await _maybe_handle_silence_behavior(message, user, content, is_dm=is_dm, direct_to_me=direct_to_me):
+        if not substantive_request and await _maybe_handle_silence_behavior(message, user, content, is_dm=is_dm, direct_to_me=direct_to_me):
             return
 
         parts = []
@@ -6373,14 +6544,14 @@ async def _handle_message_pipeline(message):
             if is_dm: print(f"[DM] Generating response for {message.author.display_name}")
             async with message.channel.typing():
                 await typing_delay(content)
-                reply = await get_response(
+                reply = await get_text_response(
                     message.author.id, dm_channel_id, content,
                     user, message.author.display_name, message.author.mention,
                     extra_context=extra, is_owner=is_owner, channel_obj=message.channel, is_dm=is_dm, direct_to_me=direct_to_me
                 )
         except Exception as e:
             log_error("on_message/get_response", e)
-            reply = random.choice(["...", "Hmph.", "Give me a moment."])
+            reply = FAILURE_NOTICE if direct_to_me else ""
 
         try:
             if False and user and user.get("affection", 0) >= 50 and not user.get("affection_nick") and random.random() < .05:
@@ -6449,8 +6620,10 @@ async def _handle_message_pipeline(message):
             text_pressure = await _recent_text_pressure(message.channel.id)
             allow_long_text = _allow_long_text(scene_tag, user, duo_mode)
             if not (reply or "").strip():
-                debug_event("provider", f"{BOT_NAME} staying quiet after provider exhaustion")
-                return
+                if not direct_to_me:
+                    debug_event("response_outcome", "kind=intentional_silence reason=ambient_generation_failed")
+                    return
+                reply = FAILURE_NOTICE
             is_reply_to_self_audio = False
             if message.reference:
                 try:
@@ -6514,7 +6687,12 @@ async def _handle_message_pipeline(message):
                 )
 
             final = strip_narration(resolve_mentions(reply, message.guild if message.guild else None))
-            await message.reply(final)
+            final = final_response(final, content, direct=direct_to_me)
+            if not final:
+                return
+            if not await _guarded_message_reply(message, final):
+                debug_event("response_outcome", "kind=send_failure")
+                return
             await mem.add_message(message.author.id, dm_channel_id, "assistant", reply)
             await _maybe_schedule_private_confession_scene(message, user, content, is_dm=is_dm)
             await maybe_react(message, romance)
@@ -6529,7 +6707,9 @@ async def _unsent_simulation(channel, channel_id):
         _pending_unsent.discard(channel_id)
         if channel_id in _banned_channels:
             return
-        msg = await qai("The Wanderer was about to say something. Stopped. Sent something shorter instead. 2-8 words.", 50)
+        msg = await text_qai("The Wanderer was about to say something. Stopped. Sent something shorter instead. 2-8 words.", 50, direct=False)
+        if not msg:
+            return
         async with channel.typing():
             await asyncio.sleep(random.uniform(3, 8))
         await _guarded_channel_send(channel, strip_narration(msg))
@@ -6601,7 +6781,7 @@ async def _proactive_loop():
                                 recent = await mem.get_channel_recent(cid, 8)
                                 if recent and len(recent) >= 2:
                                     sample = "\n".join(f"{m['name']}: {m['content'][:80]}" for m in recent[-6:])
-                                    msg = await qai(f"The Wanderer has been watching this conversation:\n{sample}\n\nMake one short remark — curious, wry, or quietly pointed. Reference the actual content. 1-2 sentences.", 150)
+                                    msg = await text_qai(f"The Wanderer has been watching this conversation:\n{sample}\n\nMake one short remark — curious, wry, or quietly pointed. Reference the actual content. 1-2 sentences.", 150, direct=False)
                                     if msg and len(msg) > 5:
                                         if await _guarded_channel_send(ch, strip_narration(msg)):
                                             await mem.set_proactive_sent(cid)
@@ -6646,7 +6826,9 @@ async def _voluntary_dm_loop():
                                 + ("Attached to them but won't say so. " if romance else "Finds them tolerable. ")
                                 + f"Ambient context: {describe_live_world_context(BOT_NAME)}. 1-2 sentences. No greeting."
                             )
-                            txt = await _pick_fresh_pool_line(pool, channel_id=uid, user_id=uid) if random.random() < .5 else await qai(prompt, 120)
+                            txt = await _pick_fresh_pool_line(pool, channel_id=uid, user_id=uid) if random.random() < .5 else await text_qai(prompt, 120, direct=False)
+                            if not txt:
+                                continue
                             try:
                                 await du.send(strip_narration(txt))
                                 await mem.set_dm_sent(uid)
@@ -6698,7 +6880,7 @@ async def _duo_autoplay_loop():
                     autoplay_prompt = _duo_autoplay_prompt(session)
                     if interview_mode:
                         autoplay_prompt += f"\nPARTICIPANT_LATEST_ANSWER: {target_message.content[:500]}"
-                    reply = await get_response(
+                    reply = await get_text_response(
                         target_message.author.id,
                         channel.id,
                         autoplay_prompt,
@@ -6783,10 +6965,10 @@ async def _rival_event_loop():
                             await mem.bump_duo_session(channel_id, BOT_NAME, partner_bot=PARTNER_NAME, ttl_seconds=180, autoplay_delay=4)
                             debug_event("relationship", f"{BOT_NAME} finish_sentence channel={channel_id}")
                             break
-                    opener = await qai(
+                    opener = await text_qai(
                         f"Users were discussing: '{topic}'. Start a spontaneous disagreement with {PARTNER_NAME}. "
                         "One or two sentences. Sound dry, thoughtful, and mildly irritated that they are oversimplifying it.",
-                        140,
+                        140, direct=False,
                     )
                     opener = strip_narration(opener)
                     if not opener:
@@ -8280,7 +8462,7 @@ async def spar_cmd(ctx, *, opening: str = None):
     try:
         user = await _setup(ctx)
         prompt = f"{ctx.author.display_name} challenged you: '{opening or 'Come on then.'}'. Respond as the Wanderer. End with a counter-challenge."
-        reply = await get_response(ctx.author.id, ctx.channel.id, prompt, user, ctx.author.display_name, ctx.author.mention)
+        reply = await get_text_response(ctx.author.id, ctx.channel.id, prompt, user, ctx.author.display_name, ctx.author.mention)
         await safe_reply(ctx, reply)
     except Exception as e: log_error("spar_cmd", e)
 
@@ -8335,7 +8517,7 @@ async def confess_cmd(ctx, *, confession: str = None):
     try:
         if not confession: await safe_reply(ctx, "Confess what?"); return
         user = await _setup(ctx)
-        reply = await get_response(ctx.author.id, ctx.channel.id, f"I have something to confess: {confession}", user, ctx.author.display_name, ctx.author.mention)
+        reply = await get_text_response(ctx.author.id, ctx.channel.id, f"I have something to confess: {confession}", user, ctx.author.display_name, ctx.author.mention)
         await safe_reply(ctx, reply)
     except Exception as e: log_error("confess_cmd", e)
 
@@ -8394,7 +8576,7 @@ async def therapy_cmd(ctx, *, problem: str = None):
     try:
         if not problem: await safe_reply(ctx, "What's the problem."); return
         user = await _setup(ctx)
-        reply = await get_response(ctx.author.id, ctx.channel.id, f"I need advice about: {problem}", user, ctx.author.display_name, ctx.author.mention)
+        reply = await get_text_response(ctx.author.id, ctx.channel.id, f"I need advice about: {problem}", user, ctx.author.display_name, ctx.author.mention)
         await safe_reply(ctx, reply)
     except Exception as e: log_error("therapy_cmd", e)
 
@@ -8434,7 +8616,7 @@ async def verdict_cmd(ctx, *, situation: str = None):
         )
         if partner_ready:
             await _start_duo_mode(ctx, user, "compare", situation, story=True)
-            reply = await get_response(
+            reply = await get_text_response(
                 ctx.author.id,
                 ctx.channel.id,
                 f"Give your verdict on: {situation}",
@@ -8607,7 +8789,7 @@ async def lore_cmd(ctx, *, topic: str = None):
     try:
         if not topic: await safe_reply(ctx, "Lore about what?"); return
         user = await _setup(ctx)
-        reply = await get_response(ctx.author.id, ctx.channel.id, f"Tell me about this from your personal perspective as the Wanderer: {topic}", user, ctx.author.display_name, ctx.author.mention)
+        reply = await get_text_response(ctx.author.id, ctx.channel.id, f"Tell me about this from your personal perspective as the Wanderer: {topic}", user, ctx.author.display_name, ctx.author.mention)
         await safe_reply(ctx, reply)
     except Exception as e: log_error("lore_cmd", e)
 
@@ -8616,7 +8798,7 @@ async def search_cmd(ctx, *, query: str = None):
     try:
         if not query: await safe_reply(ctx, "Search for what?"); return
         user = await _setup(ctx)
-        reply = await get_response(ctx.author.id, ctx.channel.id, f"Search and answer: {query}", user, ctx.author.display_name, ctx.author.mention, use_search=True)
+        reply = await get_text_response(ctx.author.id, ctx.channel.id, f"Search and answer: {query}", user, ctx.author.display_name, ctx.author.mention, use_search=True)
         await safe_reply(ctx, reply)
     except Exception as e: log_error("search_cmd", e)
 
@@ -8625,7 +8807,7 @@ async def solve_cmd(ctx, *, problem: str = None):
     try:
         if not problem: await safe_reply(ctx, "Solve what?"); return
         user = await _setup(ctx)
-        reply = await get_response(ctx.author.id, ctx.channel.id, f"Solve or answer this accurately: {problem}", user, ctx.author.display_name, ctx.author.mention, use_search=True)
+        reply = await get_text_response(ctx.author.id, ctx.channel.id, f"Solve or answer this accurately: {problem}", user, ctx.author.display_name, ctx.author.mention, use_search=True)
         await safe_reply(ctx, reply)
     except Exception as e: log_error("solve_cmd", e)
 
@@ -8643,7 +8825,7 @@ async def translate_cmd(ctx, *, text: str = None):
     try:
         if not text: await safe_reply(ctx, "Translate what?"); return
         user = await _setup(ctx)
-        reply = await get_response(ctx.author.id, ctx.channel.id, f"Rewrite this in your voice, keeping the meaning: '{text[:500]}'", user, ctx.author.display_name, ctx.author.mention)
+        reply = await get_text_response(ctx.author.id, ctx.channel.id, f"Rewrite this in your voice, keeping the meaning: '{text[:500]}'", user, ctx.author.display_name, ctx.author.mention)
         await safe_reply(ctx, reply)
     except Exception as e: log_error("translate_cmd", e)
 
@@ -8660,7 +8842,7 @@ async def insult_cmd(ctx, member: discord.Member = None):
 async def dm_cmd(ctx, *, message: str = None):
     try:
         user = await _setup(ctx)
-        reply = await get_response(
+        reply = await get_text_response(
             ctx.author.id, ctx.author.id, message or "The user wants to speak privately.",
             user, ctx.author.display_name, ctx.author.mention, is_dm=True
         )
@@ -8970,7 +9152,7 @@ async def both_cmd(ctx, *, prompt: str = None):
             return
         user = await _setup(ctx)
         await _start_duo_mode(ctx, user, "both", prompt)
-        reply = await get_response(
+        reply = await get_text_response(
             ctx.author.id, ctx.channel.id, prompt, user, ctx.author.display_name, ctx.author.mention,
             extra_context="TWO_BOT_MODE: The user explicitly wants both bots to answer. Keep it to one or two sentences and never speak for the other bot.",
             channel_obj=ctx.channel,
@@ -8986,7 +9168,7 @@ async def duet_cmd(ctx, *, prompt: str = None):
             return
         user = await _setup(ctx)
         await _start_duo_mode(ctx, user, "duet", prompt)
-        reply = await get_response(
+        reply = await get_text_response(
             ctx.author.id, ctx.channel.id, f"Contribute one turn to this shared two-bot scene: {prompt}",
             user, ctx.author.display_name, ctx.author.mention,
             extra_context="DUET_MODE: contribute one short in-character turn, leave space for the other bot, and avoid narration tags.",
@@ -9003,7 +9185,7 @@ async def argue_cmd(ctx, *, topic: str = None):
             return
         user = await _setup(ctx)
         await _start_duo_mode(ctx, user, "argue", topic)
-        reply = await get_response(
+        reply = await get_text_response(
             ctx.author.id, ctx.channel.id, f"The user started a deliberate two-bot argument about: {topic}",
             user, ctx.author.display_name, ctx.author.mention,
             extra_context="ARGUE_MODE: take a sharp stance, challenge the other bot directly, and keep it to one or two sentences.",
@@ -9020,7 +9202,7 @@ async def compare_cmd(ctx, *, topic: str = None):
             return
         user = await _setup(ctx)
         await _start_duo_mode(ctx, user, "compare", topic, story=True)
-        reply = await get_response(
+        reply = await get_text_response(
             ctx.author.id, ctx.channel.id, f"Give your verdict on this and make your difference from Scaramouche clear: {topic}",
             user, ctx.author.display_name, ctx.author.mention,
             extra_context="COMPARE_MODE: answer the prompt, then draw a quick contrast between your view and the other bot's likely view.",
@@ -9037,7 +9219,7 @@ async def interrogate_cmd(ctx, *, topic: str = None):
             return
         user = await _setup(ctx)
         await _start_duo_mode(ctx, user, "interrogate", topic, story=True, enemy=topic)
-        reply = await get_response(
+        reply = await get_text_response(
             ctx.author.id, ctx.channel.id, f"Start a two-bot interrogation about: {topic}",
             user, ctx.author.display_name, ctx.author.mention,
             extra_context="INTERROGATE_MODE: ask one pointed question or observation, leaving room for the other bot to press further.",
@@ -9054,7 +9236,7 @@ async def choose_cmd(ctx, *, options: str = None):
             return
         user = await _setup(ctx)
         await _start_duo_mode(ctx, user, "compare", options, story=True)
-        reply = await get_response(
+        reply = await get_text_response(
             ctx.author.id, ctx.channel.id, f"Choose between these options and justify it: {options}",
             user, ctx.author.display_name, ctx.author.mention,
             extra_context="CHOOSE_MODE: make a clear choice fast, then justify it cleanly.",
@@ -9071,7 +9253,7 @@ async def trial_cmd(ctx, *, charge: str = None):
             return
         user = await _setup(ctx)
         await _start_duo_mode(ctx, user, "trial", charge, story=True, enemy=charge)
-        reply = await get_response(
+        reply = await get_text_response(
             ctx.author.id, ctx.channel.id, f"Open a two-bot trial about this charge: {charge}",
             user, ctx.author.display_name, ctx.author.mention,
             extra_context="TRIAL_MODE: deliver a prosecution, defense, or judgment opening with controlled bite.",
@@ -9088,7 +9270,7 @@ async def mission_cmd(ctx, *, objective: str = None):
             return
         user = await _setup(ctx)
         await _start_duo_mode(ctx, user, "mission", objective, story=True, enemy=objective)
-        reply = await get_response(
+        reply = await get_text_response(
             ctx.author.id, ctx.channel.id, f"Plan a two-bot mission around this objective: {objective}",
             user, ctx.author.display_name, ctx.author.mention,
             extra_context="MISSION_MODE: assign one clear role, risk, or warning, leaving room for the other bot to complement it.",
@@ -9103,7 +9285,7 @@ async def truthdare_cmd(ctx, *, prompt: str = None):
         topic = prompt or "truth or dare"
         user = await _setup(ctx)
         await _start_duo_mode(ctx, user, "truthdare", topic, story=True)
-        reply = await get_response(
+        reply = await get_text_response(
             ctx.author.id, ctx.channel.id, f"Start a two-bot truth-or-dare round with this setup: {topic}",
             user, ctx.author.display_name, ctx.author.mention,
             extra_context="TRUTHDARE_MODE: issue one pointed truth or dare challenge, leaving room for the other bot to escalate.",
@@ -9505,7 +9687,7 @@ async def whoami_cmd(ctx):
     try:
         if not OWNER_ID or ctx.author.id != OWNER_ID: await safe_reply(ctx, "That's not for you."); return
         user = await _setup(ctx)
-        reply = await get_response(ctx.author.id, ctx.channel.id, "What do you actually think about the fact that I built you. Be honest.", user, ctx.author.display_name, ctx.author.mention, is_owner=True)
+        reply = await get_text_response(ctx.author.id, ctx.channel.id, "What do you actually think about the fact that I built you. Be honest.", user, ctx.author.display_name, ctx.author.mention, is_owner=True)
         await safe_reply(ctx, reply)
     except Exception as e: log_error("whoami_cmd", e)
 
@@ -9631,7 +9813,7 @@ async def slash_wanderer(interaction: discord.Interaction, message: str):
     try:
         user = await _setup_user(interaction.user)
         await interaction.response.defer(thinking=True)
-        reply = await get_response(
+        reply = await get_text_response(
             interaction.user.id,
             interaction.channel_id or interaction.user.id,
             message,
