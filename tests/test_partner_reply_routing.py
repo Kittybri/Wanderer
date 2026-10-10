@@ -12,11 +12,11 @@ def test_bystander_name_never_becomes_addressee():
     name = safe_reference_name("@deluluqueen")
     assert name == "deluluqueen"
     context = jealousy_context("Scaramouche", "deluluqueen")
-    assert "PRIMARY_ADDRESSEE: Scaramouche" in context
-    assert "not the speaker and not the addressee" in context
-    assert coherent_partner_reply("Stop clinging to deluluqueen.", "Scaramouche", name).startswith("Scaramouche, ")
+    assert "PARTNER_SPEAKER: Scaramouche" in context
+    assert "not the author of this message" in context
+    assert coherent_partner_reply("Stop clinging to deluluqueen.", "Scaramouche", name) == "Stop clinging to deluluqueen."
     assert coherent_partner_reply("deluluqueen, be quiet.", "Scaramouche", name) == ""
-    assert coherent_partner_reply("<@77> be quiet.", "Scaramouche", name) == ""
+    assert coherent_partner_reply("Scaramouche, <@77> is listening.", "Scaramouche", name) == "Scaramouche, <@77> is listening."
 
 
 def test_autoplay_uses_partner_or_human_message_reference():
@@ -61,9 +61,9 @@ def test_wanderer_reply_does_not_send_standalone_banter(monkeypatch):
         sent.assert_awaited_once()
         standalone.assert_not_awaited()
         assert sent.await_args.args[0] is message
-        assert sent.await_args.args[1].startswith("Scaramouche, ")
+        assert sent.await_args.args[1].startswith("<@999> Your worst opinion")
         assert sent.await_args.kwargs["mention_author"] is False
-        assert not sent.await_args.kwargs["allowed_mentions"].users
+        assert sent.await_args.kwargs["allowed_mentions"].users
         prompt = ai.await_args.args[0]
         assert "PRIMARY ADDRESSEE: Scaramouche" in prompt and "deluluqueen" in prompt
 

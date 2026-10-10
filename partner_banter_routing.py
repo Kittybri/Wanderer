@@ -14,21 +14,41 @@ def jealousy_context(partner_name: str, bystander_name: str) -> str:
         return ""
     return (
         f"\nJEALOUSY_REFERENCE: {name!r} is a romance-mode person in the channel, "
-        f"not the speaker and not the addressee. PRIMARY_ADDRESSEE: {partner_name}. "
-        "You may mention that name *in the third person* in one jealous jab "
-        "at the partner, but do not assert they said anything, address them "
-        "directly, ping them, or treat them as the person you are replying to."
+        f"not the author of this message. PARTNER_SPEAKER: {partner_name}. "
+        "Keep your jealous, competitive teasing as sharp as usual; you may "
+        "reference or tag the romance-mode person as part of a clearly framed "
+        "joke. Do not present that person as the one who made the partner's "
+        "statement, and never invent an opinion they did not give."
     )
 
 
 def coherent_partner_reply(text: str, partner_name: str, bystander_name: str = "") -> str:
-    """Reject misaddressed/pinging optional replies and make the bot target explicit."""
+    """Preserve natural banter and @ mentions; reject only clear misattribution."""
     text = (text or "").strip()
-    if not text or "@" in text:
+    if not text:
         return ""
     name = safe_reference_name(bystander_name)
-    if name and re.match(rf"^(?:hey\s+)?{re.escape(name)}(?=\W|$)", text, flags=re.IGNORECASE):
+    if name and re.match(
+        rf"^(?:hey\s+)?{re.escape(name)}\s*[,!:](?:\s|$)",
+        text, flags=re.IGNORECASE,
+    ):
         return ""
-    if not re.match(rf"^{re.escape(partner_name)}(?=\W|$)", text, flags=re.IGNORECASE):
-        return f"{partner_name}, {text}"
     return text
+
+
+def contextual_romance_tag(text: str, name: str, mention: str) -> str:
+    """Use the existing romance ping inside the jealousy joke, not as its addressee.
+
+    Called only after the original 45% romance mention selection.
+    """
+    text = (text or "").strip()
+    if not text or not mention:
+        return text
+    if mention in text:
+        return text
+    name = safe_reference_name(name)
+    if name:
+        hit = re.search(rf"(?<!\w){re.escape(name)}(?!\w)", text, flags=re.IGNORECASE)
+        if hit:
+            return text[:hit.start()] + mention + text[hit.end():]
+    return text + f" And don't expect {mention} to rescue that argument."

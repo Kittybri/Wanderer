@@ -3389,10 +3389,12 @@ async def _handle_partner_message(message, target_info: dict | None = None) -> b
                 )
                 reply = await text_qai(prompt, 180, route="primary", direct=False)
                 reply = await _apply_phrase_policy(reply, [item.get("content", "") for item in recent_banter], mood=-3, conflict_open=True, preserve_content=True)
+                partner_ping = getattr(message.author, "mention", "") or f"@{getattr(message.author, 'display_name', PARTNER_NAME.title())}"
                 reply = _sanitize_partner_dialogue_reply(
-                    reply, message.guild if message.guild else None,
-                    partner_mention=PARTNER_NAME.title(),
-                    partner_name=PARTNER_NAME.title(),
+                    reply,
+                    message.guild if message.guild else None,
+                    partner_mention=partner_ping,
+                    partner_name=getattr(message.author, "display_name", PARTNER_NAME.title()),
                 )
                 reply = coherent_partner_reply(reply, PARTNER_NAME.title())
                 if reply:
@@ -3407,7 +3409,9 @@ async def _handle_partner_message(message, target_info: dict | None = None) -> b
                         message,
                         reply,
                         mention_author=False,
-                        allowed_mentions=discord.AllowedMentions.none(),
+                        allowed_mentions=discord.AllowedMentions(
+                            users=True, roles=False, everyone=False, replied_user=False,
+                        ),
                     )
                     await mem.record_bot_banter(PARTNER_PAIR_KEY, BOT_NAME, reply, "intervention")
                     await mem.note_shared_event_memory(
@@ -3452,27 +3456,36 @@ async def _handle_partner_message(message, target_info: dict | None = None) -> b
             f"Reply as Wanderer. He refuses to admit how much of that shared history still matters. "
             f"If respect has grown, show it as cleaner honesty instead of recycled annoyance. "
             f"Let the disagreement bite into morality, strategy, loyalty, power, forgiveness, or whether the user is worth trusting when it fits the theme. "
-            "A romance-mode bystander may be named only in the third person, "
-            "not addressed, tagged, criticized, or falsely credited with an opinion. "
+            "Keep your original sharp, defensive jealousy and teasing; you "
+            "may reference the romance-mode person as part of a coherent joke. "
+            "Be precise about who made the original remark and do not invent "
+            "opinions for an uninvolved person. "
             f"One or two sentences. No narration."
         )
         recent_partner_lines = [item.get('content', '') for item in recent_banter]
         mood = -7 if theme in {'identity', 'weakness', 'jealousy'} else -3 if theme in {'origins', 'change'} else 0
         reply = await text_qai(prompt, 180, direct=False)
         reply = await _apply_phrase_policy(reply, recent_partner_lines, mood=mood, conflict_open=theme in {'identity', 'weakness', 'jealousy'}, preserve_content=True)
+        partner_ping = getattr(message.author, "mention", "") or f"@{getattr(message.author, 'display_name', PARTNER_NAME.title())}"
         reply = _sanitize_partner_dialogue_reply(
             reply, message.guild if message.guild else None,
-            partner_mention=PARTNER_NAME.title(),
-            partner_name=PARTNER_NAME.title(),
+            partner_mention=partner_ping,
+            partner_name=getattr(message.author, "display_name", PARTNER_NAME.title()),
         )
         reply = coherent_partner_reply(
             reply, PARTNER_NAME.title(), getattr(jealousy_target, "display_name", "")
         )
         if not reply:
             return True
+        # Preserve the original 45% bot-mention chance, but ALWAYS attach the
+        # Discord reply to Scaramouche's actual message (no channel send).
+        if jealousy_target and random.random() < 0.45:
+            reply = f"{partner_ping} {reply}"
         if not await _guarded_message_reply(
             message, reply, mention_author=False,
-            allowed_mentions=discord.AllowedMentions.none(),
+            allowed_mentions=discord.AllowedMentions(
+                users=True, roles=False, everyone=False, replied_user=False,
+            ),
         ):
             return True
 
