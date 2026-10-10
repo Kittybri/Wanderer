@@ -9,6 +9,24 @@ from test_release_hardening import load_runtime
 from response_quality import FAILURE_NOTICE
 
 
+@pytest.mark.parametrize("direct", [True, False])
+def test_quick_text_keeps_technical_vocabulary(runtime, monkeypatch, direct):
+    mod, loop, _ = runtime
+    answer = "Retry the request after a short delay."
+    monkeypatch.setattr(mod, "_text_quick_blocking", lambda *args: answer)
+    assert loop.run_until_complete(mod.text_qai("Explain retrying", direct=direct)) == answer
+
+
+def test_successful_technical_rewrite_is_kept(runtime, monkeypatch):
+    mod, loop, user = runtime
+    answer = "Retry transient failures with exponential backoff."
+    monkeypatch.setattr(mod, "_self_edit_issues", lambda *a, **k: ["too generic"])
+    monkeypatch.setattr(mod, "_text_rewrite_reply_once", AsyncMock(return_value=answer))
+    result = loop.run_until_complete(mod._text_self_edit_reply(
+        "Try once more.", recent_replies=[], user_message="Explain retries", user=user))
+    assert result == answer
+
+
 @pytest.mark.parametrize("direct,expected", [(False, ""), (True, FAILURE_NOTICE)])
 def test_quick_text_failure_distinguishes_ambient_from_direct(runtime, monkeypatch, direct, expected):
     mod, loop, _ = runtime
@@ -82,6 +100,8 @@ def runtime(monkeypatch, tmp_path):
     ("Why does that happen?", "Water vapor cools and condenses into droplets."),
     ("I'm overwhelmed and need help planning one task", "Pick one small task and put the rest aside for now."),
     ("Hi", "Hello. What brings you here?"),
+    ("How do I recover from a network timeout?", "Retry the request after a short delay."),
+    ("What is a system prompt?", "A system prompt provides instructions to the assistant."),
 ])
 def test_actual_text_generation_keeps_question_and_answer(runtime, monkeypatch, prompt, answer):
     mod, loop, user = runtime

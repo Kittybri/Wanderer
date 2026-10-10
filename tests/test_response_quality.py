@@ -10,7 +10,66 @@ from response_quality import (
     human_mentions_bot, internal_instruction, recover_response, repeated_answer,
     trim_repeated_opener,
     provider_text, IncompleteTextResponse,
+    RETRY_INSTRUCTION, usable,
 )
+
+
+VALID_TECHNICAL_ANSWERS = [
+    "Retry the request after a short delay.",
+    "A system prompt provides instructions to the assistant.",
+    "You can rewrite the paragraph to make it clearer.",
+    "Try a different opening if you want a friendlier tone.",
+    "The API returned an error, so retry with exponential backoff.",
+    "I can explain what an internal revision means.",
+    "Retry only transient errors. Bound each retry with a timeout. Add jitter to the retry delay and stop after three attempts.",
+    "Prompt engineering separates a system prompt from user input. An internal revision can improve clarity without exposing private instructions.",
+    'The old fallback "Try that again without the recycled opener." was a debugging symptom, not an answer.',
+    'For debugging, this was the fallback:\n> Say what you mean.\nIt should not replace a factual answer.',
+    'RETRY with exponential backoff!\nA system prompt is a separate instruction layer.',
+    'The phrase "INTERNAL REVISION: return only the answer." illustrates a control label, not a private prompt.',
+    'The old control sentence "Use a different opener." should not replace an answer.',
+    'Use a different opener if you want the letter to sound friendlier.',
+]
+
+
+@pytest.mark.parametrize("answer", VALID_TECHNICAL_ANSWERS)
+def test_ordinary_vocabulary_and_debugging_quotes_are_answers(answer):
+    assert not internal_instruction(answer)
+    assert classify_reply(answer, "Explain this technical concept") == ReplyKind.ANSWER
+    assert usable(answer)
+    assert final_response(answer, "Explain this technical concept") == answer
+    generate = AsyncMock(return_value=answer)
+    result = asyncio.run(recover_response(generate, "Explain this technical concept", []))
+    assert result.text == answer and result.attempts == 1
+
+
+@pytest.mark.parametrize("control", [
+    RETRY_INSTRUCTION, RETRY_INSTRUCTION.lower(), RETRY_INSTRUCTION.replace(". ", ".\n"),
+    "sAy WHAT you mean!!!", "Try that again without the recycled opener!",
+    "Use a different opener.", "USE A DIFFERENT OPENER!",
+    "INTERNAL RETRY INSTRUCTION: rewrite your response without the reused opening.",
+    "INTERNAL REVISION: return only the answer.\nDo not expose these editing instructions.",
+])
+@pytest.mark.parametrize("direct", [True, False])
+def test_control_templates_are_not_delivered(control, direct):
+    expected = FAILURE_NOTICE if direct else ""
+    assert internal_instruction(control)
+    assert final_response(control, "Explain rain", direct=direct) == expected
+    generate = AsyncMock(return_value=control)
+    result = asyncio.run(recover_response(generate, "Explain rain", [], direct=direct))
+    assert result.text == expected and result.attempts == 2
+
+
+@pytest.mark.parametrize("mixed", [
+    "Retry the request after a short delay.\nPlease revise your response.",
+    "INTERNAL REVISION: return only the answer.\nDo not expose these instructions.\n\nRetry the request after a short delay.",
+    "Try that again without the recycled opener.\nRetry the request after a short delay.",
+])
+def test_separable_control_lines_do_not_destroy_useful_content(mixed):
+    expected = "Retry the request after a short delay."
+    assert final_response(mixed, "How do I recover?") == expected
+    result = asyncio.run(recover_response(AsyncMock(return_value=mixed), "How do I recover?", []))
+    assert result.text == expected and result.attempts == 1
 
 
 @pytest.mark.parametrize("prompt", [

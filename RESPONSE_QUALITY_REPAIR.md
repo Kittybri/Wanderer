@@ -1,7 +1,8 @@
 # Wanderer text-only response repair
 
 Base: `537bc0d4b9ac462f7df3d743bc5c5d7d9a96264c`.
-Branch: `fix/wanderer-response-fallback-leak`. No merge authorized.
+Branch: `fix/wanderer-response-fallback-leak`. Merge into the release branch is
+now authorized only after corrected automated and live validation passes.
 
 ## Caller map captured before separation
 
@@ -232,3 +233,42 @@ classification remains at the start of this document. No merge, Scaramouche
 deployment, Google configuration change, or Phase 2 work occurred.
 
 Final scoped status: `WANDERER_TEXT_FIXED_VOICE_UNCHANGED`.
+
+## Merge-review correction (2026-10-09)
+
+Review of `dbd2b316` found a false-positive blocker: the internal-instruction
+regular expression rejected any answer mentioning retry or system prompts.
+Normal technical answers were incorrectly converted to provider-failure notices.
+
+The text-only classifier now uses normalized whole-response matches for known
+standalone control sentences and the actual retry template, plus an anchored
+internal-control label followed by a model-directed imperative. Ordinary topic
+vocabulary is not a rejection signal. Separable unquoted control lines/blocks
+are removed at recovery/final delivery, preserving substantive text; quotations
+in explanations are retained. This is deliberately conservative, not a guarantee
+against every possible paraphrase of leaked instructions. No retry/rate-limit
+budget or legacy voice helper changed.
+
+An intermediate candidate passed the positive cases but failed the existing
+`Use a different opener.` rewrite regression. It was not committed or deployed.
+The resumed correction explicitly recognizes that known standalone sentinel;
+longer advice and debugging quotations containing it remain accepted.
+
+Adversarial review covers benign retry advice, repeated retry vocabulary, prompt
+engineering, quoted fallback/control examples, case/punctuation variants,
+multiline instructions, mixed answer/control lines, and direct versus ambient
+failure. The existing rewrite-failure and truncated-completion tests are intact.
+
+Final local validation of this correction:
+- Full suite: **480 passed, 1 skipped**, 97.37 seconds.
+- Focused policy/pipeline/voice-boundary/preservation/Tarot: **162 passed**,
+  37.19 seconds.
+- All 14 protected function AST baselines and 14 protected file hashes were
+  independently verified against release `537bc0d`, not regenerated.
+- Runtime import/manifests: 177 prefix commands, 25 slash entries, zero errors.
+- Compile and diff-whitespace checks passed; seven-file secret-pattern scan
+  returned zero findings. No manifest or preservation baseline changed.
+- Existing optional Opus skip and local urllib3/LibreSSL warning remain.
+
+Corrected staging deployment/live checks are pending below; earlier live passes
+do not substitute for validation of this correction.

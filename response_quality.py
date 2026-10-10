@@ -54,17 +54,59 @@ def allows_short_reply(prompt):
     ))
 
 
+_STANDALONE_CONTROLS = frozenset(normalized(line) for line in (
+    RETRY_INSTRUCTION,
+    "Use a different opener.",
+    "Use a different opening and cadence.",
+    "Please revise your response.",
+    "Avoid the stale opener.",
+))
+_CONTROL_HEADER = re.compile(
+    r"^\s*(?:INTERNAL REVISION(?: ONLY)?|INTERNAL RETRY INSTRUCTION)\s*:\s*"
+    r"(?:answer the original request\b|return only the (?:actual )?answer\b|"
+    r"rewrite (?:the|your) (?:draft|response)\b)", re.IGNORECASE,
+)
+
+
 def internal_instruction(text):
-    """Recognize legacy sentinels AND editing mechanics, not just four strings."""
+    """High-confidence standalone controls, never ordinary topic vocabulary.
+
+    Exact legacy sentinels retain their substitution guard. Explanations and
+    quotations embedded in substantive prose are not control instructions.
+    """
     if is_fallback_reply("wanderer", text):
         return True
-    value = normalized(text)
-    return bool(re.search(
-        r"(?:\b(?:retry|internal revision|anti repeat|system prompt)\b|"
-        r"\b(?:recycled|different|reused|stale) (?:opener|opening|cadence)\b|"
-        r"\b(?:rewrite|rephrase|revise) (?:this|the|your|that) (?:draft|reply|response)\b)",
-        value,
-    ))
+    return normalized(text) in _STANDALONE_CONTROLS or bool(_CONTROL_HEADER.match(text or ""))
+
+
+def clean_control_lines(text):
+    """Remove separable control lines; preserve explanations/quoted examples.
+
+    Do not guess at inline prose boundaries. Unmarked, ambiguous vocabulary is
+    left alone. A whole known template is rejected even when line-wrapped.
+    """
+    value = (text or "").strip()
+    if normalized(value) in _STANDALONE_CONTROLS or is_fallback_reply("wanderer", value):
+        return ""
+    lines = []
+    in_fence = False
+    control_block = False
+    for line in value.splitlines():
+        stripped = line.lstrip()
+        if not stripped:
+            control_block = False
+        if control_block:
+            continue
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+        quoted = in_fence or stripped.startswith(('>', '"', "'", '“', '‘', '```'))
+        if not quoted and _CONTROL_HEADER.match(line):
+            control_block = True
+            continue
+        if not quoted and internal_instruction(line):
+            continue
+        lines.append(line)
+    return "\n".join(lines).strip()
 
 
 def classify_reply(text, prompt=""):
@@ -129,7 +171,7 @@ async def recover_response(generate, prompt, recent, *, exhausted=lambda: False,
         except Exception:
             reason = "provider_exception"
             continue
-        draft = trim_repeated_opener(draft, recent)
+        draft = clean_control_lines(trim_repeated_opener(draft, recent))
         if usable(draft, prompt):
             best = draft
             if not repeated_answer(draft, recent):
@@ -143,6 +185,7 @@ async def recover_response(generate, prompt, recent, *, exhausted=lambda: False,
 
 
 def final_response(text, prompt, *, direct=True):
+    text = clean_control_lines(text)
     if usable(text, prompt) or text == FAILURE_NOTICE:
         return text
     return FAILURE_NOTICE if direct else ""
