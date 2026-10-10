@@ -3383,22 +3383,7 @@ async def _handle_partner_message(message, target_info: dict | None = None) -> b
                     user_message=message.content,
                     topic=(duo or {}).get("topic", ""),
                 )
-                envelope = TurnEnvelope(
-            source_message_id=int(getattr(message, "id", 0) or 0),
-            channel_id=int(getattr(message.channel, "id", 0) or 0),
-            speaker_id=int(getattr(getattr(message, "author", None), "id", 0) or 0),
-            speaker_kind="scaramouche",
-            addressee_id=int(getattr(getattr(message, "author", None), "id", 0) or 0),
-            addressee_kind="scaramouche",
-            romance_target_id=(int(jealousy_target.id) if jealousy_target else None),
-            explicit_human_target_ids=frozenset(
-                int(member.id) for member in (getattr(message, "mentions", None) or [])
-                if not getattr(member, "bot", False) and getattr(member, "id", 0)
-            ),
-        )
-        # Original Wanderer 45% path pings the partner, not the romance user.
-        prompt = (
-            f"{authoritative_turn_context(envelope)}\\n"
+                prompt = (
                     f"{partner_context}\n"
                     f"{contradiction}\n"
                     f"{response_focus}\n"
@@ -3467,7 +3452,21 @@ async def _handle_partner_message(message, target_info: dict | None = None) -> b
         if target_note:
             extra += f"\n{target_note}"
 
+        envelope = TurnEnvelope(
+            source_message_id=int(getattr(message, "id", 0) or 0),
+            channel_id=int(getattr(message.channel, "id", 0) or 0),
+            speaker_id=int(getattr(getattr(message, "author", None), "id", 0) or 0),
+            speaker_kind="scaramouche",
+            addressee_id=int(getattr(getattr(message, "author", None), "id", 0) or 0),
+            addressee_kind="scaramouche",
+            romance_target_id=(int(jealousy_target.id) if jealousy_target else None),
+            explicit_human_target_ids=frozenset(
+                int(member.id) for member in (getattr(message, "mentions", None) or [])
+                if not getattr(member, "bot", False) and getattr(member, "id", 0)
+            ),
+        )
         prompt = (
+            f"{authoritative_turn_context(envelope)}\n"
             f"{partner_context}\n{contradiction}{extra}\n\n"
             f"{response_focus}\n"
             "PRIMARY SPEAKER: Scaramouche (the bot). PRIMARY ADDRESSEE: Scaramouche. "
@@ -3505,6 +3504,7 @@ async def _handle_partner_message(message, target_info: dict | None = None) -> b
         if romance_ping_selected:
             reply = f"{partner_ping} {reply}"
         # Routing facts control Discord notifications, not the generated prose.
+        # Original Wanderer 45% path pings the partner, not the romance user.
         ping_ids = authorized_ping_ids(envelope, romance_ping_selected=False)
         if not await _guarded_message_reply(
             message, reply, mention_author=False,
