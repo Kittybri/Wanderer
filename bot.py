@@ -4877,7 +4877,7 @@ async def _run_docfix_request(ctx, doc_and_instructions: str = ""):
     if not doc_link:
         await safe_reply(ctx, "Use !fixdoc <Google Doc link> [instructions], then confirm privately.")
         return
-    if not ctx.guild is None:
+    if ctx.guild is not None:
         await safe_reply(ctx, "For document privacy, send !fixdoc in my Discord DM.")
         return
     if not google_docs_ready()[0]:
@@ -10616,6 +10616,10 @@ CHAOS.install()
 from privacy_deletion import PrivacyDeletionCoordinator
 
 
+async def _delete_docfix_pending(uid):
+    _DOCFIX_PENDING.forget(uid)
+
+
 async def _delete_face_stage(uid):
     await FACE_PROFILES.init()
     await FACE_PROFILES.delete(uid)
@@ -10628,6 +10632,7 @@ PRIVACY_DELETION = PrivacyDeletionCoordinator(mem.db_path, {
     "tarot": TAROT_STORE.forget,
     "connected_accounts": CONNECTIONS.forget,
     "connected_proposals": CLOUD_INTEGRATIONS.forget,
+    "docfix_pending": _delete_docfix_pending,
     "memory_local": mem.reset_user_local,
     "memory_shared": mem.reset_user_shared,
     "persistent_world": WORLD.forget,

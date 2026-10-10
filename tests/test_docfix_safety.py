@@ -34,3 +34,9 @@ def test_no_heuristic_auto_edit_and_revision_binding_required():
     assert 'raw.lower().startswith("confirm ")' in bot
     assert "file=preview" in bot
     assert '"writeControl"] = {"requiredRevisionId": required_revision_id}' in bridge
+
+
+def test_privacy_reset_cancels_pending_document_previews():
+    bot = (ROOT / "bot.py").read_text()
+    assert '"docfix_pending": _delete_docfix_pending' in bot
+    assert "_DOCFIX_PENDING.forget(uid)" in bot
