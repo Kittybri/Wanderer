@@ -15,7 +15,7 @@ def test_bystander_name_never_becomes_addressee():
     assert "PARTNER_SPEAKER: Scaramouche" in context
     assert "not the author of this message" in context
     assert coherent_partner_reply("Stop clinging to deluluqueen.", "Scaramouche", name) == "Stop clinging to deluluqueen."
-    assert coherent_partner_reply("deluluqueen, be quiet.", "Scaramouche", name) == ""
+    assert coherent_partner_reply("deluluqueen, be quiet.", "Scaramouche", name) == "deluluqueen, be quiet."
     assert coherent_partner_reply("Scaramouche, <@77> is listening.", "Scaramouche", name) == "Scaramouche, <@77> is listening."
 
 

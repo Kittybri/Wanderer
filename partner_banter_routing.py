@@ -23,16 +23,36 @@ def jealousy_context(partner_name: str, bystander_name: str) -> str:
     )
 
 
-def coherent_partner_reply(text: str, partner_name: str, bystander_name: str = "") -> str:
-    """Preserve natural banter and @ mentions; reject only clear misattribution."""
+def coherent_partner_reply(
+    text: str, partner_name: str, bystander_name: str = "",
+    bystander_mention: str = "",
+) -> str:
+    """Reject explicit false speech attribution, not ordinary jealousy.
+
+    A romance-mode person may be teased, directly addressed, or mentioned.
+    What cannot happen is crediting that person with the partner's opinion.
+    This is a conservative guard, not a substitute for conversational evals.
+    """
     text = (text or "").strip()
     if not text:
         return ""
+    refs = []
     name = safe_reference_name(bystander_name)
-    if name and re.match(
-        rf"^(?:hey\s+)?{re.escape(name)}\s*[,!:](?:\s|$)",
-        text, flags=re.IGNORECASE,
-    ):
+    if name:
+        refs.append(re.escape(name))
+    if re.fullmatch(r"<@!?\d+>", str(bystander_mention or "")):
+        refs.append(re.escape(bystander_mention))
+    if not refs:
+        return text
+    person = "(?:" + "|".join(refs) + ")"
+    # Only target assertions of opinion or speech, not normal direct teasing.
+    false_speech = (
+        rf"(?:^|[.!?;]\s*|,\s*)"
+        rf"(?:as\s+usual,\s*)?(?:hey\s+)?{person}\s*[,!:]?\s*"
+        rf"(?:your\s+(?:worst\s+)?opinion\b|"
+        rf"you\s+(?:just\s+)?(?:said|claimed|argued|asked)\b)"
+    )
+    if re.search(false_speech, text, flags=re.IGNORECASE):
         return ""
     return text
 
