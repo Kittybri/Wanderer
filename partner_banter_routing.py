@@ -77,3 +77,21 @@ def authorized_ping_ids(turn: TurnEnvelope, *, romance_ping_selected: bool = Fal
     if romance_ping_selected and turn.romance_target_id is not None:
         ids.add(turn.romance_target_id)
     return frozenset(uid for uid in ids if isinstance(uid, int) and uid > 0)
+
+async def resolve_duo_reply_anchor(channel, source_message_id: int | None, fallback=None, *, partner_bot_id: int = 0):
+    """Use a persisted ID, never the newest unrelated partner message.
+
+    An unavailable or incorrect persisted source means no reply, not a
+    misleading attachment to a different conversation.
+    """
+    if not source_message_id:
+        return fallback
+    import discord
+
+    try:
+        original = await channel.fetch_message(int(source_message_id))
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+        return None
+    if partner_bot_id and int(getattr(getattr(original, "author", None), "id", 0) or 0) != int(partner_bot_id):
+        return None
+    return original
