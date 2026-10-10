@@ -3478,7 +3478,8 @@ async def _handle_partner_message(message, target_info: dict | None = None) -> b
             partner_name=getattr(message.author, "display_name", PARTNER_NAME.title()),
         )
         reply = coherent_partner_reply(
-            reply, PARTNER_NAME.title(), getattr(jealousy_target, "display_name", "")
+            reply, PARTNER_NAME.title(), getattr(jealousy_target, "display_name", ""),
+            getattr(jealousy_target, "mention", ""),
         )
         if not reply:
             return True
