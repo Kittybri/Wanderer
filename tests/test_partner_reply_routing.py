@@ -63,7 +63,7 @@ def test_wanderer_reply_does_not_send_standalone_banter(monkeypatch):
         assert sent.await_args.args[0] is message
         assert sent.await_args.args[1].startswith("<@999> Your worst opinion")
         assert sent.await_args.kwargs["mention_author"] is False
-        assert sent.await_args.kwargs["allowed_mentions"].users
+        assert [u.id for u in sent.await_args.kwargs["allowed_mentions"].users] == [77, 999]
         prompt = ai.await_args.args[0]
         assert "PRIMARY ADDRESSEE: Scaramouche" in prompt and "deluluqueen" in prompt
 
