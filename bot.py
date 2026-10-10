@@ -53,7 +53,7 @@ from google_docs_bridge import (
     overwrite_google_doc,
     service_account_email,
 )
-from partner_banter_routing import jealousy_context, coherent_partner_reply, TurnEnvelope, authorized_ping_ids
+from partner_banter_routing import jealousy_context, coherent_partner_reply, TurnEnvelope, authorized_ping_ids, resolve_duo_reply_anchor
 from memory_rebuild import collect_rank_rebuild_records, collect_rebuild_records, user_can_manage_rebuild
 from video_reports import (
     build_weather_video_notes,
@@ -228,7 +228,7 @@ async def _guarded_channel_send(channel, *args, **kwargs) -> bool:
         return False
 
 
-async def _guarded_message_reply(message, *args, **kwargs) -> bool:
+async def _guarded_message_reply(message, *args, return_message: bool = False, **kwargs):
     if _is_banned_channel_target(message):
         return False
     try:
@@ -237,7 +237,7 @@ async def _guarded_message_reply(message, *args, **kwargs) -> bool:
         cache = globals().get("_remember_recent_message")
         if cache:
             cache(sent)
-        return True
+        return sent if return_message else True
     except Exception as e:
         print(f"[SEND:reply] {type(e).__name__}: {e}")
         return False
@@ -3306,6 +3306,13 @@ async def _handle_partner_message(message, target_info: dict | None = None) -> b
         return True  # Structured events do not start free-running partner replies.
     try:
         target_info = target_info or {}
+        # Persist the first partner message for an awaited duo turn. The worker
+        # uses this exact ID rather than selecting unrelated newer channel posts.
+        if target_info.get("duo_expected") and getattr(message, "id", 0):
+            await mem.record_duo_reply_anchor(
+                message.channel.id, BOT_NAME, int(message.id),
+                int(getattr(message.author, "id", 0) or 0),
+            )
         # Partner command/help/media output is not an invitation to banter.  A
         # human-targeted reply belongs to that human, and rich output is almost
         # always a command result.  Only an explicit address or an active duo
@@ -6860,10 +6867,7 @@ async def _voluntary_dm_loop():
                             debug_event("dm", f"{BOT_NAME} disabling DMs for user={uid} after Forbidden")
                         except Exception as e: log_error("dm_send", e)
         except Exception as e: log_error("voluntary_dm_loop", e)
-        await asyncio.sleep(random.randint(2700, 21600))
-
-
-async def _duo_autoplay_loop():
+        aasync def _duo_autoplay_loop():
     await bot.wait_until_ready()
     await asyncio.sleep(20)
     while not bot.is_closed():
@@ -6903,6 +6907,17 @@ async def _duo_autoplay_loop():
                         break
                     if not target_message:
                         continue
+                    stored_source_id = (
+                        await mem.get_duo_reply_anchor(channel.id, BOT_NAME)
+                        if not interview_mode else None
+                    )
+                    partner_message = await resolve_duo_reply_anchor(
+                        channel, stored_source_id,
+                        partner_message if not interview_mode else None,
+                        partner_bot_id=PARTNER_BOT_ID or 0,
+                    )
+                    if stored_source_id and partner_message is None:
+                        continue  # Deleted/forbidden/incorrect source: never mis-thread.
                     await mem.upsert_user(target_message.author.id, target_message.author.name, target_message.author.display_name)
                     user = await mem.get_user(target_message.author.id)
                     autoplay_prompt = _duo_autoplay_prompt(session)
@@ -6923,10 +6938,12 @@ async def _duo_autoplay_loop():
                     if not (reply or "").strip():
                         continue
                     anchor = partner_message or target_message
-                    if not await _guarded_message_reply(
+                    sent_message = await _guarded_message_reply(
                         anchor, reply, mention_author=False,
                         allowed_mentions=discord.AllowedMentions.none(),
-                    ):
+                        return_message=True,
+                    )
+                    if not sent_message:
                         await mem.clear_duo_session(channel.id)
                         continue
                     await mem.add_message(target_message.author.id, channel.id, "assistant", reply)
@@ -6934,11 +6951,18 @@ async def _duo_autoplay_loop():
                     await _store_duo_story_progress(channel.id, session, reply)
                     if session.get("awaiting_bot") == BOT_NAME and session.get("autoplay_remaining", 0) <= 1 and session.get("mode") in {"trial", "mission", "interrogate", "truthdare", "compare"}:
                         await mem.resolve_duo_story(channel.id, session.get("mode", ""), _duo_outcome_payload(session, reply))
-                    await mem.bump_duo_session(channel.id, BOT_NAME, partner_bot=PARTNER_NAME)
+                    await mem.bump_duo_session(
+                        channel.id, BOT_NAME, partner_bot=PARTNER_NAME,
+                        reply_source_message_id=int(getattr(sent_message, "id", 0) or 0),
+                        reply_source_author_id=int(getattr(getattr(bot, "user", None), "id", 0) or 0),
+                    )
                 except Exception as e:
                     log_error("duo_autoplay_session", e)
         except Exception as e:
             log_error("duo_autoplay_loop", e)
+        await asyncio.sleep(8)
+
+utoplay_loop", e)
         await asyncio.sleep(8)
 
 
