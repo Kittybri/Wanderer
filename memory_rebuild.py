@@ -10,10 +10,8 @@ REBUILD_HISTORY_PER_CHANNEL = int(os.getenv("REBUILD_HISTORY_PER_CHANNEL", "1200
 
 
 def user_can_manage_rebuild(ctx, owner_id: int) -> bool:
-    if owner_id and getattr(getattr(ctx, "author", None), "id", 0) == owner_id:
-        return True
-    perms = getattr(getattr(ctx, "author", None), "guild_permissions", None)
-    return bool(perms and (perms.administrator or perms.manage_guild or perms.manage_messages))
+    """Cross-user history replay is sensitive: guild perms are not consent."""
+    return bool(owner_id and getattr(getattr(ctx, "author", None), "id", 0) == owner_id)
 
 
 def _history_channels_for_ctx(ctx) -> list[Any]:

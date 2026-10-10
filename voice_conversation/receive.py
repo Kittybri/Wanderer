@@ -73,6 +73,7 @@ class ReceiveBackend:
         self.last_packet = 0.0
         self.failed = False
         self.active = False
+        self.reader_started = False
         self.vc = None
 
     def allows(self, member):
@@ -222,6 +223,16 @@ class ReceiveBackend:
             if ssrc is not None:
                 self.vc._reader.packet_router.set_user_id(ssrc, uid)
 
+    def reader_finished(self, error):
+        """An unexpected reader exit is a failure even without an exception.
+
+        Called by the receiver thread; do not log error or packet details.
+        Intentional shutdown first clears active.
+        """
+        if self.active:
+            self.failed = True
+            self.metrics["reader_exited_unexpectedly"] += 1
+
     async def start(self, voice_client):
         import discord
         from discord.ext import voice_recv
@@ -243,9 +254,8 @@ class ReceiveBackend:
         self.vc = voice_client
         self.active = True
         try:
-            voice_client.listen(
-                Sink(), after=lambda error: setattr(self, "failed", bool(error))
-            )
+            voice_client.listen(Sink(), after=self.reader_finished)
+            self.reader_started = True
             # Discord needs our SSRC/speaking state registered even when this
             # session only receives. Otherwise a fresh connection can receive
             # control traffic forever, until its first outbound playback.
@@ -263,6 +273,10 @@ class ReceiveBackend:
             and not getattr(self.vc, "is_connected", lambda: True)()
         ):
             return True
+        if self.active and self.reader_started and self.vc:
+            # A connected Discord voice client can silently lose its reader.
+            if not getattr(self.vc, "is_listening", lambda: True)():
+                return True
         return self.failed or bool(
             self.first_packet
             and self.last_packet - max(self.last_valid, self.first_packet) > 10
@@ -286,6 +300,7 @@ class ReceiveBackend:
 
     async def stop(self):
         self.active = False
+        self.reader_started = False
         if self.vc and self.vc.is_listening():
             self.vc._reader.packet_router.destroy_all_decoders()
             self.vc.stop_listening()

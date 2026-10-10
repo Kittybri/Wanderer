@@ -22,15 +22,21 @@ def test_bystander_name_never_becomes_addressee():
 def test_autoplay_uses_partner_or_human_message_reference():
     source = (ROOT / "bot.py").read_text()
     section = source.split("async def _duo_autoplay_loop():", 1)[1].split("async def _rival_event_loop():", 1)[0]
-    assert "partner_message = candidate" in section
-    assert "anchor = partner_message or target_message" in section
+    assert "resolve_autoplay_anchor(" in section
+    assert "partner_message = candidate" not in section
     assert "_guarded_message_reply(" in section
     assert "_guarded_channel_send(channel, reply)" not in section
 
 
 def test_wanderer_reply_does_not_send_standalone_banter(monkeypatch):
     monkeypatch.setenv("GROQ_API_KEY", "test-key")
-    import bot
+    import_loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(import_loop)
+    try:
+        import bot
+    finally:
+        asyncio.set_event_loop(None)
+        import_loop.close()
 
     async def run():
         user = NS(id=77, display_name="deluluqueen", mention="<@77>")
