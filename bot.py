@@ -4680,7 +4680,7 @@ async def safe_send(ctx, text):
 
 @bot.command(name="bothealth")
 async def bothealth_cmd(ctx):
-    if OWNER_ID and ctx.author.id != OWNER_ID:
+    if not OWNER_ID or ctx.author.id != OWNER_ID:
         return
     await owner_reply(ctx, f"{BOT_NAME} health: `{_pipeline_health_line()}`")
 
@@ -4707,7 +4707,7 @@ async def build_cmd(ctx):
 
 @bot.command(name="backupmemory")
 async def backupmemory_cmd(ctx):
-    if OWNER_ID and ctx.author.id != OWNER_ID:
+    if not OWNER_ID or ctx.author.id != OWNER_ID:
         return
     try:
         backed_up = await mem.backup_now(label="manual")
