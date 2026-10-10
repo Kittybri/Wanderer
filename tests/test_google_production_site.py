@@ -33,3 +33,11 @@ def test_wanderer_global_policy_discloses_connected_account_data_and_controls():
         assert phrase in global_privacy
     assert "Limited Use" in scoped
     assert "AI models" in scoped
+
+
+def test_separate_legacy_docfix_disclosure_is_not_confused_with_oauth():
+    privacy = (Path(__file__).resolve().parents[1] / "privacy.html").read_text()
+    assert "Separate Legacy Google Docs Feature" in privacy
+    assert "!fixdoc" in privacy
+    assert "overwrite the original document" in privacy
+    assert "separate from Google Connected Accounts OAuth" in privacy
