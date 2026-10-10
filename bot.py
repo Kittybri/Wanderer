@@ -53,7 +53,7 @@ from google_docs_bridge import (
     overwrite_google_doc,
     service_account_email,
 )
-from partner_banter_routing import jealousy_context, coherent_partner_reply, TurnEnvelope, authorized_ping_ids, resolve_duo_reply_anchor
+from partner_banter_routing import jealousy_context, coherent_partner_reply, TurnEnvelope, authorized_ping_ids, resolve_duo_reply_anchor, romance_ping_chosen
 from memory_rebuild import collect_rank_rebuild_records, collect_rebuild_records, user_can_manage_rebuild
 from video_reports import (
     build_weather_video_notes,
@@ -3484,7 +3484,7 @@ async def _handle_partner_message(message, target_info: dict | None = None) -> b
             return True
         # Preserve the original 45% bot-mention chance, but ALWAYS attach the
         # Discord reply to Scaramouche's actual message (no channel send).
-        romance_ping_selected = bool(jealousy_target and random.random() < 0.45)
+        romance_ping_selected = bool(jealousy_target and romance_ping_chosen(random.random()))
         if romance_ping_selected:
             reply = f"{partner_ping} {reply}"
         # Routing facts control Discord notifications, not the generated prose.
@@ -3496,8 +3496,13 @@ async def _handle_partner_message(message, target_info: dict | None = None) -> b
             addressee_id=int(getattr(getattr(message, "author", None), "id", 0) or 0),
             addressee_kind="scaramouche",
             romance_target_id=(int(jealousy_target.id) if jealousy_target else None),
+            explicit_human_target_ids=frozenset(
+                int(member.id) for member in (getattr(message, "mentions", None) or [])
+                if not getattr(member, "bot", False) and getattr(member, "id", 0)
+            ),
         )
-        ping_ids = authorized_ping_ids(envelope, romance_ping_selected=romance_ping_selected)
+        # Original Wanderer 45% path pings the partner, not the romance user.
+        ping_ids = authorized_ping_ids(envelope, romance_ping_selected=False)
         if not await _guarded_message_reply(
             message, reply, mention_author=False,
             allowed_mentions=discord.AllowedMentions(

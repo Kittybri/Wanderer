@@ -115,3 +115,8 @@ async def resolve_duo_reply_anchor(channel, source_message_id: int | None, fallb
     if partner_bot_id and int(getattr(getattr(original, "author", None), "id", 0) or 0) != int(partner_bot_id):
         return None
     return original
+
+
+def romance_ping_chosen(draw: float) -> bool:
+    """The original conditional 45% chance; caller draws only with a target."""
+    return float(draw) < 0.45

@@ -4,6 +4,7 @@ from types import SimpleNamespace as NS
 from unittest.mock import AsyncMock
 
 import discord
+from partner_banter_routing import romance_ping_chosen
 from memory import Memory
 from partner_banter_routing import coherent_partner_reply, resolve_duo_reply_anchor
 
@@ -90,3 +91,11 @@ def test_persisted_anchor_is_first_writer_wins_until_next_duo_turn(tmp_path):
         await mem.clear_duo_session(21)
         assert await mem.get_duo_reply_anchor(21, "wanderer") is None
     asyncio.run(run())
+
+
+def test_original_romance_probability_boundaries():
+    assert romance_ping_chosen(0.0)
+    assert romance_ping_chosen(0.449999)
+    assert not romance_ping_chosen(0.45)
+    assert not romance_ping_chosen(0.450001)
+    assert not romance_ping_chosen(1.0)
