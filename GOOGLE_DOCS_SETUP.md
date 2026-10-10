@@ -19,7 +19,7 @@ privacy review and backups have been validated.
 
 ## Pending safer implementation
 Wanderer [draft PR #16](https://github.com/Kittybri/Wanderer/pull/16)
-prepares a safer operator-only workflow:
+prepares a safer owner-only workflow:
 1. Send `!fixdoc <Google document link> [instructions]` privately.
 2. Wanderer reads the service-account-accessible document and creates a
    complete private TXT preview without writing to Google.
