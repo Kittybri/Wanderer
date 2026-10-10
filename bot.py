@@ -3306,8 +3306,6 @@ async def _handle_partner_message(message, target_info: dict | None = None) -> b
         return True  # Structured events do not start free-running partner replies.
     try:
         target_info = target_info or {}
-        # Persist the first partner message for an awaited duo turn. The worker
-        # uses this exact ID rather than selecting unrelated newer channel posts.
         if target_info.get("duo_expected") and getattr(message, "id", 0):
             await mem.record_duo_reply_anchor(
                 message.channel.id, BOT_NAME, int(message.id),
@@ -6867,7 +6865,10 @@ async def _voluntary_dm_loop():
                             debug_event("dm", f"{BOT_NAME} disabling DMs for user={uid} after Forbidden")
                         except Exception as e: log_error("dm_send", e)
         except Exception as e: log_error("voluntary_dm_loop", e)
-        aasync def _duo_autoplay_loop():
+        await asyncio.sleep(random.randint(2700, 21600))
+
+
+async def _duo_autoplay_loop():
     await bot.wait_until_ready()
     await asyncio.sleep(20)
     while not bot.is_closed():
@@ -6917,7 +6918,7 @@ async def _voluntary_dm_loop():
                         partner_bot_id=PARTNER_BOT_ID or 0,
                     )
                     if stored_source_id and partner_message is None:
-                        continue  # Deleted/forbidden/incorrect source: never mis-thread.
+                        continue  # Never attach to an unrelated newer message.
                     await mem.upsert_user(target_message.author.id, target_message.author.name, target_message.author.display_name)
                     user = await mem.get_user(target_message.author.id)
                     autoplay_prompt = _duo_autoplay_prompt(session)
@@ -6960,9 +6961,6 @@ async def _voluntary_dm_loop():
                     log_error("duo_autoplay_session", e)
         except Exception as e:
             log_error("duo_autoplay_loop", e)
-        await asyncio.sleep(8)
-
-utoplay_loop", e)
         await asyncio.sleep(8)
 
 
