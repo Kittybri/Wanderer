@@ -53,6 +53,7 @@ from google_docs_bridge import (
     overwrite_google_doc,
     service_account_email,
 )
+from partner_banter_routing import jealousy_context, coherent_partner_reply
 from memory_rebuild import collect_rank_rebuild_records, collect_rebuild_records, user_can_manage_rebuild
 from video_reports import (
     build_weather_video_notes,
@@ -3388,13 +3389,12 @@ async def _handle_partner_message(message, target_info: dict | None = None) -> b
                 )
                 reply = await text_qai(prompt, 180, route="primary", direct=False)
                 reply = await _apply_phrase_policy(reply, [item.get("content", "") for item in recent_banter], mood=-3, conflict_open=True, preserve_content=True)
-                partner_ping = getattr(message.author, "mention", "") or f"@{getattr(message.author, 'display_name', PARTNER_NAME.title())}"
                 reply = _sanitize_partner_dialogue_reply(
-                    reply,
-                    message.guild if message.guild else None,
-                    partner_mention=partner_ping,
-                    partner_name=getattr(message.author, "display_name", PARTNER_NAME.title()),
+                    reply, message.guild if message.guild else None,
+                    partner_mention=PARTNER_NAME.title(),
+                    partner_name=PARTNER_NAME.title(),
                 )
+                reply = coherent_partner_reply(reply, PARTNER_NAME.title())
                 if reply:
                     if not duo:
                         await mem.set_duo_session(
@@ -3407,7 +3407,7 @@ async def _handle_partner_message(message, target_info: dict | None = None) -> b
                         message,
                         reply,
                         mention_author=False,
-                        allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False, replied_user=False),
+                        allowed_mentions=discord.AllowedMentions.none(),
                     )
                     await mem.record_bot_banter(PARTNER_PAIR_KEY, BOT_NAME, reply, "intervention")
                     await mem.note_shared_event_memory(
@@ -3436,9 +3436,9 @@ async def _handle_partner_message(message, target_info: dict | None = None) -> b
             user_message=message.content,
             topic=(duo or {}).get("topic", ""),
         )
-        extra = ""
-        if jealousy_target:
-            extra = f"\nA romance-mode user you care about is in this channel: {jealousy_target.display_name}. That should sharpen the jealousy."
+        extra = jealousy_context(
+            PARTNER_NAME.title(), getattr(jealousy_target, "display_name", "")
+        ) if jealousy_target else ""
         target_note = target_info.get("prompt_note", "")
         if target_note:
             extra += f"\n{target_note}"
@@ -3446,39 +3446,35 @@ async def _handle_partner_message(message, target_info: dict | None = None) -> b
         prompt = (
             f"{partner_context}\n{contradiction}{extra}\n\n"
             f"{response_focus}\n"
+            "PRIMARY SPEAKER: Scaramouche (the bot). PRIMARY ADDRESSEE: Scaramouche. "
+            "This is your reply to his Discord message, not to a spectator.\n"
             f"Scaramouche just said: '{message.content[:220]}'\n"
             f"Reply as Wanderer. He refuses to admit how much of that shared history still matters. "
             f"If respect has grown, show it as cleaner honesty instead of recycled annoyance. "
             f"Let the disagreement bite into morality, strategy, loyalty, power, forgiveness, or whether the user is worth trusting when it fits the theme. "
+            "A romance-mode bystander may be named only in the third person, "
+            "not addressed, tagged, criticized, or falsely credited with an opinion. "
             f"One or two sentences. No narration."
         )
         recent_partner_lines = [item.get('content', '') for item in recent_banter]
         mood = -7 if theme in {'identity', 'weakness', 'jealousy'} else -3 if theme in {'origins', 'change'} else 0
         reply = await text_qai(prompt, 180, direct=False)
         reply = await _apply_phrase_policy(reply, recent_partner_lines, mood=mood, conflict_open=theme in {'identity', 'weakness', 'jealousy'}, preserve_content=True)
-        partner_ping = getattr(message.author, "mention", "") or f"@{getattr(message.author, 'display_name', PARTNER_NAME.title())}"
         reply = _sanitize_partner_dialogue_reply(
-            reply,
-            message.guild if message.guild else None,
-            partner_mention=partner_ping,
-            partner_name=getattr(message.author, "display_name", PARTNER_NAME.title()),
+            reply, message.guild if message.guild else None,
+            partner_mention=PARTNER_NAME.title(),
+            partner_name=PARTNER_NAME.title(),
+        )
+        reply = coherent_partner_reply(
+            reply, PARTNER_NAME.title(), getattr(jealousy_target, "display_name", "")
         )
         if not reply:
             return True
-
-        if jealousy_target and random.random() < 0.45:
-            await _guarded_channel_send(
-                message.channel,
-                f"{partner_ping} {reply}",
-                allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False, replied_user=False),
-            )
-        else:
-            await _guarded_message_reply(
-                message,
-                reply,
-                mention_author=False,
-                allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False, replied_user=False),
-            )
+        if not await _guarded_message_reply(
+            message, reply, mention_author=False,
+            allowed_mentions=discord.AllowedMentions.none(),
+        ):
+            return True
 
         own_theme = detect_banter_theme(reply)
         await mem.record_bot_banter(PARTNER_PAIR_KEY, BOT_NAME, reply, own_theme)
@@ -6864,10 +6860,17 @@ async def _duo_autoplay_loop():
                     if not channel:
                         continue
                     target_message = None
+                    partner_message = None
                     interview_mode = session.get("mode") in {"interview", "welcome_interview"}
                     participant_id = int(session.get("initiator_user_id") or 0)
                     async for candidate in channel.history(limit=8):
                         if candidate.author.bot:
+                            if (
+                                not interview_mode and PARTNER_BOT_ID
+                                and candidate.author.id == PARTNER_BOT_ID
+                                and partner_message is None
+                            ):
+                                partner_message = candidate
                             continue
                         if interview_mode and candidate.author.id != participant_id:
                             continue
@@ -6894,7 +6897,11 @@ async def _duo_autoplay_loop():
                     )
                     if not (reply or "").strip():
                         continue
-                    if not await _guarded_channel_send(channel, reply):
+                    anchor = partner_message or target_message
+                    if not await _guarded_message_reply(
+                        anchor, reply, mention_author=False,
+                        allowed_mentions=discord.AllowedMentions.none(),
+                    ):
                         await mem.clear_duo_session(channel.id)
                         continue
                     await mem.add_message(target_message.author.id, channel.id, "assistant", reply)
