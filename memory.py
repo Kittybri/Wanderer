@@ -562,6 +562,13 @@ class Memory:
                     expires_ts    REAL DEFAULT 0,
                     updated_ts    REAL DEFAULT 0
                 );
+                CREATE TABLE IF NOT EXISTS duo_reply_anchors (
+                    channel_id INTEGER PRIMARY KEY,
+                    awaiting_bot TEXT NOT NULL,
+                    source_message_id INTEGER NOT NULL,
+                    source_author_id INTEGER NOT NULL,
+                    created_ts REAL NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS channel_speaker_modes (
                     channel_id   INTEGER PRIMARY KEY,
                     speaker_mode TEXT DEFAULT 'auto',
@@ -1620,7 +1627,51 @@ class Memory:
                     0,
                 ),
             )
+            await db.execute("DELETE FROM duo_reply_anchors WHERE channel_id=?", (channel_id,))
             await db.commit()
+
+    async def record_duo_reply_anchor(
+        self, channel_id: int, awaiting_bot: str,
+        source_message_id: int, source_author_id: int = 0,
+    ) -> bool:
+        """Capture the first actual source message for this awaited turn.
+
+        The shared SQLite upsert is atomic across both bot processes. Later
+        messages cannot overwrite the same awaited bot's first source.
+        """
+        if not channel_id or not source_message_id or not awaiting_bot:
+            return False
+        now = time.time()
+        async with aiosqlite.connect(self.shared_db_path) as db:
+            cursor = await db.execute(
+                "INSERT INTO duo_reply_anchors "
+                "(channel_id, awaiting_bot, source_message_id, source_author_id, created_ts) "
+                "SELECT ?, ?, ?, ?, ? FROM duo_sessions "
+                "WHERE channel_id=? AND awaiting_bot=? AND autoplay_remaining>0 AND expires_ts>? "
+                "ON CONFLICT(channel_id) DO UPDATE SET "
+                "awaiting_bot=excluded.awaiting_bot, "
+                "source_message_id=excluded.source_message_id, "
+                "source_author_id=excluded.source_author_id, "
+                "created_ts=excluded.created_ts "
+                "WHERE duo_reply_anchors.awaiting_bot != excluded.awaiting_bot",
+                (channel_id, awaiting_bot, source_message_id, source_author_id,
+                 now, channel_id, awaiting_bot, now),
+            )
+            await db.commit()
+            return cursor.rowcount > 0
+
+    async def get_duo_reply_anchor(self, channel_id: int, awaiting_bot: str) -> int | None:
+        """Return only the source for the current, unexpired awaited turn."""
+        async with aiosqlite.connect(self.shared_db_path) as db:
+            async with db.execute(
+                "SELECT a.source_message_id FROM duo_reply_anchors AS a "
+                "JOIN duo_sessions AS s ON s.channel_id=a.channel_id "
+                "WHERE a.channel_id=? AND a.awaiting_bot=? "
+                "AND s.awaiting_bot=? AND s.autoplay_remaining>0 AND s.expires_ts>?",
+                (channel_id, awaiting_bot, awaiting_bot, time.time()),
+            ) as cur:
+                row = await cur.fetchone()
+        return int(row[0]) if row else None
 
     async def get_duo_session(self, channel_id: int) -> dict | None:
         now = time.time()
@@ -1653,7 +1704,7 @@ class Memory:
             "intervention_cooldown": row[12] or 0,
         }
 
-    async def bump_duo_session(self, channel_id: int, speaker_bot: str, partner_bot: str = "", ttl_seconds: int = 900, autoplay_delay: int = 6, *, voice_turn: bool = False):
+    async def bump_duo_session(self, channel_id: int, speaker_bot: str, partner_bot: str = "", ttl_seconds: int = 900, autoplay_delay: int = 6, *, voice_turn: bool = False, reply_source_message_id: int = 0, reply_source_author_id: int = 0):
         now = time.time()
         current = await self.get_duo_session(channel_id)
         if current and current.get("mode", "").startswith("server:"):
@@ -1676,6 +1727,15 @@ class Memory:
                 "UPDATE duo_sessions SET last_speaker=?, awaiting_bot=?, autoplay_remaining=?, next_autoplay_ts=?, updated_ts=?, expires_ts=? WHERE channel_id=?",
                 (speaker_bot[:40], awaiting_bot[:40], autoplay_remaining, next_autoplay_ts, now, now + ttl_seconds, channel_id),
             )
+            await db.execute("DELETE FROM duo_reply_anchors WHERE channel_id=?", (channel_id,))
+            if reply_source_message_id and awaiting_bot and autoplay_remaining > 0:
+                await db.execute(
+                    "INSERT INTO duo_reply_anchors "
+                    "(channel_id, awaiting_bot, source_message_id, source_author_id, created_ts) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (channel_id, awaiting_bot, int(reply_source_message_id),
+                     int(reply_source_author_id), now),
+                )
             await db.commit()
 
     async def get_due_duo_sessions(self, bot_name: str) -> list[dict]:
@@ -1734,6 +1794,7 @@ class Memory:
     async def clear_duo_session(self, channel_id: int):
         async with aiosqlite.connect(self.shared_db_path) as db:
             await db.execute("DELETE FROM duo_sessions WHERE channel_id=?", (channel_id,))
+            await db.execute("DELETE FROM duo_reply_anchors WHERE channel_id=?", (channel_id,))
             await db.commit()
 
     async def set_channel_speaker_mode(self, channel_id: int, speaker_mode: str):

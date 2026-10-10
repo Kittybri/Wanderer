@@ -53,6 +53,7 @@ from google_docs_bridge import (
     overwrite_google_doc,
     service_account_email,
 )
+from partner_banter_routing import jealousy_context, coherent_partner_reply, TurnEnvelope, authorized_ping_ids, resolve_duo_reply_anchor, romance_ping_chosen, authoritative_turn_context
 from memory_rebuild import collect_rank_rebuild_records, collect_rebuild_records, user_can_manage_rebuild
 from video_reports import (
     build_weather_video_notes,
@@ -227,7 +228,7 @@ async def _guarded_channel_send(channel, *args, **kwargs) -> bool:
         return False
 
 
-async def _guarded_message_reply(message, *args, **kwargs) -> bool:
+async def _guarded_message_reply(message, *args, return_message: bool = False, **kwargs):
     if _is_banned_channel_target(message):
         return False
     try:
@@ -236,7 +237,7 @@ async def _guarded_message_reply(message, *args, **kwargs) -> bool:
         cache = globals().get("_remember_recent_message")
         if cache:
             cache(sent)
-        return True
+        return sent if return_message else True
     except Exception as e:
         print(f"[SEND:reply] {type(e).__name__}: {e}")
         return False
@@ -3305,6 +3306,11 @@ async def _handle_partner_message(message, target_info: dict | None = None) -> b
         return True  # Structured events do not start free-running partner replies.
     try:
         target_info = target_info or {}
+        if target_info.get("duo_expected") and getattr(message, "id", 0):
+            await mem.record_duo_reply_anchor(
+                message.channel.id, BOT_NAME, int(message.id),
+                int(getattr(message.author, "id", 0) or 0),
+            )
         # Partner command/help/media output is not an invitation to banter.  A
         # human-targeted reply belongs to that human, and rich output is almost
         # always a command result.  Only an explicit address or an active duo
@@ -3395,6 +3401,7 @@ async def _handle_partner_message(message, target_info: dict | None = None) -> b
                     partner_mention=partner_ping,
                     partner_name=getattr(message.author, "display_name", PARTNER_NAME.title()),
                 )
+                reply = coherent_partner_reply(reply, PARTNER_NAME.title())
                 if reply:
                     if not duo:
                         await mem.set_duo_session(
@@ -3407,7 +3414,9 @@ async def _handle_partner_message(message, target_info: dict | None = None) -> b
                         message,
                         reply,
                         mention_author=False,
-                        allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False, replied_user=False),
+                        allowed_mentions=discord.AllowedMentions(
+                            users=True, roles=False, everyone=False, replied_user=False,
+                        ),
                     )
                     await mem.record_bot_banter(PARTNER_PAIR_KEY, BOT_NAME, reply, "intervention")
                     await mem.note_shared_event_memory(
@@ -3436,20 +3445,40 @@ async def _handle_partner_message(message, target_info: dict | None = None) -> b
             user_message=message.content,
             topic=(duo or {}).get("topic", ""),
         )
-        extra = ""
-        if jealousy_target:
-            extra = f"\nA romance-mode user you care about is in this channel: {jealousy_target.display_name}. That should sharpen the jealousy."
+        extra = jealousy_context(
+            PARTNER_NAME.title(), getattr(jealousy_target, "display_name", "")
+        ) if jealousy_target else ""
         target_note = target_info.get("prompt_note", "")
         if target_note:
             extra += f"\n{target_note}"
 
+        envelope = TurnEnvelope(
+            source_message_id=int(getattr(message, "id", 0) or 0),
+            channel_id=int(getattr(message.channel, "id", 0) or 0),
+            speaker_id=int(getattr(getattr(message, "author", None), "id", 0) or 0),
+            speaker_kind="scaramouche",
+            addressee_id=int(getattr(getattr(message, "author", None), "id", 0) or 0),
+            addressee_kind="scaramouche",
+            romance_target_id=(int(jealousy_target.id) if jealousy_target else None),
+            explicit_human_target_ids=frozenset(
+                int(member.id) for member in (getattr(message, "mentions", None) or [])
+                if not getattr(member, "bot", False) and getattr(member, "id", 0)
+            ),
+        )
         prompt = (
+            f"{authoritative_turn_context(envelope)}\n"
             f"{partner_context}\n{contradiction}{extra}\n\n"
             f"{response_focus}\n"
+            "PRIMARY SPEAKER: Scaramouche (the bot). PRIMARY ADDRESSEE: Scaramouche. "
+            "This is your reply to his Discord message, not to a spectator.\n"
             f"Scaramouche just said: '{message.content[:220]}'\n"
             f"Reply as Wanderer. He refuses to admit how much of that shared history still matters. "
             f"If respect has grown, show it as cleaner honesty instead of recycled annoyance. "
             f"Let the disagreement bite into morality, strategy, loyalty, power, forgiveness, or whether the user is worth trusting when it fits the theme. "
+            "Keep your original sharp, defensive jealousy and teasing; you "
+            "may reference the romance-mode person as part of a coherent joke. "
+            "Be precise about who made the original remark and do not invent "
+            "opinions for an uninvolved person. "
             f"One or two sentences. No narration."
         )
         recent_partner_lines = [item.get('content', '') for item in recent_banter]
@@ -3458,27 +3487,32 @@ async def _handle_partner_message(message, target_info: dict | None = None) -> b
         reply = await _apply_phrase_policy(reply, recent_partner_lines, mood=mood, conflict_open=theme in {'identity', 'weakness', 'jealousy'}, preserve_content=True)
         partner_ping = getattr(message.author, "mention", "") or f"@{getattr(message.author, 'display_name', PARTNER_NAME.title())}"
         reply = _sanitize_partner_dialogue_reply(
-            reply,
-            message.guild if message.guild else None,
+            reply, message.guild if message.guild else None,
             partner_mention=partner_ping,
             partner_name=getattr(message.author, "display_name", PARTNER_NAME.title()),
         )
+        reply = coherent_partner_reply(
+            reply, PARTNER_NAME.title(), getattr(jealousy_target, "display_name", ""),
+            getattr(jealousy_target, "mention", ""),
+            turn=envelope,
+        )
         if not reply:
             return True
-
-        if jealousy_target and random.random() < 0.45:
-            await _guarded_channel_send(
-                message.channel,
-                f"{partner_ping} {reply}",
-                allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False, replied_user=False),
-            )
-        else:
-            await _guarded_message_reply(
-                message,
-                reply,
-                mention_author=False,
-                allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False, replied_user=False),
-            )
+        # Preserve the original 45% bot-mention chance, but ALWAYS attach the
+        # Discord reply to Scaramouche's actual message (no channel send).
+        romance_ping_selected = bool(jealousy_target and romance_ping_chosen(random.random()))
+        if romance_ping_selected:
+            reply = f"{partner_ping} {reply}"
+        # Routing facts control Discord notifications, not the generated prose.
+        # Original Wanderer 45% path pings the partner, not the romance user.
+        ping_ids = authorized_ping_ids(envelope, romance_ping_selected=False)
+        if not await _guarded_message_reply(
+            message, reply, mention_author=False,
+            allowed_mentions=discord.AllowedMentions(
+                users=[discord.Object(id=uid) for uid in sorted(ping_ids)], roles=False, everyone=False, replied_user=False,
+            ),
+        ):
+            return True
 
         own_theme = detect_banter_theme(reply)
         await mem.record_bot_banter(PARTNER_PAIR_KEY, BOT_NAME, reply, own_theme)
@@ -6864,10 +6898,17 @@ async def _duo_autoplay_loop():
                     if not channel:
                         continue
                     target_message = None
+                    partner_message = None
                     interview_mode = session.get("mode") in {"interview", "welcome_interview"}
                     participant_id = int(session.get("initiator_user_id") or 0)
                     async for candidate in channel.history(limit=8):
                         if candidate.author.bot:
+                            if (
+                                not interview_mode and PARTNER_BOT_ID
+                                and candidate.author.id == PARTNER_BOT_ID
+                                and partner_message is None
+                            ):
+                                partner_message = candidate
                             continue
                         if interview_mode and candidate.author.id != participant_id:
                             continue
@@ -6875,6 +6916,17 @@ async def _duo_autoplay_loop():
                         break
                     if not target_message:
                         continue
+                    stored_source_id = (
+                        await mem.get_duo_reply_anchor(channel.id, BOT_NAME)
+                        if not interview_mode else None
+                    )
+                    partner_message = await resolve_duo_reply_anchor(
+                        channel, stored_source_id,
+                        partner_message if not interview_mode else None,
+                        partner_bot_id=PARTNER_BOT_ID or 0,
+                    )
+                    if stored_source_id and partner_message is None:
+                        continue  # Never attach to an unrelated newer message.
                     await mem.upsert_user(target_message.author.id, target_message.author.name, target_message.author.display_name)
                     user = await mem.get_user(target_message.author.id)
                     autoplay_prompt = _duo_autoplay_prompt(session)
@@ -6894,7 +6946,13 @@ async def _duo_autoplay_loop():
                     )
                     if not (reply or "").strip():
                         continue
-                    if not await _guarded_channel_send(channel, reply):
+                    anchor = partner_message or target_message
+                    sent_message = await _guarded_message_reply(
+                        anchor, reply, mention_author=False,
+                        allowed_mentions=discord.AllowedMentions.none(),
+                        return_message=True,
+                    )
+                    if not sent_message:
                         await mem.clear_duo_session(channel.id)
                         continue
                     await mem.add_message(target_message.author.id, channel.id, "assistant", reply)
@@ -6902,7 +6960,11 @@ async def _duo_autoplay_loop():
                     await _store_duo_story_progress(channel.id, session, reply)
                     if session.get("awaiting_bot") == BOT_NAME and session.get("autoplay_remaining", 0) <= 1 and session.get("mode") in {"trial", "mission", "interrogate", "truthdare", "compare"}:
                         await mem.resolve_duo_story(channel.id, session.get("mode", ""), _duo_outcome_payload(session, reply))
-                    await mem.bump_duo_session(channel.id, BOT_NAME, partner_bot=PARTNER_NAME)
+                    await mem.bump_duo_session(
+                        channel.id, BOT_NAME, partner_bot=PARTNER_NAME,
+                        reply_source_message_id=int(getattr(sent_message, "id", 0) or 0),
+                        reply_source_author_id=int(getattr(getattr(bot, "user", None), "id", 0) or 0),
+                    )
                 except Exception as e:
                     log_error("duo_autoplay_session", e)
         except Exception as e:
