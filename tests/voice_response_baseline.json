@@ -28,7 +28,7 @@
     "voice_conversation/speech.py": "fb6121d79e0ff782ba871e63337bbaef414e9057589bbe632b0d8859691a4950",
     "voice_conversation/smoke.py": "7745dd08edf189d8ac0bf1860e7529b53e007ec88aa13f6bb9034a398b0043da",
     "voice_handler.py": "58c50ff533b4a8232088b00bd413aafe933910eaeb7018218f75e2333460c3f5",
-    "requirements.txt": "ba2cc0878c09d2131bb514902ec0a42e6c098d183d81b69b610eb3e213b5d626",
+    "requirements.txt": "05ef308761d16f9c4a63e5035b35524bf81d17336569a2c964f2a98f01480036",
     "provider_config.py": "65aaaeafed11c3dc63f010aad187eb0da016ed00585d5dfa6bdbaf6587955c69",
     "anti_repeat.py": "583bd3fdec83f94c9f3a1ddb9a2a42badc8e8f51683650fe88bcab6b3b903f56"
   }

@@ -15,3 +15,11 @@ The receive callback previously set failed to bool(error), so an unexpectedly en
 
 ## Release gates
 Tests have NOT been executed here. Run full voice and preservation suites and real Discord voice tests before approval. This detects a plausible silent-deafness bug; it does not establish the cause of the currently reported live failures. No deployment or merge is authorized by this PR.
+
+## P0 integration rehearsal dependency-baseline reconciliation
+
+The separate dependency-alignment PR #20 deliberately updates `requirements.txt`.
+The voice/text boundary baseline pins this reviewed requirement file by SHA-256;
+its dependency hash has been updated for the integrated candidate only. No
+voice-function AST baseline or other voice/provider file baseline was relaxed.
+The individual voice receiver tests and the full suite remain required gates.
