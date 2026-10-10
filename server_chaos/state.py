@@ -287,7 +287,7 @@ class ChaosState(WorldStore):
         async with self.connect() as db:
             rows = await (
                 await db.execute(
-                    "SELECT key,payload,updated_at,kind FROM persistent_world_events WHERE kind LIKE 'chaos_%' AND updated_at<? LIMIT 100",
+                    "SELECT key,payload,updated_at,kind FROM persistent_world_events WHERE kind LIKE 'chaos_%' AND kind!='chaos_trollprefs' AND updated_at<? LIMIT 100",
                     (time.time() - 30 * 86400,),
                 )
             ).fetchall()

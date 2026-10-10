@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from voice_conversation.receive import ReceiveBackend, eligible
-from voice_conversation.session import Session, State, Playback
+from voice_conversation.session import Session, State, Playback, is_interrupt_keyword
 from voice_conversation.speech import Limits, Segmenter, Utterance, chunks, GroqSTT
 
 
@@ -117,6 +117,35 @@ def test_limits_and_sentence_chunks():
     pieces = chunks(text)
     assert " ".join(pieces) == text.strip()
     assert all(len(p) <= 320 for p in pieces)
+
+
+def test_fragmented_speech_survives_short_vad_negative_gaps():
+    s = Segmenter(Limits(), NS(is_speech=lambda pcm, rate: any(pcm)))
+    voice, quiet = b"\x01\x01" * 1920, bytes(3840)
+    runs = []
+    for i in range(24):
+        utterance, run_ms = s.feed(1, voice if i % 8 < 5 else quiet, i / 50)
+        assert utterance is None
+        runs.append(run_ms)
+    utterances = s.expire(2)
+    assert len(utterances) == 1
+    assert utterances[0].user_id == 1
+    assert len(utterances[0].pcm) == 24 * 640
+    assert max(runs) == 100  # fragmented speech must not cause natural barge-in
+    assert s.metrics["vad_speech_frames"] == 15
+
+
+def test_brief_noise_still_drops_and_silence_does_not_join_separate_sounds():
+    s = Segmenter(Limits(), NS(is_speech=lambda pcm, rate: any(pcm)))
+    voice, quiet = b"\x01\x01" * 1920, bytes(3840)
+    for base in (0, 2):
+        for i in range(5):
+            s.feed(1, voice, base + i / 50)
+        for i in range(50):
+            utterance, _ = s.feed(1, quiet, base + 0.1 + i / 50)
+            assert utterance is None
+    assert not s.expire(4)
+    assert s.metrics["vad_short_segments_dropped"] == 2
 
 
 @pytest.mark.parametrize(
@@ -280,12 +309,183 @@ def test_stt_lifecycle(outcome):
         if outcome == "revoked":
             s.consent(1, False)
         release.set()
-        await asyncio.sleep(0.02)
+        if outcome == "success":
+            async def responded():
+                while not s.respond.await_count:
+                    await asyncio.sleep(0.001)
+            await asyncio.wait_for(responded(), 1)
+        else:
+            await asyncio.sleep(0.02)
         assert s.respond.await_count == int(outcome == "success")
         assert "PRIVATE" not in str(s.metrics)
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
+        # Mirror managed shutdown: close session eligibility before cancelling
+        # this test-owned worker, which is not in Session.workers.
         await s.stop()
+        task.cancel()
+        await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 2)
+
+    run(check())
+
+
+@pytest.mark.parametrize(
+    "transcript,reply,outcome",
+    [
+        ("PRIVATE background sentence", "Answer.", "discarded_not_addressed"),
+        ("", "Answer.", "discarded_empty_transcript"),
+        ("Scaramouche, PRIVATE question", "", "empty_response"),
+        ("Scaramouche, PRIVATE question", "PRIVATE answer.", "playback_completed"),
+    ],
+)
+def test_voice_decisions_explain_silence_without_transcript_logging(
+    transcript, reply, outcome
+):
+    async def check():
+        s = setup()
+        s.stt.transcribe.return_value = transcript
+        s.respond.return_value = reply
+        await s.start()
+        s.enqueue(Utterance(1, b"PRIVATE audio", time.monotonic(), time.monotonic()))
+
+        async def observed():
+            while not s.metrics[outcome]:
+                await asyncio.sleep(0.001)
+
+        try:
+            await asyncio.wait_for(observed(), 1)
+            report = s.status()
+            assert len(report["workers"]) == 2
+            assert all(w["running"] and not w["failed"] for w in report["workers"])
+            assert any(e["type"] == outcome and e["speaker_id"] == 1 for e in s.events)
+            assert "PRIVATE" not in str(report) + str(list(s.events))
+            assert s.remember.await_count == int(outcome == "playback_completed")
+        finally:
+            await s.stop()
+
+    run(check())
+
+
+def test_followup_after_first_playback_keeps_listening_and_routes_partner():
+    async def check():
+        s = setup()
+        await s.start()
+        try:
+            for index, phrase in enumerate(
+                ("Scaramouche, can you hear me?", "Do you like ice cream?", "What flavor?")
+            ):
+                s.stt.transcribe.return_value = phrase
+                s.enqueue(Utterance(1, b"audio", time.monotonic(), time.monotonic()))
+
+                async def delivered():
+                    while s.metrics["playback_completed"] < index + 1:
+                        await asyncio.sleep(0.001)
+
+                await asyncio.wait_for(delivered(), 1)
+            assert s.respond.await_count == 3
+            assert s.remember.await_count == 3
+            assert not s.relevant(2, "And you?")
+            assert s.relevant(1, "Do you like Wanderer?")
+            assert not s.relevant(1, "Wanderer, what do you think?")
+            assert s.focus is None
+            assert not s.relevant(1, "And you?")
+            s.name = "wanderer"
+            s.focus, s.focus_until = 1, time.monotonic() + 90
+            assert not s.relevant(1, "Hey Scara, can you hear me?")
+            s.name = "scaramouche"
+            s.focus, s.focus_until = 1, time.monotonic() + 90
+            s.mode = "DIRECT_ONLY"
+            assert not s.relevant(1, "Do you like ice cream?")
+            assert s.relevant(1, "Scaramouche, do you like ice cream?")
+        finally:
+            await s.stop()
+
+    run(check())
+
+
+def test_keyword_is_not_blocked_behind_ordinary_followup():
+    async def check():
+        s = setup()
+        s.focus_until = time.monotonic() + 90
+        s.stt.transcribe.side_effect = ["Do you like ice cream?", "stop"]
+        playing = asyncio.create_task(asyncio.sleep(30))
+        s.response_task = playing
+        await s.start()
+        try:
+            s.enqueue(Utterance(1, b"first", time.monotonic(), time.monotonic()))
+            async def observed(key, count):
+                while s.metrics[key] < count:
+                    await asyncio.sleep(0.001)
+            await asyncio.wait_for(observed("stt_success", 1), 1)
+            s.enqueue(Utterance(1, b"stop", time.monotonic(), time.monotonic()))
+            await asyncio.wait_for(observed("cancelled_responses", 1), 1)
+            await asyncio.wait_for(observed("playback_completed", 1), 1)
+            assert playing.cancelled()
+            assert s.respond.await_count == 1
+            assert s.respond.call_args.args[1] == "stop"
+        finally:
+            await s.stop()
+
+    run(check())
+
+
+@pytest.mark.parametrize("ending", ["complete", "revoke", "stop"])
+def test_deferred_followup_preserves_playback_and_user_scope(ending):
+    async def check():
+        s = setup()
+        s.focus_until = time.monotonic() + 90
+        s.interrupt_mode = "OFF"
+        s.stt.transcribe.side_effect = ["first question", "newest question"]
+        release = asyncio.Event()
+        playing = asyncio.create_task(release.wait())
+        s.response_task = playing
+        await s.start()
+        try:
+            async def pending(text):
+                s.enqueue(Utterance(1, text, time.monotonic(), time.monotonic()))
+                while s.metrics["deferred_responses"] < s.stt.transcribe.await_count or not s.stt.transcribe.await_count:
+                    await asyncio.sleep(0.001)
+            await asyncio.wait_for(pending(b"one"), 1)
+            s.enqueue(Utterance(1, b"two", time.monotonic(), time.monotonic()))
+            async def replaced():
+                while s.metrics["deferred_responses"] < 2:
+                    await asyncio.sleep(0.001)
+            await asyncio.wait_for(replaced(), 1)
+            assert not playing.done()
+            assert s.metrics["dropped_pending_responses"] == 1
+            if ending == "revoke":
+                s.consent(1, False)
+            elif ending == "stop":
+                await s.stop()
+            release.set()
+            if ending == "complete":
+                async def delivered():
+                    while not s.metrics["playback_completed"]:
+                        await asyncio.sleep(0.001)
+                await asyncio.wait_for(delivered(), 1)
+                assert s.respond.await_count == 1
+                assert s.respond.call_args.args[1] == "newest question"
+            else:
+                await asyncio.sleep(0.02)
+                s.respond.assert_not_awaited()
+        finally:
+            await s.stop()
+
+    run(check())
+
+
+def test_deferred_followup_expires_without_cancelling_playback():
+    async def check():
+        s = setup(limits=Limits(stale_seconds=2))
+        playing = asyncio.create_task(asyncio.sleep(30))
+        s.response_task = playing
+        try:
+            await asyncio.wait_for(
+                s.dispatch_response(1, "private pending", 0, time.monotonic() - 1.98, {}), 1
+            )
+            assert not playing.done()
+            assert s.metrics["discarded_before_response"] == 1
+            s.respond.assert_not_awaited()
+        finally:
+            await s.stop()
 
     run(check())
 
@@ -297,13 +497,65 @@ def test_keyword_stops_and_next_turn_gets_context():
         s.response_task = asyncio.create_task(asyncio.sleep(30))
         task = asyncio.create_task(s.transcribe_loop())
         s.enqueue(Utterance(1, b"audio", time.monotonic(), time.monotonic()))
-        await asyncio.sleep(0.02)
+        async def responded():
+            while not s.respond.await_count:
+                await asyncio.sleep(0.001)
+        await asyncio.wait_for(responded(), 1)
         assert s.metrics["cancelled_responses"] == 1
         assert "interrupted" in s.respond.call_args.args[2]
         assert s.respond.call_args.args[1] == "wait, stop"
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
+        # Mirror managed shutdown: close session eligibility before cancelling
+        # this test-owned worker, which is not in Session.workers.
         await s.stop()
+        task.cancel()
+        await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 2)
+
+    run(check())
+
+
+@pytest.mark.parametrize(
+    "transcript",
+    [
+        "Wanderer, stop.",
+        "wander stop",
+        "Wanderer, please stop",
+        "um, Wanderer, wait",
+        "hey Wanderer",
+        "please hold on",
+    ],
+)
+def test_keyword_recognizer_accepts_spoken_stt_variants(transcript):
+    assert is_interrupt_keyword(transcript, "wanderer")
+
+
+@pytest.mark.parametrize(
+    "transcript",
+    [
+        "I bought a new hat today",
+        "Do you like stopping for ice cream?",
+        "The conversation is quiet tonight",
+    ],
+)
+def test_keyword_recognizer_rejects_unrelated_conversation(transcript):
+    assert not is_interrupt_keyword(transcript, "wanderer")
+
+
+def test_keyword_diagnostics_distinguish_detection_from_late_arrival():
+    async def check():
+        s = setup(name="wanderer")
+        s.focus, s.focus_until = 1, time.monotonic() + 90
+        s.stt.transcribe.return_value = "wander, stop"
+        task = asyncio.create_task(s.transcribe_loop())
+        s.enqueue(Utterance(1, b"audio", time.monotonic(), time.monotonic()))
+        await asyncio.sleep(0.02)
+        assert s.metrics["interrupt_keyword_detected"] == 1
+        assert s.metrics["interrupt_arrived_after_playback"] == 1
+        assert s.metrics["interrupt_attempted"] == 0
+        # Mirror managed shutdown: close session eligibility before cancelling
+        # this test-owned worker, which is not in Session.workers.
+        await s.stop()
+        task.cancel()
+        await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 2)
 
     run(check())
 
@@ -407,3 +659,104 @@ def test_dave_reader_fail_closed_and_rotation(monkeypatch):
     dave.decrypt.side_effect = ValueError("secret")
     reader.callback(bytes(20))
     assert b.metrics["receive_errors"] == 2
+    assert b.metrics["dave_unverified_drops"] == 1
+    assert b.metrics["dave_decrypt_errors"] == 1
+    reader.decryptor.decrypt_rtp.side_effect = ValueError("PRIVATE_KEY")
+    reader.callback(bytes(20))
+    assert b.metrics["transport_decrypt_errors"] == 1
+    reader.decryptor.decrypt_rtp.side_effect = None
+    dave.decrypt.side_effect = decrypt
+    reader.packet_router.feed_rtp.side_effect = ValueError("PRIVATE_PACKET")
+    reader.callback(bytes(20))
+    assert b.metrics["packet_router_errors"] == 1
+    monkeypatch.setattr(rtp, "decode_rtp", Mock(side_effect=ValueError("PRIVATE_RTP")))
+    reader.callback(bytes(20))
+    assert b.metrics["rtp_parse_errors"] == 1
+    assert b.metrics["receive_errors"] == 5
+    assert "PRIVATE" not in str(b.metrics)
+
+
+@pytest.mark.parametrize("uid,category", [(None, "unknown_speaker_drops"), (2, "ineligible_speaker_drops")])
+def test_receive_reports_pre_decryption_drops_without_private_data(monkeypatch, uid, category):
+    pytest.importorskip("discord.ext.voice_recv")
+    from voice_conversation import receive
+    from discord.ext.voice_recv import rtp
+
+    monkeypatch.setattr(receive, "check_dependencies", lambda: None)
+    backend = ReceiveBackend(lambda: {1})
+    backend.active = True
+    vc = NS(
+        client=NS(user=NS(id=9)), channel=NS(id=10),
+        guild=NS(get_member=lambda user_id: member(user_id)),
+        _get_id_from_ssrc=lambda ssrc: uid,
+    )
+    backend.vc = vc
+    cls = backend.client_class().reader_class
+    reader = cls.__new__(cls)
+    reader.voice_client, reader.error = vc, None
+    reader.decryptor = NS(decrypt_rtp=Mock())
+    monkeypatch.setattr(rtp, "is_rtcp", lambda data: False)
+    monkeypatch.setattr(rtp, "decode_rtp", lambda data: NS(ssrc=99))
+    reader.callback(b"PRIVATE_PACKET_PAYLOAD")
+    assert backend.metrics["udp_callbacks"] == 1
+    assert backend.metrics["rtp_received"] == 1
+    assert backend.metrics[category] == 1
+    assert backend.metrics["packets"] == 0
+    reader.decryptor.decrypt_rtp.assert_not_called()
+    assert "PRIVATE" not in str(backend.metrics)
+
+
+@pytest.mark.parametrize("fail_handshake", [False, True])
+def test_receive_start_registers_silent_speaking_state(fail_handshake):
+    pytest.importorskip("discord.ext.voice_recv")
+    import discord
+
+    async def check():
+        backend = ReceiveBackend(lambda: {1})
+        vc = NS(
+            listen=Mock(), stop_listening=Mock(),
+            is_listening=lambda: True,
+            _reader=NS(packet_router=NS(destroy_all_decoders=Mock())),
+        )
+
+        async def register(state):
+            # The receiver must be attached before Discord can send media.
+            vc.listen.assert_called_once()
+            assert state == discord.SpeakingState.none
+            assert backend.active
+            if fail_handshake:
+                raise RuntimeError("handshake_failed")
+
+        vc.ws = NS(speak=AsyncMock(side_effect=register))
+        if fail_handshake:
+            with pytest.raises(RuntimeError, match="handshake_failed"):
+                await backend.start(vc)
+            assert not backend.active
+            vc.stop_listening.assert_called_once()
+        else:
+            await backend.start(vc)
+            assert backend.active
+            assert backend.metrics["receive_handshake_sent"] == 1
+            vc.stop_listening.assert_not_called()
+        vc.ws.speak.assert_awaited_once_with(discord.SpeakingState.none)
+
+    run(check())
+
+
+def test_receiver_health_distinguishes_mapping_and_listener_state():
+    backend = ReceiveBackend(lambda: {1})
+    backend.vc = NS(
+        is_listening=lambda: True,
+        _reader=NS(error=None),
+        _ssrc_to_id={99: 1, 100: 2},
+        _connection=NS(dave_session=NS(ready=True), secret_key="PRIVATE_KEY"),
+    )
+    health = backend.health()
+    assert health == {
+        "reader_listening": True, "reader_failed": False,
+        "mapped_speakers": 2, "mapped_participants": 1, "dave_ready": True,
+    }
+    assert "PRIVATE" not in str(health)
+    backend.vc._reader.error = RuntimeError("PRIVATE_FAILURE")
+    assert backend.health()["reader_failed"]
+    assert "PRIVATE" not in str(backend.health())

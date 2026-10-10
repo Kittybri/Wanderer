@@ -1,0 +1,25 @@
+[Unit]
+Description=Discord bots shared Google OAuth callback
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# EXAMPLE ONLY: choose the account and exact reviewed release path before installing.
+User=bots
+Group=bots
+WorkingDirectory=/opt/bots/connections/current
+EnvironmentFile=/opt/bots/secrets/connections.env
+ExecStart=/opt/bots/connections/venv/bin/python -m connections.web
+Restart=on-failure
+RestartSec=10
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/bots/shared
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

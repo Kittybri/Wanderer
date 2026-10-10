@@ -1,0 +1,30 @@
+name: Preservation
+on:
+  pull_request:
+  push:
+permissions:
+  contents: read
+jobs:
+  preservation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -r requirements.txt pytest-asyncio
+      - name: Runtime command, feature, help and Tarot contracts
+        run: python -m pytest -q tests/test_preservation.py tests/test_tarot_restoration.py
+      - name: Review intentional manifest removals
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BASE: ${{ github.event.before }}
+        run: |
+          base="$PR_BASE"
+          if [ -z "$base" ]; then base="$PUSH_BASE"; fi
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+            base="$(git rev-parse HEAD^)"
+          fi
+          python tools/check_preservation_diff.py "$base"

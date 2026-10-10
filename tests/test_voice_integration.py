@@ -68,6 +68,47 @@ def test_legacy_dispatch_and_disabled_channel(monkeypatch):
     asyncio.run(check())
 
 
+def test_voice_listens_automatically_by_default(monkeypatch):
+    async def check():
+        service, ctx, channel = setup(monkeypatch)
+        service.bot._connection.user = NS(id=9)
+        ctx.author.guild = ctx.guild
+        session = NS(channel_id=10)
+        service.sessions[5] = session
+        service.enroll = AsyncMock(return_value=True)
+        service.queue_greeting = Mock()
+        await service.voice_state(ctx.author, NS(channel=None), NS(channel=channel))
+        service.enroll.assert_awaited_once_with(session, ctx.author, announce=True)
+        service.queue_greeting.assert_called_once_with(session, ctx.author)
+        service.sessions.clear()
+        await service.bot.close()
+    asyncio.run(check())
+
+
+def test_targeted_start_and_stop_only_reach_named_bot(monkeypatch):
+    async def check():
+        service, ctx, _channel = setup(monkeypatch)
+        service.name = "wanderer"
+        service.handle = AsyncMock()
+
+        assert await service.command(ctx, "start scaramouche")
+        service.handle.assert_not_awaited()
+
+        assert await service.command(ctx, "start wanderer")
+        service.handle.assert_awaited_once_with(ctx, ["start"])
+
+        service.handle.reset_mock()
+        assert await service.command(ctx, "stop hat-guy")
+        service.handle.assert_awaited_once_with(ctx, ["stop"])
+
+        service.handle.reset_mock()
+        assert await service.command(ctx, "start")
+        service.handle.assert_awaited_once_with(ctx, ["start"])
+        await service.bot.close()
+
+    asyncio.run(check())
+
+
 def test_start_consent_preferences_and_backend_unavailable(monkeypatch):
     async def check():
         service, ctx, channel = setup(monkeypatch)
@@ -90,9 +131,13 @@ def test_start_consent_preferences_and_backend_unavailable(monkeypatch):
     asyncio.run(check())
 
 
-def test_start_callbacks_and_optout_shutdown(monkeypatch):
+def test_start_callbacks_and_automatic_membership_shutdown(monkeypatch):
     async def check():
         service, ctx, channel = setup(monkeypatch)
+        service.queue_greeting = Mock()
+        other = NS(id=2, bot=False, voice=NS(channel=channel), display_name="Other", mention="<@2>")
+        channel.members = [ctx.author, other, NS(id=9, bot=True)]
+        ctx.guild.get_member = lambda uid: ctx.author if uid == 1 else other
         vc = NS(
             channel=channel,
             disconnect=AsyncMock(),
@@ -114,15 +159,20 @@ def test_start_callbacks_and_optout_shutdown(monkeypatch):
         monkeypatch.setattr(
             "voice_conversation.integration.ReceiveBackend.start", start
         )
-        monkeypatch.setattr("voice_conversation.integration.Session.start", AsyncMock())
+        async def start_session(session):
+            session.active = True
+        monkeypatch.setattr("voice_conversation.integration.Session.start", start_session)
         monkeypatch.setattr(
-            "voice_conversation.session.Segmenter", lambda *a: NS(users={})
+            "voice_conversation.session.Segmenter", lambda *a: NS(users={}, metrics={})
         )
         await service.command(ctx, "start")
         assert channel.send.await_count == 1
         session = service.sessions[5]
         session.active = True
-        assert session.participants == {1}
+        assert session.participants == {1, 2}
+        await session.respond(2, "Scaramouche, hello", "Voice context")
+        assert service.respond.call_args.args[0] == 2
+        assert service.respond.call_args.args[4] == "Other"
         reply = await session.respond(
             1, "Scaramouche, I can't breathe", "Voice context"
         )
@@ -140,14 +190,118 @@ def test_start_callbacks_and_optout_shutdown(monkeypatch):
         await service.command(ctx, "interrupt me natural")
         assert session.user_interrupt[1] == "NATURAL"
         await service.command(ctx, "off")
-        assert not session.participants
-        await service.command(ctx, "listen on")
-        assert session.participants == {1}
+        assert session.participants == {2}
+        assert not await service.command(ctx, "listen on")
+        assert session.participants == {2}
+        service.queue_greeting.assert_not_called()
         service.install()
         await service.bot.close()
         assert not service.sessions
         vc.disconnect.assert_awaited_once()
 
+    asyncio.run(check())
+
+
+def test_automatic_arrival_notice_enrollment_greeting_and_leave(monkeypatch):
+    async def check():
+        service, ctx, channel = setup(monkeypatch)
+        service.bot._connection.user = NS(id=9)
+        ctx.author.guild = ctx.guild
+        session = NS(
+            active=True, channel_id=10, participants=set(),
+            limits=NS(participants=4), backend=NS(vc=NS(channel=channel)),
+            busy=lambda: False, segmenter=NS(users={}), jobs=asyncio.Queue(),
+            submit=AsyncMock(return_value=True), decision=Mock(),
+        )
+        def consent(uid, enabled):
+            (session.participants.add if enabled else session.participants.discard)(uid)
+        session.consent = Mock(side_effect=consent)
+        service.sessions[5] = session
+        async def notice(*args, **kwargs):
+            assert ctx.author.id not in session.participants
+            assert "Groq" in args[0] and "No opt-in" in args[0]
+        channel.send.side_effect = notice
+        try:
+            await service.voice_state(ctx.author, NS(channel=None), NS(channel=channel))
+            await asyncio.gather(*list(service.greeting_tasks.values()))
+            assert session.participants == {1}
+            channel.send.assert_awaited_once()
+            session.submit.assert_awaited_once()
+            first_reply = session.submit.call_args.kwargs["reply"]
+            assert "Test" in first_reply
+            # Mute/deafen changes are not new arrivals.
+            await service.voice_state(ctx.author, NS(channel=channel), NS(channel=channel))
+            assert channel.send.await_count == 1
+            ctx.author.voice.channel = None
+            await service.voice_state(ctx.author, NS(channel=channel), NS(channel=None))
+            assert not session.participants
+            # A real rejoin gets a distinct return greeting with the name.
+            ctx.author.voice.channel = channel
+            await service.voice_state(ctx.author, NS(channel=None), NS(channel=channel))
+            await asyncio.gather(*list(service.greeting_tasks.values()))
+            assert session.participants == {1}
+            assert session.submit.await_count == 2
+            return_reply = session.submit.call_args.kwargs["reply"]
+            assert "Test" in return_reply and return_reply != first_reply
+            assert any(word in return_reply.lower() for word in ("back", "again", "returned"))
+            session.participants.clear()
+            ctx.author.bot = True
+            await service.voice_state(ctx.author, NS(channel=None), NS(channel=channel))
+            assert not session.participants
+            ctx.author.bot = False
+            service.mem.get_user_preferences.return_value = {"voice_enabled": False}
+            await service.voice_state(ctx.author, NS(channel=None), NS(channel=channel))
+            assert not session.participants
+            assert channel.send.await_count == 2
+        finally:
+            service.sessions.clear()
+            await service.bot.close()
+    asyncio.run(check())
+
+
+def test_auto_enrollment_notice_failure_and_late_leave_fail_closed(monkeypatch):
+    async def check():
+        service, ctx, channel = setup(monkeypatch)
+        session = NS(active=True, channel_id=10, participants=set(),
+                     limits=NS(participants=4), backend=NS(vc=NS(channel=channel)), consent=Mock())
+        channel.send.side_effect = RuntimeError("notice unavailable")
+        with pytest.raises(RuntimeError):
+            await service.enroll(session, ctx.author, announce=True)
+        session.consent.assert_not_called()
+        async def leave_during_notice(*args, **kwargs):
+            ctx.author.voice.channel = None
+        channel.send.side_effect = leave_during_notice
+        assert not await service.enroll(session, ctx.author, announce=True)
+        session.consent.assert_not_called()
+        ctx.author.voice.channel = channel
+        session.epochs = {1: 0}
+        async def disable_during_notice(*args, **kwargs):
+            session.epochs[1] += 1
+        channel.send.side_effect = disable_during_notice
+        assert not await service.enroll(session, ctx.author, announce=True)
+        session.consent.assert_not_called()
+        await service.bot.close()
+    asyncio.run(check())
+
+
+def test_pending_arrival_cannot_speak_after_session_stop(monkeypatch):
+    async def check():
+        service, ctx, channel = setup(monkeypatch)
+        ctx.author.guild = ctx.guild
+        session = NS(
+            active=True, participants={1}, busy=lambda: True,
+            segmenter=NS(users={}), jobs=asyncio.Queue(),
+            submit=AsyncMock(), decision=Mock(),
+            backend=NS(vc=NS(channel=channel, disconnect=AsyncMock())),
+            stop=AsyncMock(),
+        )
+        service.sessions[5] = session
+        service.queue_greeting(session, ctx.author)
+        await asyncio.sleep(0)
+        await service.leave(5)
+        session.submit.assert_not_awaited()
+        assert not service.greeting_tasks and not service.arrivals_seen
+        await service.bot.close()
     asyncio.run(check())
 
 
@@ -170,12 +324,15 @@ def test_permissions_and_diagnostics(monkeypatch):
         assert service.sessions
         await service.command(ctx, "diagnostics")
         ctx.author.send.assert_not_awaited()
-        await service.command(ctx, "listen off")
-        session.consent.assert_called_with(2, False)
+        assert not await service.command(ctx, "listen off")
+        session.consent.assert_not_called()
         ctx.author.id = 1
         await service.command(ctx, "diagnostics")
         file = ctx.author.send.call_args.kwargs["file"]
         assert json.load(file.fp)["state"] == "LISTENING"
+        ctx.author.send.reset_mock()
+        assert await service.command(ctx, "diagontics")
+        ctx.author.send.assert_awaited_once()
         service.sessions.clear()
         await service.bot.close()
 

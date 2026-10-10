@@ -24,6 +24,26 @@ def run(coro):
     return asyncio.run(coro)
 
 
+def test_pruning_preserves_permanent_trolling_choices(tmp_path):
+    async def check():
+        service, _, _ = await setup(tmp_path)
+        key = "chaos:trollprefs:5:2"
+        await service.store.put(key, "chaos_trollprefs", {
+            "user_id": 2, "flags": {"typing": False}, "expires": 0, "state": "consent",
+        })
+        await service.store.put("old-receipt", "chaos_ping", {"state": "deleted"})
+        async with service.store.connect() as db:
+            await db.execute(
+                "UPDATE persistent_world_events SET updated_at=? WHERE key IN (?,?)",
+                (time.time() - 90 * 86400, key, "old-receipt"),
+            )
+            await db.commit()
+        await service.store.prune()
+        assert (await service.store.get(key))["flags"]["typing"] is False
+        assert await service.store.get("old-receipt") is None
+    run(check())
+
+
 async def setup(tmp_path, name="scaramouche"):
     mem = NS(
         db_path=str(tmp_path / (name + ".db")),

@@ -1,0 +1,35 @@
+{
+  "base": "537bc0d4b9ac462f7df3d743bc5c5d7d9a96264c",
+  "functions": {
+    "_provider_pause_reply": "fa73401756b5dcfdda2418fb81510191ee6db0e1a5bba66f37eb562eb7b9fd96",
+    "_guarded_fallback_reply": "9253eebdf5e596bff9c828e152072d867cd96133c7f67c029ee824f5b8b1ccaa",
+    "_rewrite_voice_note_for_speech": "815482006768f869b305f5af66d6f2bf07a9735331bf2fc5e5165a4852bb5bb4",
+    "_rewrite_reply_once": "c0cca7b0c12c66c5f0e3588c4cfa17042e5f4dd9511a998a250c5b36aec156f4",
+    "_maybe_self_edit_reply": "f8d5e076ff77ffc846b4ee6070e22f4b0bb911bee6be30ba7d2f3c040f992116",
+    "_apply_phrase_policy": "fcc1cc68a98a71831e012da8080e88812e5ff1d6a20bb6f1f6b87fe727329e90",
+    "_groq_blocking": "02d6edb62fddf284fd225000d096a99a5ac2171d3fc41e660f8105a9bb339adf",
+    "groq_call": "b9e6c4870aa119f9b2a19014f246617dfabbb2a3b1affe77f6ab22fc9ac5bcfe",
+    "_groq_quick_blocking": "9b316f173f3a694a702b99406bb6053cebee128c34b7ec52e3a4ee85217f2d40",
+    "qai": "03765bcddd1d704e1471eb98c96df5eb95744447a86d0ec751223c3d024ad9d9",
+    "get_response": "7ed2cb56435f60ea249b7afc9d9593699ccdb83b3d3ca66c1a892c5a33957cdf",
+    "get_audio_with_mood": "e83ad6daae1693f1fc207348d2d61c3b390cc926a660cfc7b780b69c9fa7c14f",
+    "send_voice": "8d54a54ff68a9387c410449fc04836887fbb6c29f683b3e2b95a70af07023029",
+    "voice_cmd": "4336697447c1adecd9ba75c1438dce35ba7295e794a955b2f4a758ac484ab1e6"
+  },
+  "files": {
+    "voice_conversation/personality.py": "d62f2d66f87ab9585468633084243443a5a7178d8554bc5db9e87aefefeee351",
+    "voice_conversation/receive.py": "06b5d5ed0da70e30714539b658e937a2e2fafaa8d23ffd961ab88706a6cf7486",
+    "voice_conversation/session.py": "facf3b2f61a24a3da5c3093374098b1db5f352f65c39a57ad6124ce9a3f2c91c",
+    "voice_conversation/__init__.py": "e0e256653d3c9c49d185782f27fe386d183749233311ab9ba6cb98054b9b83b5",
+    "voice_conversation/features.py": "7e3d94c77aab4355c14c44fed50d5a5fe00af71f7126cac9d0479ff7d73cc99d",
+    "voice_conversation/games.py": "79d996f1f382d91ef2e49a94640b39938b8410b0b69e29a3ab1b2f109260fd8c",
+    "voice_conversation/integration.py": "45032fd0626ffcbdea276aad800c370d32d73a23f4c80f1bfe5bc04e3278f8fd",
+    "voice_conversation/social_store.py": "10d8f9f1d4573fad169bef4b6f7c80bbbf684a337d1719b5876bf93a6cec75e3",
+    "voice_conversation/speech.py": "fb6121d79e0ff782ba871e63337bbaef414e9057589bbe632b0d8859691a4950",
+    "voice_conversation/smoke.py": "7745dd08edf189d8ac0bf1860e7529b53e007ec88aa13f6bb9034a398b0043da",
+    "voice_handler.py": "58c50ff533b4a8232088b00bd413aafe933910eaeb7018218f75e2333460c3f5",
+    "requirements.txt": "ba2cc0878c09d2131bb514902ec0a42e6c098d183d81b69b610eb3e213b5d626",
+    "provider_config.py": "65aaaeafed11c3dc63f010aad187eb0da016ed00585d5dfa6bdbaf6587955c69",
+    "anti_repeat.py": "583bd3fdec83f94c9f3a1ddb9a2a42badc8e8f51683650fe88bcab6b3b903f56"
+  }
+}

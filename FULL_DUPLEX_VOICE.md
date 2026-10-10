@@ -4,7 +4,8 @@ Optional character/party features layered on this controller are documented in
 [ADVANCED_VC_FEATURES.md](ADVANCED_VC_FEATURES.md). They do not waive the live
 receive smoke-test release gate below or introduce another audio pipeline.
 
-This is an **opt-in experimental receive path**, not a claim of live Discord validation.
+This is an **experimental receive path** in explicitly allowlisted channels,
+with explicit participation and a public transcription notice by default.
 Existing text, voice-note commands, Fish voice IDs, emotion/VoiceState, home audio,
 lullaby and deliberate duo orchestration remain in place. Nothing autojoins a VC.
 
@@ -31,7 +32,7 @@ and [transport key rotation issue 59](https://github.com/imayhaveborkedit/discor
 It is **unmerged experimental code**, not a maintained/stable compatibility guarantee.
 
 `receive.py` is the only extension-dependent module. Its adapter rejects unknown,
-self, bot and nonconsenting speakers before decryption; requires a ready DAVE
+self, bot and unenrolled speakers before decryption; requires a ready DAVE
 session and an incremented authenticated-decryption success counter (not merely
 plaintext passthrough); refreshes the transport key; suppresses upstream packet/key
 debug logging; fixes stop-aware keepalive and SSRC cleanup. discord.py still owns
@@ -60,32 +61,42 @@ Set `VOICE_ALLOWED_CHANNEL_IDS` to a comma-separated allowlist of VC IDs. Empty
 means disabled. Configure the existing `GROQ_API_KEY`, Discord token and Fish
 credentials normally; never paste credentials into chat. Grant View Channel,
 Connect, Speak and Send Messages in the VC's text chat. Each session needs a
-public consent notice there before the bot connects/listens.
+public transcription notice there before the bot connects/listens.
 
-## Controls and consent
+## Controls and automatic listening
+
+Starting a session automatically includes eligible humans who are already in the
+channel. Eligible humans who arrive later are included automatically after the
+public transcription notice and receive a bounded in-character greeting when the
+bot is free. A greeting waits up to 20 seconds for a free playback slot. Every
+greeting says the human's display name; a return during the
+same bot session uses a distinct rejoin line. Bots are never included. Leaving the
+channel immediately removes the human from the live routing set; rejoining includes them again automatically.
+The bounded participant limit and stored `!voice off` preference remain enforced.
 
 | Command | Behavior |
 | --- | --- |
-| `!voice start` / `join` | Explicitly join your allowlisted VC; initiator opts in |
-| `!voice listen on` | Opt yourself in, only while in that same VC |
-| `!voice listen off` | Revoke your consent, even after leaving the VC |
+| `!voice start scaramouche` / `start wanderer` | Join only the named bot to your allowlisted VC; eligible humans are included automatically |
+| `!voice start` / `join` | Existing shared command; both online bots may join |
 | `!voice stop` / `leave` | Initiator or server manager ends the whole session |
-| `!voice mode direct_only` | Default: require the bot's spoken name |
-| `!voice mode conversation` | Also answer the focused participant for 90 seconds |
-| `!voice mode active_room` | Answer any consenting participant; never nonparticipants |
+| `!voice mode direct_only` | Optional strict mode requiring the bot's spoken name |
+| `!voice mode conversation` | Default: answer the focused participant for 90 seconds after playback; explicit partner addressing clears focus |
+| `!voice mode active_room` | Answer any eligible human in the active room; never bots or people outside it |
 | `!voice interrupt keyword` | Default: focused speaker + clear interruption phrase |
 | `!voice interrupt natural` | Focused participant's sustained speech can stop output |
 | `!voice interrupt off` | Finish current output before handling another turn |
 | `!voice interrupt me natural` | Override your own session interruption preference |
-| `!voice status` / `session status` | State, targeting, consent count and receive evidence |
+| `!voice status` / `session status` | State, targeting, active-human count and receive evidence |
 | `!voice diagnostics` | Owner-only DM attachment with sanitized metrics/events |
 
 Session-wide mode changes require initiator/server-manager authority. Owner status
-does not bypass channel restrictions or another person's consent. `!voice on/off`
-retains voice-note preferences; `off` also revokes that user's live consent.
+does not bypass channel restrictions or another person's voice preference. `!voice on/off`
+retains voice-note preferences; `off` also removes that user from live listening.
 Ordinary `!voice some text`, `!speak` and `!say` still use existing voice-note behavior.
-Consent/preferences for live listening reset on stop, channel move/deletion, or
-disconnect. No background reconnection restores consent after a disconnected session.
+Session participation resets on stop, channel move/deletion, or disconnect.
+Starting a new session posts a fresh notice and requires renewed participation;
+stored voice-off preferences are preserved. No background process
+automatically joins a voice channel after a disconnected session.
 An MLS epoch/transport-key update on an otherwise intact connection is handled by
 the receive adapter. A broken receiver is stopped, not silently restarted.
 
@@ -162,9 +173,10 @@ Empty quiet channels are not falsely classified as corrupt audio.
 
 Before production use, run in a private allowlisted test VC with consenting humans:
 
-1. Start one bot with `!voice start`; confirm the public listening notice.
-2. A second human must opt in; first speak without opting in and verify no STT event
-   for their ID. Speak as two users and check attribution in owner diagnostics.
+1. Start one bot with `!voice start scaramouche`; confirm the public listening notice.
+2. A second human joins, receives a notice and greeting, and is included without
+   an opt-in command. Speak as two users and check attribution in owner diagnostics.
+   A person whose voice preference is off must still produce no STT event.
 3. Say a known harmless phrase addressed by name, e.g. "Scaramouche, what is two plus
    three?" Confirm the spoken answer demonstrates correct transcription.
 4. Download `!voice diagnostics`. Require nonzero packets, authenticated DAVE frames,
@@ -176,7 +188,7 @@ Before production use, run in a private allowlisted test VC with consenting huma
    tiny noise burst, two overlapping humans, headphones vs loudspeaker echo.
 7. Revoke consent mid-utterance, leave/rejoin, disconnect/restart, and temporarily
    deny STT/TTS network access. Check bounded queues, recovery notices, no stale
-   playback and explicit opt-in after restart. Text/ordinary voice notes must work.
+   playback and a fresh notice on the next session. Text/ordinary voice notes must work.
 8. Download a fresh snapshot; after personally observing speech and cancellation:
 
 ```sh

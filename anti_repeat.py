@@ -344,3 +344,12 @@ def looks_repetitive(text: str, recent_messages: list[str]) -> bool:
 
 def fallback_reply(bot_name: str, recent_messages: list[str]) -> str:
     return pick_fresh_option(bot_name, _FALLBACK_LINES[bot_name.lower()], recent_messages)
+
+
+def is_fallback_reply(bot_name: str, text: str) -> bool:
+    """Return whether text is one of the internal provider-empty fallbacks."""
+    normalized = _normalize(text)
+    return any(
+        normalized == _normalize(candidate)
+        for candidate in _FALLBACK_LINES.get(bot_name.lower(), ())
+    )

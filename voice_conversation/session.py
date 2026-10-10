@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from difflib import SequenceMatcher
 import io
 import queue
 import re
@@ -12,6 +13,40 @@ from collections import Counter, deque
 from enum import Enum
 
 from .speech import Limits, Segmenter, chunks
+
+
+def is_interrupt_keyword(text: str, name: str) -> bool:
+    """Recognize short spoken barge-in commands despite ordinary STT variation."""
+    words = re.findall(r"[a-z0-9]+", (text or "").lower())
+    while words and words[0] in {"hey", "okay", "ok", "um", "uh", "please"}:
+        words.pop(0)
+    if not words:
+        return False
+
+    # A command may follow the character's name or a little ASR filler. Keep the
+    # window short so a later conversational use of these words is not a barge-in.
+    opening = words[:6]
+    if any(word in {"wait", "stop", "no", "listen"} for word in opening):
+        return True
+    if any(
+        opening[index : index + 2] in (["hold", "on"], ["shut", "up"])
+        for index in range(max(0, len(opening) - 1))
+    ):
+        return True
+
+    aliases = {name.lower()}
+    if name.lower() == "scaramouche":
+        aliases.add("scara")
+    # Preserve the old name-only barge-in while accepting common ways speech
+    # recognition splits or slightly misspells the character name.
+    for width in range(1, min(3, len(opening)) + 1):
+        candidate = "".join(opening[:width])
+        for alias in aliases:
+            if candidate == alias:
+                return True
+            if len(candidate) >= 7 and SequenceMatcher(None, candidate, alias).ratio() >= 0.78:
+                return True
+    return False
 
 
 class State(str, Enum):
@@ -97,11 +132,13 @@ class Session:
         self.limits, self.segmenter = limits, Segmenter(limits, vad)
         self.participants, self.epochs = set(), Counter()
         self.focus, self.focus_until = initiator, 0.0
-        self.mode, self.interrupt_mode = "DIRECT_ONLY", "KEYWORD"
+        self.mode, self.interrupt_mode = "CONVERSATION", "KEYWORD"
         self.user_interrupt = {}
         self.state, self.active = State.IDLE, False
         self.generation, self.current_user = 0, None
         self.response_task = None
+        self.pending_response_task = None
+        self.pending_response_user = None
         self.workers = []
         self.jobs = asyncio.Queue(maxsize=limits.stt_queue)
         self.provider_slots = {"llm": asyncio.Lock(), "tts": asyncio.Lock()}
@@ -117,6 +154,21 @@ class Session:
 
     def busy(self):
         return bool(self.response_task and not self.response_task.done())
+
+    def clear_pending_response(self):
+        task = self.pending_response_task
+        self.pending_response_task = self.pending_response_user = None
+        if task and not task.done():
+            task.cancel()
+            self.metrics["dropped_pending_responses"] += 1
+        return task
+
+    def decision(self, kind, uid):
+        """Bounded diagnostics: categories and attribution, never speech content."""
+        self.metrics[kind] += 1
+        self.events.append(
+            {"type": kind, "at": time.monotonic(), "speaker_id": uid}
+        )
 
     async def feature_event(self, kind, uid=0, text="", data=None):
         if not self.feature_router:
@@ -168,6 +220,8 @@ class Session:
                 self.backend.grant(uid)
         else:
             self.participants.discard(uid)
+            if self.pending_response_user == uid:
+                self.clear_pending_response()
             if self.feature_router:
                 self.feature_router.revoke(uid)
             self.user_interrupt.pop(uid, None)
@@ -271,6 +325,13 @@ class Session:
             self.active = False
 
     def relevant(self, uid, text):
+        # An explicit handover releases this bot's follow-up focus. Merely
+        # discussing the other character is not a handover.
+        partner = r"wanderer|hat[ -]?guy" if self.name == "scaramouche" else r"scaramouche|scara|balladeer"
+        if re.match(r"^(?:(?:hey|okay|ok|hi|hello)\W+)?(?:" + partner + r")\b", text.strip(), re.I):
+            if uid == self.focus:
+                self.focus, self.focus_until = None, 0
+            return False
         addressed = bool(re.search(r"\b" + re.escape(self.name) + r"\b", text.lower()))
         addressed = addressed or (
             self.name == "scaramouche" and bool(re.search(r"\bscara\b", text.lower()))
@@ -294,9 +355,12 @@ class Session:
                 or time.monotonic() - utterance.ended > self.limits.stale_seconds
             ):
                 self.metrics["dropped_stale_jobs"] += 1
+                self.decision("discarded_before_stt", uid)
                 utterance.pcm = b""
                 continue
             started = time.monotonic()
+            self.metrics["stt_queue_wait_ms"] = max(0, round((started - utterance.ended) * 1000))
+            self.metrics["speech_to_stt_ms"] = max(0, round((started - utterance.started) * 1000))
             if not self.response_task or self.response_task.done():
                 self.state = State.TRANSCRIBING
             try:
@@ -304,6 +368,7 @@ class Session:
             except asyncio.CancelledError:
                 raise
             except Exception:
+                self.decision("transcription_failed", uid)
                 await self.failure("stt_unavailable")
                 self.state = State.LISTENING
                 continue
@@ -318,6 +383,7 @@ class Session:
                 continue
             if not text.strip():
                 self.metrics["empty_transcripts"] += 1
+                self.decision("discarded_empty_transcript", uid)
                 continue
             self.metrics["stt_success"] += 1
             self.events.append(
@@ -327,20 +393,20 @@ class Session:
             normalized = re.sub(r"\W+", " ", text.lower()).strip()
             if normalized and any(normalized == old for old in self.recent_outputs):
                 self.metrics["echo_dropped"] += 1
+                self.decision("discarded_echo", uid)
                 continue
             mode = self.user_interrupt.get(uid, self.interrupt_mode)
-            names = (
-                r"scaramouche|scara"
-                if self.name == "scaramouche"
-                else re.escape(self.name)
-            )
-            keyword = re.match(
-                r"^(?:wait|stop|hold on|shut up|no|listen|" + names + r")\b",
-                text.strip(),
-                re.I,
-            )
-            if mode == "KEYWORD" and keyword and uid == self.focus:
-                await self.interrupt(uid, utterance.started)
+            if mode == "KEYWORD" and uid == self.focus:
+                keyword = is_interrupt_keyword(text, self.name)
+                if keyword:
+                    self.decision("interrupt_keyword_detected", uid)
+                    if self.busy():
+                        self.metrics["interrupt_attempted"] += 1
+                        await self.interrupt(uid, utterance.started)
+                    else:
+                        self.decision("interrupt_arrived_after_playback", uid)
+                elif self.busy():
+                    self.decision("interrupt_keyword_missed", uid)
             continuing = bool(
                 re.search(r"(?:maybe|because|and|but|so|\.\.\.)\s*$", text, re.I)
             )
@@ -352,6 +418,7 @@ class Session:
                     break
             if time.monotonic() - utterance.ended > self.limits.stale_seconds:
                 self.metrics["dropped_stale_jobs"] += 1
+                self.decision("discarded_after_speech_wait", uid)
                 continue
             if re.search(r"(?:maybe|because|and|but|so|\.\.\.)\s*$", text, re.I):
                 await asyncio.sleep(0.45)
@@ -399,19 +466,42 @@ class Session:
                 and "reply" not in plan
                 and not plan.get("force_reply")
             ):
+                self.decision("discarded_not_addressed", uid)
+                if not self.busy() and not self.segmenter.users:
+                    self.state = State.LISTENING
                 continue
-            # OFF/background input does not cancel a response already in progress.
-            if self.response_task and not self.response_task.done():
-                with contextlib.suppress(asyncio.CancelledError):
-                    await self.response_task
+            # Never wait for playback inside the STT worker: the next utterance
+            # may be a stop command. Keep only the latest bounded pending reply.
+            self.clear_pending_response()
+            if self.busy():
+                self.metrics["deferred_responses"] += 1
+                self.pending_response_user = uid
+                self.pending_response_task = asyncio.create_task(
+                    self.dispatch_response(uid, text, epoch, utterance.ended, plan)
+                )
+            else:
+                await self.dispatch_response(uid, text, epoch, utterance.ended, plan)
+
+    async def dispatch_response(self, uid, text, epoch, ended, plan):
+        try:
+            while self.active and self.busy():
+                # asyncio.wait does not cancel playback when this pending turn
+                # is superseded/revoked. OFF mode therefore remains non-interrupting.
+                remaining = self.limits.stale_seconds - (time.monotonic() - ended)
+                if remaining <= 0:
+                    self.decision("discarded_before_response", uid)
+                    return
+                await asyncio.wait({self.response_task}, timeout=remaining)
             if (
                 not self.active
                 or uid not in self.participants
                 or epoch != self.epochs[uid]
-                or time.monotonic() - utterance.ended > self.limits.stale_seconds
+                or time.monotonic() - ended > self.limits.stale_seconds
             ):
-                continue
+                self.decision("discarded_before_response", uid)
+                return
             self.focus, self.focus_until = uid, time.monotonic() + 90
+            self.decision("response_scheduled", uid)
             self.current_user = uid
             self.generation += 1
             self.response_task = asyncio.create_task(
@@ -425,6 +515,9 @@ class Session:
                     feature_kind=plan.get("feature", ""),
                 )
             )
+        finally:
+            if self.pending_response_task is asyncio.current_task():
+                self.pending_response_task = self.pending_response_user = None
 
     def current(self, generation, uid, epoch):
         return (
@@ -509,6 +602,8 @@ class Session:
                 self.metrics["dropped_stale_jobs"] += 1
                 return
             pieces = chunks(reply[:12000])
+            if not pieces:
+                self.decision("empty_response", uid)
             self.total = len(pieces)
             for part in pieces:
                 if not self.current(generation, uid, epoch):
@@ -537,8 +632,12 @@ class Session:
                     delivered = await self.playback.play(audio)
                 audio = None
                 if not delivered or not self.current(generation, uid, epoch):
+                    self.decision("playback_not_delivered", uid)
                     return
                 self.completed += 1
+                if self.focus == uid:
+                    self.focus_until = time.monotonic() + 90
+                self.decision("playback_completed", uid)
                 self.metrics["spoken_chunks"] += 1
                 self.recent_outputs.append(re.sub(r"\W+", " ", part.lower()).strip())
                 await self.remember(uid, part)
@@ -567,6 +666,7 @@ class Session:
         ):
             return
         confirmed = time.monotonic()
+        self.clear_pending_response()
         self.state = State.INTERRUPTING
         self.generation += 1
         self.response_task.cancel()
@@ -596,6 +696,9 @@ class Session:
         self.state = State.LISTENING
 
     async def cancel_response(self):
+        pending = self.clear_pending_response()
+        if pending:
+            await asyncio.gather(pending, return_exceptions=True)
         self.generation += 1
         if self.response_task:
             self.response_task.cancel()
@@ -647,5 +750,16 @@ class Session:
             "participants": len(self.participants),
             "focused_users": int(self.focus in self.participants),
             "pending_audio": self.jobs.qsize(),
-            "metrics": dict(received) | dict(self.metrics),
+            "workers": [
+                {
+                    "name": name,
+                    "running": not task.done(),
+                    "failed": task.done()
+                    and not task.cancelled()
+                    and task.exception() is not None,
+                }
+                for name, task in zip(("receive", "transcribe"), self.workers)
+            ],
+            "metrics": dict(received) | dict(self.metrics) | dict(self.segmenter.metrics),
+            "receiver": self.backend.health() if hasattr(self.backend, "health") else {},
         }

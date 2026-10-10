@@ -1,5 +1,9 @@
 # Optional integrations
 
+For Google Calendar/Tasks, use [Connected Accounts](CONNECTED_ACCOUNTS.md), not
+manual per-user tokens. The legacy configuration instructions below remain relevant
+to the other adapters and owner-only allowlisted Sheets, not Google onboarding.
+
 Set one structured configuration with `BOT_INTEGRATIONS_CONFIG=/absolute/path/integrations.json` or `BOT_INTEGRATIONS_JSON='{...}'`. Never commit it.
 On the Oracle host, keep the file outside the repository when practical and restrict it with `chmod 600`.
 

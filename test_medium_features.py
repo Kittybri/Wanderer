@@ -3,7 +3,7 @@ from pathlib import Path
 import tempfile
 import unittest
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import memory as memory_module
 from awareness_features import activity_snapshot, classify_safety, choose_duo_advice_mode, resolve_voice_state, select_relevant_recall, style_voice_text
@@ -116,9 +116,11 @@ class IntegrationTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError): await cal.create_event("e",datetime.now(),datetime.now())
         with self.assertRaises(PermissionError): await cal.update_bot_event("id",{}, {"summary":"x"})
         aware=datetime.now(timezone.utc)
-        self.assertTrue((await cal.create_event("e",aware,aware))["dry_run"])
+        with self.assertRaises(ValueError):
+            await cal.create_event("e", aware, aware)
+        self.assertTrue((await cal.create_event("e",aware,aware + timedelta(hours=1)))["dry_run"])
         self.assertEqual(fake_cal.calls, [])
-        await cal.create_event("e",aware,aware,confirmed=True)
+        await cal.create_event("e",aware,aware + timedelta(hours=1),confirmed=True)
     async def test_google_account_separation_tasks_and_sheet_allowlist(self):
         config=IntegrationConfig({"google":{"accounts":{"7":{"access_token":"a"},"8":{"access_token":"b"}}}})
         self.assertEqual(config.google_account(7)["access_token"],"a")

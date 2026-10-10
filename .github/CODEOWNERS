@@ -1,0 +1,15 @@
+# Review routing only; branch rules must require Code Owner review to enforce it.
+* @Kittybri
+/AGENTS.md @Kittybri
+/**/AGENTS.md @Kittybri
+/.github/CODEOWNERS @Kittybri
+/preservation/ @Kittybri
+/tests/*preservation* @Kittybri
+/privacy* @Kittybri
+/voice* @Kittybri
+/connections/ @Kittybri
+/character* @Kittybri
+/personality* @Kittybri
+/tarot* @Kittybri
+/memory* @Kittybri
+/*integrations* @Kittybri
