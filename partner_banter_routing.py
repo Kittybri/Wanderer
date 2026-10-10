@@ -1,5 +1,6 @@
 """Audience attribution for optional two-bot banter (no Discord side effects)."""
 import re
+from dataclasses import dataclass, field
 
 
 def safe_reference_name(value: str) -> str:
@@ -52,3 +53,27 @@ def contextual_romance_tag(text: str, name: str, mention: str) -> str:
         if hit:
             return text[:hit.start()] + mention + text[hit.end():]
     return text + f" And don't expect {mention} to rescue that argument."
+
+
+@dataclass(frozen=True)
+class TurnEnvelope:
+    """Immutable attribution for a bot-to-bot turn; no Discord side effects."""
+    source_message_id: int
+    channel_id: int
+    speaker_id: int
+    speaker_kind: str
+    addressee_id: int
+    addressee_kind: str
+    explicit_human_target_ids: frozenset[int] = field(default_factory=frozenset)
+    romance_target_id: int | None = None
+    mode: str = "rivalry"
+
+
+def authorized_ping_ids(turn: TurnEnvelope, *, romance_ping_selected: bool = False) -> frozenset[int]:
+    """Allow verified interaction targets without suppressing in-character mention text."""
+    ids = set(turn.explicit_human_target_ids)
+    if turn.speaker_id > 0:
+        ids.add(turn.speaker_id)
+    if romance_ping_selected and turn.romance_target_id is not None:
+        ids.add(turn.romance_target_id)
+    return frozenset(uid for uid in ids if isinstance(uid, int) and uid > 0)
