@@ -187,3 +187,48 @@ Final pre-deployment checks for the corrected candidate:
 - Staged six-file credential scan: zero findings; additional key-pattern scan
   across all seven batch files: zero findings.
 - Voice legacy AST and byte-hash checks pass without updating the baseline.
+
+## Corrected deployment and final live checks (2026-10-09)
+
+Exact tested/deployed functional SHA:
+`19b37b254725ca71299525325b00100965ce589b`.
+Release directory:
+`/opt/scara-wanderer-staging-fallback/releases/wanderer-text-19b37b254725`.
+
+Only Wanderer was redeployed, with one further controlled restart (two total
+controlled restarts across this repair batch). Active/readiness confirmed, zero
+startup tracebacks and zero automatic restarts. The on-host preservation probe
+again returned 177 prefix commands, 25 slash entries, zero errors. Scaramouche
+and callback PIDs/working directories, protected environment/voice configuration
+hashes, and Google connection/grant/session rows matched before/after deployment.
+Wanderer, shared-state and Tarot SQLite `quick_check` each returned `ok`.
+
+Remaining live checks used the already signed-in primary Kittybri account in the
+same approved General channel. No account switch, voice-channel operation or
+voice preference change was performed.
+
+| Scenario | Actual evidence | Result |
+| --- | --- | --- |
+| Casual greeting | Earlier request/reply `1558013447717785764` / `1558013458484568095`; already passed, not repeated | PASS on initial candidate |
+| Factual retest | Mention request `1558202792286490665` triggered existing automatic audio-note delivery `1558202816038961162`; no audio playback/voice-quality claim. Existing `/wanderer` text entry then returned complete two-sentence density/lattice explanation in `1558202979864023230` | PASS, corrected candidate via slash text |
+| Follow-up | Earlier request/reply `1558013707592794135` / `1558013723640332332`; complete explanation, already passed | PASS on initial candidate |
+| Shared opening, different substance | Requests `1558274301327843410` and `1558274414049755333` both asked for “The useful distinction is”; replies `1558274318213980361` and `1558274428503326720` explained evaporation/boiling and melting/freezing. Second answer varied the opening but retained useful substance | PASS; identical generated opening acceptance additionally covered offline |
+| Both-bot mention | Synthetic fictional-explorer request `1558274612427493458`; Wanderer reply `1558274628558921760` named curiosity/perseverance, Scaramouche reply `1558274628709785641` independently addressed the human | PASS, no Wanderer fallback or immediate feedback loop observed |
+| Provider failure | Offline injected errors/exhaustion/empty/internal/length-limited completions; direct notices versus ambient silence | PASS automated; no deliberate live outage or quota exhaustion |
+
+No internal retry/fallback phrase appeared in the corrected candidate's deliberate
+live text checks. This finite observation does not certify arbitrary future model
+prose or every unrelated legacy command. Background/partner failure routes are
+covered by automated checks; no forced timer/config changes were made to trigger
+every autonomous feature live. Existing static personality pools remain intact.
+The evaporation answer's phrasing “whole liquid vaporize abruptly” is imprecise;
+it was a complete answer rather than fallback leakage, not a scientific-accuracy
+certification. No unrelated factual or personality redesign was made.
+
+Voice behavior changed: **NO**. Voice implementation/dependency files changed:
+**NO**. Legacy voice generation/rewriting/default fallback contracts remain locked
+to the original release; no live voice validation is claimed. The complete caller
+classification remains at the start of this document. No merge, Scaramouche
+deployment, Google configuration change, or Phase 2 work occurred.
+
+Final scoped status: `WANDERER_TEXT_FIXED_VOICE_UNCHANGED`.
