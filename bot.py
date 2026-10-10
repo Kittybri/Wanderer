@@ -54,7 +54,7 @@ from google_docs_bridge import (
     overwrite_google_doc,
     service_account_email,
 )
-from partner_banter_routing import jealousy_context, coherent_partner_reply, TurnEnvelope, authorized_ping_ids, resolve_duo_reply_anchor, romance_ping_chosen, authoritative_turn_context
+from partner_banter_routing import jealousy_context, coherent_partner_reply, TurnEnvelope, authorized_ping_ids, resolve_autoplay_anchor, romance_ping_chosen, authoritative_turn_context
 from memory_rebuild import collect_rank_rebuild_records, collect_rebuild_records, user_can_manage_rebuild
 from video_reports import (
     build_weather_video_notes,
@@ -6926,35 +6926,23 @@ async def _duo_autoplay_loop():
                     if not channel:
                         continue
                     target_message = None
-                    partner_message = None
                     interview_mode = session.get("mode") in {"interview", "welcome_interview"}
                     participant_id = int(session.get("initiator_user_id") or 0)
                     async for candidate in channel.history(limit=8):
                         if candidate.author.bot:
-                            if (
-                                not interview_mode and PARTNER_BOT_ID
-                                and candidate.author.id == PARTNER_BOT_ID
-                                and partner_message is None
-                            ):
-                                partner_message = candidate
                             continue
-                        if interview_mode and candidate.author.id != participant_id:
+                        if participant_id and candidate.author.id != participant_id:
                             continue
                         target_message = candidate
                         break
                     if not target_message:
                         continue
-                    stored_source_id = (
-                        await mem.get_duo_reply_anchor(channel.id, BOT_NAME)
-                        if not interview_mode else None
+                    anchor = await resolve_autoplay_anchor(
+                        channel, session, BOT_NAME, PARTNER_NAME,
+                        PARTNER_BOT_ID or 0, target_message, mem,
                     )
-                    partner_message = await resolve_duo_reply_anchor(
-                        channel, stored_source_id,
-                        partner_message if not interview_mode else None,
-                        partner_bot_id=PARTNER_BOT_ID or 0,
-                    )
-                    if stored_source_id and partner_message is None:
-                        continue  # Never attach to an unrelated newer message.
+                    if anchor is None:
+                        continue
                     await mem.upsert_user(target_message.author.id, target_message.author.name, target_message.author.display_name)
                     user = await mem.get_user(target_message.author.id)
                     autoplay_prompt = _duo_autoplay_prompt(session)
@@ -6974,7 +6962,6 @@ async def _duo_autoplay_loop():
                     )
                     if not (reply or "").strip():
                         continue
-                    anchor = partner_message or target_message
                     sent_message = await _guarded_message_reply(
                         anchor, reply, mention_author=False,
                         allowed_mentions=discord.AllowedMentions.none(),
