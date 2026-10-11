@@ -8383,11 +8383,8 @@ async def rpgstats_cmd(ctx, member: discord.Member = None):
         if state["current_boss"] >= len(HARBINGERS_HORROR):
             embed.set_footer(text="🏆 ALL HARBINGERS DEFEATED — You are the #1 Harbinger!")
         await illustrated_send(
-            ctx, embed, kind="encounter", world=wt, boss=current,
-            bot_name="Wanderer", round_num=state.get("current_round", 0),
-            points=state.get("boss_points", 0), total=state.get("total_points", 0),
-            defeated=beaten, origin=state.get("char_type", ""),
-            element=state.get("element", ""),
+            ctx, embed, board=True, world=wt, bot_name="Wanderer",
+            defeated=beaten, total=state.get("total_points", 0),
         )
     except Exception as e: log_error("rpgstats_cmd", e)
 
