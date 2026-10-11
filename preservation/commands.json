@@ -1535,10 +1535,6 @@
     }
   },
   "slash": {
-    "dailycard": {
-      "group": false,
-      "module": "tarot_commands"
-    },
     "dashboard": {
       "group": true,
       "module": null
@@ -1602,10 +1598,6 @@
     "prefs voice": {
       "group": false,
       "module": "bot"
-    },
-    "tarot": {
-      "group": false,
-      "module": "tarot_commands"
     },
     "tarothistory": {
       "group": false,
@@ -1861,7 +1853,6 @@
     "!worldadd",
     "!worldprefs",
     "!write",
-    "/dailycard",
     "/dashboard achievements",
     "/dashboard arc",
     "/dashboard duostate",
@@ -1875,7 +1866,6 @@
     "/prefs speaker",
     "/prefs utility",
     "/prefs voice",
-    "/tarot",
     "/tarothistory",
     "/tarotsettings",
     "/wanderer",

@@ -223,12 +223,10 @@
     "write"
   ],
   "slash": [
-    "dailycard",
     "dashboard",
     "duo",
     "google",
     "prefs",
-    "tarot",
     "tarothistory",
     "tarotsettings",
     "wanderer",

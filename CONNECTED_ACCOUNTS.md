@@ -1,5 +1,17 @@
 # Connected Accounts — Google Phase 1
 
+> **Current status (October 2026):** The original paragraphs below
+> preserve the October 6 staging/branch checkpoints for audit history.
+> The present release heads are Scaramouche
+> `03a8ae03d35e42511390717ec2cbd63d4c508390` and Wanderer
+> `3b998a71b3f3d75c14b7eeef00932e31c60569a5`.
+> The OAuth callback was live and staging-tested on Oracle in the canonical
+> Scaramouche `STAGING_VALIDATION.md`. Google **Production** approval,
+> public website and policies still require review. Phase 2 remains deferred;
+> do not interpret the historical "callback deployment not performed" heading
+> below as the current status.
+
+
 ## Release boundary and current state
 
 This feature is isolated on `feature/connected-accounts-google` in both repositories,

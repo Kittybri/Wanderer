@@ -6,5 +6,18 @@
     "replacement": "RESTORATION_REVIEW.md; existing Unrestricted rename retained; Docs/Drive deferred to Phase 2; FaceProfiles enrollment/recognition/deletion remain, not an import/export equivalent.",
     "privacy_impact": "No Google credential/scope changes, no legacy bulk history replay or biometric import/export, no other-user birthday registration. Private legacy RPG dates/progress are not published into guessed guilds.",
     "validation": "Full suites, preservation negative cases, registration/import checks and staging evidence recorded in STAGING_VALIDATION.md."
+  },
+  {
+    "authorization": "User explicitly requested on 2026-10-10 to remove /tarot and /dailycard from both bots and use !tarot and !dailycard for Wanderer, !scaratarot and !scaradailycard for Scaramouche.",
+    "removed_surfaces": [
+      "slash:tarot",
+      "slash:dailycard",
+      "help:/tarot",
+      "help:/dailycard"
+    ],
+    "reason": "Ephemeral slash responses disappear when dismissed; user prefers persistent prefix commands.",
+    "replacement": "Wanderer !tarot and !dailycard; Scaramouche !scaratarot and !scaradailycard, retaining !scaradaily alias. /tarothistory and /tarotsettings are unaffected.",
+    "privacy_impact": "Existing visibility options, tarot data and privacy/DM behavior unchanged.",
+    "validation": "Update registration tests, preservation manifest and CI; require exact-head full suite before merge or deployment."
   }
 ]
