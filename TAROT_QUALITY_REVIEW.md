@@ -21,3 +21,7 @@ Repair:
 - Add focused isolated regression tests.
 
 Validation not yet run in a complete repository environment; no claims of Discord live testing. Review this draft and run full tarot/preservation suites before deployment. Voice and Scaramouche are untouched. No release or main merges.
+
+# Owner-requested tarot entrypoints (2026-10-10)
+
+Remove only /tarot and /dailycard as slash entrypoints. Retain prefix readings and daily cards (!tarot/!dailycard for Wanderer; !scaratarot/!scaradailycard for Scaramouche), including the previous !scaradaily alias. Retain /tarothistory and /tarotsettings. Scaramouche's scoped sync removes only the retired Discord global command IDs, whereas Wanderer's existing full tree sync removes commands no longer registered. No live commands were removed or deployed by this draft edit.
