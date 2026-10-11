@@ -7504,6 +7504,7 @@ async def _do_teachvideo(ctx, attachment, topic, msg_id=None):
 
 # ══════════════════════════════════════════════════════════════════════════════
 # RPG SYSTEM — Post-Apocalyptic Genshin Fatui Harbinger Gauntlet
+from rpg_visuals import illustrated_send
 # ══════════════════════════════════════════════════════════════════════════════
 
 HARBINGERS_HORROR = [
@@ -7649,7 +7650,11 @@ async def _rpg_dice_roll(channel, user_id: int, boss_index: int, boss_points: in
         embed.set_footer(text=f"{char['name']} wishes you luck and heads off on their own journey.")
 
     await mem.save_rpg_state(user_id, boss_points=new_boss_points, total_points=new_total, current_round=11, scenario_data={})
-    await channel.send(embed=embed)
+    await illustrated_send(
+        channel, embed, kind="dice", world=world_type, boss=boss,
+        bot_name="Wanderer", round_num=10, points=new_boss_points,
+        total=new_total, defeated=(state or {}).get("bosses_beaten", ()), roll=roll,
+    )
     await asyncio.sleep(2)
     # Now proceed to boss fight
     await _rpg_boss_fight(channel, user_id, boss_index, new_boss_points, new_total)
@@ -7940,7 +7945,11 @@ async def _rpg_start_game(channel, user_id: int, display_name: str):
 
     await mem.save_rpg_state(user_id, current_boss=0, current_round=0, boss_points=0,
                              total_points=0, bosses_beaten=[], scenario_data={}, active=True)
-    await channel.send(embed=embed)
+    await illustrated_send(
+        channel, embed, kind="world", world=world_type, boss=boss,
+        bot_name="Wanderer", points=0, total=0,
+        origin=char_type, element=element,
+    )
     await asyncio.sleep(2)
     await _rpg_send_scenario(channel, user_id, 0, 1, 0)
 
@@ -8094,7 +8103,13 @@ async def _rpg_send_scenario(channel, user_id: int, boss_index: int, round_num: 
     embed.set_footer(text=f"Choose wisely. {boss['title']} is watching.")
 
     view = RPGChoiceView(user_id, scenario)
-    await channel.send(embed=embed, view=view)
+    await illustrated_send(
+        channel, embed, view=view, kind="encounter", world=world_type, boss=boss,
+        bot_name="Wanderer", round_num=round_num, points=boss_points,
+        total=(state or {}).get("total_points", 0),
+        defeated=(state or {}).get("bosses_beaten", ()),
+        origin=char_type, element=element,
+    )
 
 async def _rpg_boss_fight(channel, user_id: int, boss_index: int, boss_points: int, total_points: int):
     """Resolve boss fight based on accumulated points."""
@@ -8187,7 +8202,12 @@ async def _rpg_boss_fight(channel, user_id: int, boss_index: int, boss_points: i
             await mem.save_rpg_state(user_id, bosses_beaten=beaten, total_points=total_points, active=False, current_boss=next_boss, boss_points=0, current_round=0, scenario_data={})
             await mem.record_game_result(user_id, "rpg", True, total_points)
 
-            await channel.send(embed=embed)
+            await illustrated_send(
+                channel, embed, kind="victory", world=world_type, boss=boss,
+                bot_name="Wanderer", round_num=10, points=boss_points,
+                total=total_points, defeated=beaten,
+                origin=char_type, element=element,
+            )
             await channel.send(f"🏅 {congrats}")
             # Notify for partner bot to see and comment on
             guild = channel.guild if hasattr(channel, "guild") else None
@@ -8199,7 +8219,12 @@ async def _rpg_boss_fight(channel, user_id: int, boss_index: int, boss_points: i
             embed.add_field(name="Next Boss", value=f"Harbinger #{next_h['rank']}: **{next_h['name']}** ({next_h['title']})\nPoints needed: **{next_h['pts']}**/30\nUse `!rpg0` to continue!", inline=False)
             await mem.save_rpg_state(user_id, bosses_beaten=beaten, total_points=total_points, active=True, current_boss=next_boss, boss_points=0, current_round=0, scenario_data={})
 
-        await channel.send(embed=embed)
+        await illustrated_send(
+            channel, embed, kind="victory", world=world_type, boss=boss,
+            bot_name="Wanderer", round_num=10, points=boss_points,
+            total=total_points, defeated=beaten,
+            origin=char_type, element=element,
+        )
         await mem.record_game_result(user_id, "rpg", True, boss_points)
     else:
         # FAILED
@@ -8229,7 +8254,12 @@ async def _rpg_boss_fight(channel, user_id: int, boss_index: int, boss_points: i
                 break
         # Full reset on defeat — wipe everything so they start fresh
         await mem.reset_rpg(user_id)
-        await channel.send(embed=embed)
+        await illustrated_send(
+            channel, embed, kind="defeat", world=world_type, boss=boss,
+            bot_name="Wanderer", round_num=10, points=boss_points,
+            total=total_points, defeated=beaten,
+            origin=char_type, element=element,
+        )
         await mem.record_game_result(user_id, "rpg", False, boss_points)
         # Taunt the loser — escalate mockery based on consecutive losses
         guild = channel.guild if hasattr(channel, "guild") else None
@@ -8271,7 +8301,10 @@ async def rpg_cmd(ctx):
             )
             embed.add_field(name="🩸 Corrupted Horror World", value="Teyvat is dead. The Harbingers are twisted body-horror abominations fused with their Delusions. Nightmares made flesh.", inline=False)
             embed.add_field(name="⚔️ Harbinger Takeover World", value="The Harbingers conquered every nation. Military occupation, oppression, and iron-fisted rule. A world under tyrants.", inline=False)
-            await ctx.send(embed=embed, view=RPGWorldView(ctx.author.id))
+            await illustrated_send(
+                ctx, embed, view=RPGWorldView(ctx.author.id), kind="world",
+                world="horror", bot_name="Wanderer",
+            )
             return
 
         if not state["active"]:
@@ -8309,7 +8342,13 @@ async def rpg_cmd(ctx):
         )
         embed.add_field(name="Bosses Beaten", value=f"**{len(state['bosses_beaten'])}** / 11", inline=True)
         embed.add_field(name="Total Points", value=f"**{state['total_points']}**", inline=True)
-        await ctx.send(embed=embed)
+        await illustrated_send(
+            ctx, embed, kind="encounter", world=world_type, boss=boss,
+            bot_name="Wanderer", round_num=round_num,
+            points=boss_points, total=state.get("total_points", 0),
+            defeated=state.get("bosses_beaten", ()),
+            origin=state.get("char_type", ""), element=state.get("element", ""),
+        )
         await asyncio.sleep(1)
         await _rpg_send_scenario(ctx.channel, ctx.author.id, boss_index, round_num, boss_points)
 
@@ -8343,7 +8382,13 @@ async def rpgstats_cmd(ctx, member: discord.Member = None):
 
         if state["current_boss"] >= len(HARBINGERS_HORROR):
             embed.set_footer(text="🏆 ALL HARBINGERS DEFEATED — You are the #1 Harbinger!")
-        await ctx.send(embed=embed)
+        await illustrated_send(
+            ctx, embed, kind="encounter", world=wt, boss=current,
+            bot_name="Wanderer", round_num=state.get("current_round", 0),
+            points=state.get("boss_points", 0), total=state.get("total_points", 0),
+            defeated=beaten, origin=state.get("char_type", ""),
+            element=state.get("element", ""),
+        )
     except Exception as e: log_error("rpgstats_cmd", e)
 
 @bot.command(name="rpg0reset", aliases=["rpgreset0", "rpgreset"])
