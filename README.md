@@ -33,4 +33,6 @@ Find me on Discord for conversation, a little verbal sparring, or a quieter mome
 
 <sub>Fan-made Genshin Impact character bot for Discord. Not affiliated with HoYoverse.</sub>
 
+[Privacy policy](PRIVACY.md)
+
 </div>
