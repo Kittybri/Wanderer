@@ -18,6 +18,16 @@ from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 from memory import Memory
 from voice_handler import get_audio, get_audio_mooded
+from awareness_features import (
+    activity_snapshot, choose_duo_advice_mode, classify_safety,
+    parse_id_set, playful_negative_target, protective_prompt,
+    resolve_voice_state, select_relevant_recall, style_voice_text,
+)
+from integrations import (
+    GitHubIssueService, GoogleCalendarService, GoogleSheetsService,
+    GoogleTasksService, LetterboxdService, MyAnimeListService,
+    SpotifyService, SteamService, load_integration_config,
+)
 from character_vision import ask_character_bot, vision_exhausted_remaining, vision_is_exhausted
 from face_memory import (
     enroll_face_profile,
@@ -114,6 +124,8 @@ from relationship_engine import (
 )
 
 load_dotenv()
+INTEGRATION_CONFIG = load_integration_config()
+GITHUB_ISSUES = GitHubIssueService(INTEGRATION_CONFIG.section("github"))
 
 DISCORD_TOKEN      = os.getenv("DISCORD_TOKEN", "")
 GROQ_API_KEY       = os.getenv("GROQ_API_KEY", "")
@@ -1231,6 +1243,7 @@ def trust_tier(t):
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
+intents.presences = True
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 mem = Memory("wanderer")
 BOT_NAME = "wanderer"
@@ -1247,6 +1260,11 @@ _teachvideo_active: set[int]     = set()
 _weathervideo_active: set[int]   = set()
 _tedtalk_cache:  dict[int, dict] = {}
 _processed_msgs: set[int]        = set()  # dedup: prevent double-processing
+_presence_activity: dict[tuple[int, int], dict] = {}
+_voice_state_cache: dict[int, object] = {}
+
+SOUNDBOARD_GUILD_IDS = parse_id_set(os.getenv("SOUNDBOARD_GUILD_IDS", ""))
+TATTLETALE_COOLDOWN_SECONDS = max(3600, min(30 * 86400, int(os.getenv("TATTLETALE_COOLDOWN_SECONDS", "604800") or "604800")))
 
 
 def log_error(location: str, e: Exception):
@@ -1690,6 +1708,16 @@ async def _duo_prompt_context(channel_id: int, user_message: str = "") -> str:
         prompt.append("DUO_BEHAVIOR: contribute one tactical role, warning, or leverage point")
     elif mode == "truthdare":
         prompt.append("DUO_BEHAVIOR: escalate the game with one pointed truth or dare prompt")
+    elif mode == "goodcop":
+        prompt.append("DUO_BEHAVIOR: be the constructive good cop; give calm actionable advice without becoming generically sweet")
+    elif mode == "contradict":
+        prompt.append("DUO_BEHAVIOR: disagree from values or strategy, never by inventing facts or unsafe advice")
+    elif mode == "protective":
+        prompt.append("DUO_BEHAVIOR: intervene with restrained concern; no mockery, diagnosis, or contradictory advice")
+    elif mode in {"interview", "welcome_interview"}:
+        prompt.append("DUO_BEHAVIOR: ask at most one playful, non-sensitive question and respect a request to stop")
+    elif mode == "trade":
+        prompt.append("DUO_BEHAVIOR: treat the trade as an obvious joke; users are not property and no permissions change")
     else:
         prompt.append("DUO_BEHAVIOR: give one compact turn that pairs well with a second bot response")
     return "\n".join(prompt)
@@ -2518,6 +2546,20 @@ def _duo_autoplay_prompt(session: dict) -> str:
         return f"The two-bot mission planning scene is active. Add your own role or warning about: {topic}. {stage_note} One or two sentences.{silent_note} {outro}"
     if mode == "truthdare":
         return f"The two-bot truth-or-dare game is active. Continue it with one pointed challenge about: {topic}. {stage_note} One or two sentences.{silent_note} {outro}"
+    if mode == "intervention":
+        return f"You already intervened while Scaramouche was needlessly argumentative about: {topic}. Give one brief closing line only if needed, then stop. {outro}"
+    if mode == "finish":
+        return f"Scaramouche completed the SAME thought you deliberately left unfinished about: {topic}. Give one brief final reaction, then stop. {outro}"
+    if mode == "goodcop":
+        return f"Scaramouche gave blunt advice about: {topic}. Give one calmer, constructive follow-up without merely repeating him. {outro}"
+    if mode == "contradict":
+        return f"Scaramouche gave advice about: {topic}. Offer one plausible values-based disagreement, not a factual or dangerous contradiction. {outro}"
+    if mode == "protective":
+        return f"The user is genuinely distressed about: {topic}. Intervene with calm, restrained concern. No diagnosis, sarcasm, or hostility. {outro}"
+    if mode in {"interview", "welcome_interview"}:
+        return f"A bounded joint interview is active about: {topic}. Ask one calm, non-sensitive question. Never request secrets, medical details, money, passwords, or addresses. {outro}"
+    if mode == "trade":
+        return f"Scaramouche proposed a joking user trade about: {topic}. Accept or reject it as obvious banter; imply no real ownership. {outro}"
     return f"The shared duo mode is active. Follow up after the other bot about: {topic}. One or two sentences.{silent_note} {outro}"
 
 
@@ -2530,6 +2572,12 @@ DUO_CHAIN_TURNS = {
     "trial": 5,
     "mission": 5,
     "truthdare": 3,
+    "goodcop": 1,
+    "contradict": 1,
+    "protective": 1,
+    "interview": 2,
+    "welcome_interview": 1,
+    "trade": 1,
 }
 
 
@@ -2629,6 +2677,59 @@ async def _start_duo_mode(ctx, user: dict | None, mode: str, topic: str, *, stor
     if story:
         await mem.start_duo_story(ctx.channel.id, mode, topic, enemy=enemy)
     await _maybe_seed_silent_presence(ctx.channel.id, mode)
+
+
+def _soundboard_assets() -> dict[str, str]:
+    try:
+        payload = json.loads(os.getenv("SOUNDBOARD_ASSETS_JSON", "{}") or "{}")
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    allowed = {"sigh", "scoff", "slow_clap", "buzzer", "exhale", "chuckle"}
+    return {str(name): os.path.abspath(os.path.expanduser(str(path))) for name, path in payload.items()
+            if name in allowed and isinstance(path, str) and os.path.isfile(os.path.expanduser(path))}
+
+
+async def _play_soundboard(ctx, sound_name: str) -> tuple[bool, str]:
+    if not ctx.guild or ctx.guild.id not in SOUNDBOARD_GUILD_IDS:
+        return False, "The sound board is not enabled for this server."
+    path = _soundboard_assets().get((sound_name or "").lower())
+    if not path:
+        return False, "That reaction is not configured."
+    voice_channel = getattr(getattr(ctx.author, "voice", None), "channel", None)
+    if not voice_channel:
+        return False, "Join a voice channel first."
+    me = ctx.guild.me
+    permissions = voice_channel.permissions_for(me) if me else None
+    if not permissions or not permissions.connect or not permissions.speak:
+        return False, "I cannot connect and speak in that voice channel."
+    voice = ctx.guild.voice_client
+    joined_here = False
+    try:
+        if voice and voice.is_playing():
+            return False, "I am not interrupting audio already in progress."
+        if voice and getattr(voice, "channel", None) != voice_channel:
+            return False, "I am already occupied in another voice channel."
+        allowed, remaining = await mem.consume_phrase_with_status(f"guild:{ctx.guild.id}", "soundboard", 600)
+        if not allowed:
+            return False, f"The sound board needs another {max(1, remaining // 60)} minute(s)."
+        if not voice:
+            voice = await voice_channel.connect(timeout=10, reconnect=False)
+            joined_here = True
+        voice.play(discord.FFmpegPCMAudio(path))
+        deadline = time.monotonic() + 3.0
+        while voice.is_playing() and time.monotonic() < deadline:
+            await asyncio.sleep(0.1)
+        if voice.is_playing():
+            voice.stop()
+        return True, ""
+    except (discord.ClientException, discord.OpusNotLoaded, asyncio.TimeoutError, OSError) as exc:
+        log_error("soundboard", exc)
+        return False, "The audio reaction is unavailable right now."
+    finally:
+        if joined_here and voice and voice.is_connected():
+            await voice.disconnect(force=False)
 
 
 async def _pin_memory(ctx, kind: str, text: str | None, weight: int, *, shared_joke: bool = False):
@@ -3078,6 +3179,10 @@ async def _handle_partner_message(message, target_info: dict | None = None) -> b
             return True
 
         duo = await mem.get_duo_session(message.channel.id)
+        if duo and duo.get("mode") in {"intervention", "finish", "goodcop", "contradict", "protective", "interview", "welcome_interview", "trade"}:
+            # The bounded autoplay worker owns this handoff; do not also reply
+            # immediately and accidentally double the coordinated turn.
+            return True
         silent_active = bool(
             duo
             and (duo.get("silent_bot", "") or "").strip().lower() == BOT_NAME
@@ -3097,7 +3202,10 @@ async def _handle_partner_message(message, target_info: dict | None = None) -> b
 
         if intervention_reason:
             cooldown_open = float((duo or {}).get("intervention_cooldown", 0) or 0)
+            shared_allowed = False
             if cooldown_open <= time.time() and random.random() < 0.62:
+                shared_allowed, _ = await mem.consume_shared_cooldown(f"wanderer_intervention:{message.channel.id}", 21600)
+            if shared_allowed:
                 partner_context = describe_bot_relationship(BOT_NAME, relation, recent_banter)
                 contradiction = await _contradictory_memory_context(
                     message.channel.id,
@@ -3123,6 +3231,13 @@ async def _handle_partner_message(message, target_info: dict | None = None) -> b
                     partner_name=getattr(message.author, "display_name", PARTNER_NAME.title()),
                 )
                 if reply:
+                    if not duo:
+                        await mem.set_duo_session(
+                            message.channel.id, "intervention",
+                            _event_topic_from_text(message.content, fallback="an unnecessary argument"),
+                            BOT_NAME, awaiting_bot=PARTNER_NAME, autoplay_turns=1,
+                            autoplay_delay=4, ttl_seconds=120,
+                        )
                     await _guarded_message_reply(
                         message,
                         reply,
@@ -3143,6 +3258,8 @@ async def _handle_partner_message(message, target_info: dict | None = None) -> b
                         silent_until=float((duo or {}).get("silent_until", 0) or 0),
                         intervention_cooldown=time.time() + 240,
                     )
+                    if not duo:
+                        await mem.bump_duo_session(message.channel.id, BOT_NAME, partner_bot=PARTNER_NAME, ttl_seconds=120, autoplay_delay=4)
                     return True
 
         if random.random() >= chance:
@@ -4116,21 +4233,19 @@ async def get_audio_with_mood(
     is_dm: bool = False,
     duo_mode: str = "",
     jealousy_level: int = 0,
+    delivery_intent: str = "",
+    voice_key: int = 0,
 ) -> bytes | None:
     try:
-        style = _voice_style_for(
-            user,
-            mood,
-            scene_tag,
-            is_dm=is_dm,
-            duo_mode=duo_mode,
-            jealousy_level=jealousy_level,
-        )
+        intent = delivery_intent or ("mocking" if duo_mode in {"argue", "compare", "truthdare"} else scene_tag)
+        previous = _voice_state_cache.get(int(voice_key or 0))
+        state = resolve_voice_state(user, mood, delivery_intent=intent, previous=previous)
+        _voice_state_cache[int(voice_key or 0)] = state
         return await get_audio_mooded(
-            strip_narration(text),
+            style_voice_text(strip_narration(text), state),
             FISH_AUDIO_API_KEY,
             mood,
-            style,
+            state.category,
             bot_name="wanderer",
         )
     except Exception as e:
@@ -4150,6 +4265,7 @@ async def send_voice(
     is_dm: bool = False,
     duo_mode: str = "",
     jealousy_level: int = 0,
+    delivery_intent: str = "",
 ):
     try:
         if _is_banned_channel_target(channel):
@@ -4179,6 +4295,8 @@ async def send_voice(
             is_dm=is_dm,
             duo_mode=duo_mode,
             jealousy_level=jealousy_level,
+            delivery_intent=delivery_intent,
+            voice_key=int(user_id or getattr(channel, "id", 0) or 0),
         )
         if not audio: return False
         f = discord.File(io.BytesIO(audio), filename="wanderer.mp3")
@@ -4471,6 +4589,21 @@ async def _run_docfix_request(ctx, doc_and_instructions: str = ""):
 
 def _weathervideo_time_hint(use_duo: bool) -> str:
     return "Give us about 3-6 minutes." if use_duo else "Give me about 2-4 minutes."
+
+
+async def _send_render_queue_notice(ctx, payload: dict) -> None:
+    position = payload.get("queue_position")
+    if position is None:
+        return
+    if position == 0:
+        await ctx.send("Your render has started.")
+        return
+    text = f"Your render is **#{position}** in the queue."
+    estimate = payload.get("estimated_wait") or {}
+    low, high = estimate.get("low_seconds"), estimate.get("high_seconds")
+    if isinstance(low, (int, float)) and isinstance(high, (int, float)):
+        text += f" Based on recent jobs, roughly {max(0, round(low / 60))}–{max(1, round(high / 60))} minutes before it starts."
+    await ctx.send(text)
 
 
 def _silence_reply_pool(user: dict | None) -> list[str]:
@@ -4992,6 +5125,44 @@ async def memory_backup_loop():
         log_error("memory_backup_loop", e)
 
 @bot.event
+async def on_presence_update(before, after):
+    """Occasional commentary based only on Discord's current presence payload."""
+    try:
+        if after.bot:
+            return
+        current = activity_snapshot(after)
+        key = (after.guild.id, after.id)
+        previous = _presence_activity.get(key)
+        if current:
+            _presence_activity[key] = current
+        else:
+            _presence_activity.pop(key, None)
+            return
+        if current.get("kind") not in {"spotify", "game"} or current == previous or random.random() >= 0.08:
+            return
+        user = await mem.get_user(after.id)
+        if not user or not user.get("proactive", True) or _is_in_quiet_hours(user):
+            return
+        if not await mem.consume_phrase(f"user:{after.id}", f"presence_{current['kind']}", 8 * 3600):
+            return
+        channel_id = await mem.get_user_last_channel(after.id)
+        channel = bot.get_channel(channel_id) if channel_id else None
+        if not channel or not getattr(channel, "guild", None) or channel.guild.id != after.guild.id:
+            return
+        if current["kind"] == "spotify":
+            artist = f" by {current['state']}" if current.get("state") else ""
+            line = f"{after.mention} Discord says you're listening to **{current['name']}**{artist}. Noted. That is current presence, not your listening history."
+        else:
+            detail = f" — {current['details']}" if current.get("details") else ""
+            line = f"{after.mention} Still playing **{current['name']}**{detail}. Discord showed me that much; I cannot see your score, map, or deaths."
+        await _guarded_channel_send(
+            channel, line,
+            allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+        )
+    except (discord.Forbidden, discord.HTTPException) as exc:
+        log_error("presence_commentary", exc)
+
+@bot.event
 async def on_member_join(member):
     try:
         if random.random() > .6: return
@@ -5298,6 +5469,78 @@ def _system_under_pressure() -> bool:
         return False
 
 
+async def _record_tattletale_if_eligible(message, content: str) -> None:
+    if not message.guild or getattr(message.author, "bot", False):
+        return
+    target = playful_negative_target(content, {
+        "scaramouche": ("scaramouche", "scara", "balladeer"),
+        "wanderer": ("wanderer",),
+    })
+    if target != PARTNER_NAME:
+        return
+    await mem.record_tattletale_event(
+        message.author.id, target, BOT_NAME, message.channel.id, message.id, content,
+    )
+
+
+async def _verified_tattletale_line(message) -> str:
+    if not message.guild or random.random() >= 0.08:
+        return ""
+    event = await mem.get_tattletale_event(message.author.id, BOT_NAME, message.channel.id)
+    if not event:
+        return ""
+    try:
+        source = await message.channel.fetch_message(event["message_id"])
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+        return ""
+    exact = (source.content or "").strip()
+    if source.author.id != message.author.id or not exact or not exact.startswith(event["content"]):
+        return ""
+    allowed, _ = await mem.consume_shared_cooldown(
+        f"tattletale_reveal:{BOT_NAME}:{message.author.id}:{message.channel.id}", TATTLETALE_COOLDOWN_SECONDS,
+    )
+    if not allowed:
+        return ""
+    return f'Scaramouche denies telling me anything. Unfortunately for you, your exact words were: “{exact[:180]}”'
+
+
+async def _medium_awareness_context(message, user: dict | None, content: str, *, is_dm: bool) -> list[str]:
+    context: list[str] = []
+    safety = classify_safety(content)
+    protective = protective_prompt(BOT_NAME, safety)
+    if protective:
+        context.append(protective)
+    if random.random() < 0.03:
+        candidates = await mem.get_user_message_candidates(message.author.id, message.author.id if is_dm else message.channel.id, 100)
+        match = select_relevant_recall(content, candidates)
+        if match and await mem.consume_phrase(f"user:{message.author.id}", "this_you", 5 * 86400):
+            stamp = datetime.fromtimestamp(match.timestamp, ZoneInfo("UTC")).isoformat() if match.timestamp else "unknown"
+            context.append(
+                f'THIS_YOU_EXACT_SOURCE: message_id={match.message_id}; timestamp={stamp}; exact_quote="{match.content}". '
+                "You may cite that exact quote or clearly label a paraphrase. Never invent wording or a timestamp."
+            )
+    if is_dm or not PARTNER_BOT_ID or not message.guild.get_member(PARTNER_BOT_ID):
+        return context
+    if await mem.get_duo_session(message.channel.id):
+        return context
+    mode = choose_duo_advice_mode(content, random.random())
+    if mode not in {"goodcop", "contradict"}:
+        return context
+    allowed, _ = await mem.consume_shared_cooldown(f"medium_duo:{mode}:{message.channel.id}", 6 * 3600)
+    if not allowed:
+        return context
+    await mem.set_duo_session(
+        message.channel.id, mode, content[:260], BOT_NAME,
+        initiator_user_id=message.author.id, awaiting_bot=PARTNER_NAME,
+        autoplay_turns=1, autoplay_delay=5, ttl_seconds=180,
+    )
+    if mode == "goodcop":
+        context.append("GOOD_COP_BAD_COP: be the calmer constructive voice, but remain recognizably Wanderer and leave room for Scaramouche's blunt follow-up")
+    else:
+        context.append("VALUES_DISAGREEMENT: take a distinct, defensible strategy; do not invent facts or unsafe advice")
+    return context
+
+
 @bot.event
 async def on_message(message):
     global _message_pipeline_dropped
@@ -5436,6 +5679,15 @@ async def _handle_message_pipeline(message):
         await bot.process_commands(message)
         if re.match(r'^![a-zA-Z]', message.content.strip()): return
 
+        # The bounded duo worker owns interview replies. Keeping the ordinary
+        # chat path silent here prevents duplicate questions from both bots.
+        try:
+            interview = await mem.get_duo_session(message.channel.id)
+            if interview and interview.get("mode") in {"interview", "welcome_interview"}:
+                return
+        except Exception as e:
+            log_error("interview_route", e)
+
         # If message @mentions the partner bot but NOT us, stay quiet — it's not for us
         # Also if message is a REPLY to the partner bot but NOT mentioning us, stay quiet
         if PARTNER_BOT_ID and message.guild:
@@ -5491,6 +5743,7 @@ async def _handle_message_pipeline(message):
                     pass
             if about_partner and not we_mentioned and not replying_to_us:
                 try:
+                    await _record_tattletale_if_eligible(message, message.content or "")
                     await mem.record_bot_attention(
                         message.author.id,
                         PARTNER_NAME,
@@ -5536,6 +5789,10 @@ async def _handle_message_pipeline(message):
         content = message.content.strip()
         if not content and not message.attachments:
             return
+        try:
+            await _record_tattletale_if_eligible(message, content)
+        except Exception as e:
+            log_error("tattletale_record", e)
         mentioned_early = bot.user in message.mentions
         is_reply_early = (
             message.reference and message.reference.resolved and
@@ -5865,6 +6122,13 @@ async def _handle_message_pipeline(message):
 
         if random.random() > resp_prob(content, mentioned, is_reply, romance, is_dm):
             await maybe_react(message, romance); return
+        try:
+            tattletale_line = await _verified_tattletale_line(message)
+            if tattletale_line:
+                await _guarded_message_reply(message, tattletale_line, mention_author=False)
+                return
+        except Exception as e:
+            log_error("tattletale_reveal", e)
         if await _maybe_handle_silence_behavior(message, user, content, is_dm=is_dm, direct_to_me=direct_to_me):
             return
 
@@ -5872,6 +6136,7 @@ async def _handle_message_pipeline(message):
         duo_session = None
         current_input_focus = bool(message.attachments or extract_urls(content, max_urls=1))
         try:
+            parts.extend(await _medium_awareness_context(message, user, content, is_dm=is_dm))
             duo_session = await mem.get_duo_session(message.channel.id) if not is_dm else None
             if not current_input_focus and random.random() < .12:
                 old = await mem.get_random_old_message(message.author.id)
@@ -6016,6 +6281,7 @@ async def _handle_message_pipeline(message):
                         is_dm=is_dm,
                         duo_mode=duo_mode,
                         jealousy_level=jealousy_level,
+                        delivery_intent="protective concern" if classify_safety(content).protective else "",
                     )
                     if sent:
                         await mem.add_message(message.author.id, dm_channel_id, "assistant", f"[voice message] {reply}")
@@ -6204,18 +6470,26 @@ async def _duo_autoplay_loop():
                     if not channel:
                         continue
                     target_message = None
+                    interview_mode = session.get("mode") in {"interview", "welcome_interview"}
+                    participant_id = int(session.get("initiator_user_id") or 0)
                     async for candidate in channel.history(limit=8):
-                        if not candidate.author.bot:
-                            target_message = candidate
-                            break
+                        if candidate.author.bot:
+                            continue
+                        if interview_mode and candidate.author.id != participant_id:
+                            continue
+                        target_message = candidate
+                        break
                     if not target_message:
                         continue
                     await mem.upsert_user(target_message.author.id, target_message.author.name, target_message.author.display_name)
                     user = await mem.get_user(target_message.author.id)
+                    autoplay_prompt = _duo_autoplay_prompt(session)
+                    if interview_mode:
+                        autoplay_prompt += f"\nPARTICIPANT_LATEST_ANSWER: {target_message.content[:500]}"
                     reply = await get_response(
                         target_message.author.id,
                         channel.id,
-                        _duo_autoplay_prompt(session),
+                        autoplay_prompt,
                         user,
                         target_message.author.display_name,
                         target_message.author.mention,
@@ -6277,6 +6551,26 @@ async def _rival_event_loop():
                     if not allowed:
                         debug_event("relationship", f"{BOT_NAME} rival_event_cooldown channel={channel_id} remaining={remaining}s")
                         continue
+                    if random.random() < 0.22:
+                        finish_allowed, _ = await mem.consume_shared_cooldown(f"finish_sentence:{channel_id}", 3 * 86400)
+                        if finish_allowed:
+                            opener = random.choice([
+                                "The thing about your argument is—",
+                                "What you never understand about this is—",
+                                "The reason everyone stops listening is—",
+                            ])
+                            await mem.set_duo_session(
+                                channel_id, "finish", topic, BOT_NAME,
+                                awaiting_bot=PARTNER_NAME, autoplay_turns=2,
+                                autoplay_delay=random.randint(3, 6), ttl_seconds=180,
+                            )
+                            if not await _guarded_channel_send(channel, opener):
+                                await mem.clear_duo_session(channel_id)
+                                continue
+                            await mem.record_bot_banter(PARTNER_PAIR_KEY, BOT_NAME, opener, "finish")
+                            await mem.bump_duo_session(channel_id, BOT_NAME, partner_bot=PARTNER_NAME, ttl_seconds=180, autoplay_delay=4)
+                            debug_event("relationship", f"{BOT_NAME} finish_sentence channel={channel_id}")
+                            break
                     opener = await qai(
                         f"Users were discussing: '{topic}'. Start a spontaneous disagreement with {PARTNER_NAME}. "
                         "One or two sentences. Sound dry, thoughtful, and mildly irritated that they are oversimplifying it.",
@@ -6712,7 +7006,10 @@ async def _do_teachvideo(ctx, attachment, topic, msg_id=None):
         material_content = await extract_teaching_material(attachment, topic=topic or "", bot_name=BOT_NAME)
         if not material_content.strip():
             await ctx.send("There was nothing usable in that material."); return
-        summary = await render_teaching_video(BOT_NAME, material_content, title=_teaching_video_title(topic, attachment))
+        summary = await render_teaching_video(
+            BOT_NAME, material_content, title=_teaching_video_title(topic, attachment),
+            progress_callback=lambda payload: _send_render_queue_notice(ctx, payload),
+        )
         await _send_video_summary(
             ctx,
             summary,
@@ -8069,7 +8366,11 @@ async def _do_weathervideo(ctx, location: str, use_duo: bool, msg_id=None):
         news_results = await search_web(f"{data['place']} weather news", max_results=3)
         notes = build_weather_video_notes(data["place"], data, news_results, duo=use_duo)
         title = f"{data['place']} Weather Report"
-        summary = await (render_duo_debate_video(notes, title=title) if use_duo else render_teaching_video(BOT_NAME, notes, title=title))
+        summary = await (
+            render_duo_debate_video(notes, title=title, progress_callback=lambda payload: _send_render_queue_notice(ctx, payload))
+            if use_duo else
+            render_teaching_video(BOT_NAME, notes, title=title, progress_callback=lambda payload: _send_render_queue_notice(ctx, payload))
+        )
         sources = "Weather source: api.weather.gov"
         search_sources = format_search_sources(news_results, max_results=3)
         if search_sources:
@@ -8591,6 +8892,136 @@ async def truthdare_cmd(ctx, *, prompt: str = None):
         await _reply_and_store(ctx, reply)
     except Exception as e: log_error("truthdare_cmd", e)
 
+@bot.command(name="report")
+async def report_cmd(ctx, member: discord.Member = None, *, reason: str = "being suspicious"):
+    if not ctx.guild or not member:
+        await safe_reply(ctx, "Use `!report @user [playful reason]`. This is a game, not a moderation report.")
+        return
+    if member.bot or member.id == ctx.author.id:
+        await safe_reply(ctx, "Pick another human. Imaginary charges still need a valid target.")
+        return
+    allowed, remaining = await mem.consume_phrase_with_status(f"user:{ctx.author.id}", "play_report", 600)
+    if not allowed:
+        await safe_reply(ctx, f"The imaginary court is closed for {max(1, remaining // 60)} more minute(s).")
+        return
+    clean_reason = reason.strip()[:160] or "being suspicious"
+    await mem.add_milestone(f"{BOT_NAME}:user:{member.id}", f"play_report:{ctx.message.id}", f"Play-report from {ctx.author.display_name}: {clean_reason}")
+    await safe_reply(ctx, f"{member.mention} was playfully reported for **{clean_reason}**. No moderators were contacted and no punishment exists. Try to survive the paperwork.")
+
+@bot.command(name="trade")
+async def trade_cmd(ctx, member: discord.Member = None, other: discord.Member = None):
+    if not ctx.guild or not member or member.bot:
+        await safe_reply(ctx, "Use `!trade @user [@other]`. Humans only; ownership remains imaginary.")
+        return
+    allowed, remaining = await mem.consume_shared_cooldown(f"user_trade:{ctx.guild.id}:{ctx.author.id}", 6 * 3600)
+    if not allowed:
+        await safe_reply(ctx, f"Trade negotiations resume in about {max(1, remaining // 3600)} hour(s).")
+        return
+    topic = f"a joking trade involving {member.display_name}" + (f" and {other.display_name}" if other and not other.bot else "")
+    user = await _setup(ctx)
+    await _start_duo_mode(ctx, user, "trade", topic)
+    await safe_reply(ctx, f"I might accept {member.mention}" + (f" in exchange for {other.mention}" if other and not other.bot else "") + ". Obviously, nobody owns anyone and no Discord access changes.")
+
+@bot.command(name="jointinterview", aliases=["jointinterrogate"])
+async def jointinterview_cmd(ctx, member: discord.Member = None):
+    if not ctx.guild or not member or member.bot:
+        await safe_reply(ctx, "Use `!jointinterview @user`. Participation is voluntary.")
+        return
+    me = ctx.guild.me
+    perms = ctx.channel.permissions_for(me) if me else None
+    if not perms or not getattr(perms, "create_public_threads", False):
+        await safe_reply(ctx, "I cannot create a public thread here.")
+        return
+    allowed, remaining = await mem.consume_shared_cooldown(f"jointinterview:{ctx.guild.id}:{member.id}", 86400)
+    if not allowed:
+        await safe_reply(ctx, f"That interview is on cooldown for about {max(1, remaining // 3600)} hour(s).")
+        return
+    try:
+        thread = await ctx.message.create_thread(name=f"interview-{member.display_name}"[:90], auto_archive_duration=60)
+        await mem.set_duo_session(thread.id, "interview", f"a voluntary interview with {member.display_name}", BOT_NAME,
+                                   initiator_user_id=member.id, awaiting_bot=PARTNER_NAME,
+                                   autoplay_turns=2, autoplay_delay=5, ttl_seconds=600)
+        await thread.send(
+            f"{member.mention} Voluntary interview. Up to three harmless questions; use `!stopinterview` or leave whenever you want. "
+            "First question: what sort of place do you want this server to be?",
+            allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False),
+        )
+    except discord.HTTPException as exc:
+        log_error("jointinterview", exc)
+        await safe_reply(ctx, "The interview thread could not be created.")
+
+@bot.command(name="stopinterview")
+async def stopinterview_cmd(ctx):
+    session = await mem.get_duo_session(ctx.channel.id)
+    if not session or session.get("mode") not in {"interview", "welcome_interview"}:
+        await safe_reply(ctx, "There is no active interview here.")
+        return
+    is_admin = bool(getattr(getattr(ctx.author, "guild_permissions", None), "administrator", False))
+    if ctx.author.id not in {int(session.get("initiator_user_id") or 0), OWNER_ID} and not is_admin:
+        await safe_reply(ctx, "Only the participant or a server administrator can stop this interview.")
+        return
+    await mem.clear_duo_session(ctx.channel.id)
+    await safe_reply(ctx, "Interview over. Nobody was detained.")
+    if isinstance(ctx.channel, discord.Thread):
+        try:
+            await ctx.channel.edit(archived=True, reason="Voluntary bot interview ended")
+        except discord.HTTPException:
+            pass
+
+@bot.command(name="sound", aliases=["soundboard"])
+async def sound_cmd(ctx, sound_name: str = None):
+    if not sound_name:
+        await safe_reply(ctx, "Configured reactions: sigh, scoff, slow_clap, buzzer, exhale, chuckle.")
+        return
+    played, error = await _play_soundboard(ctx, sound_name)
+    if not played:
+        await safe_reply(ctx, error)
+
+@bot.command(name="integrations")
+async def integrations_cmd(ctx):
+    if not (OWNER_ID and ctx.author.id == OWNER_ID):
+        await safe_reply(ctx, "That configuration is owner-only.")
+        return
+    spotify = SpotifyService(INTEGRATION_CONFIG.section("spotify"))
+    steam = SteamService(INTEGRATION_CONFIG.section("steam"))
+    mal = MyAnimeListService(INTEGRATION_CONFIG.section("myanimelist"))
+    google_accounts = INTEGRATION_CONFIG.section("google").get("accounts", {})
+    await safe_reply(ctx, "\n".join([
+        f"GitHub Issues: {'ready' if GITHUB_ISSUES.ready else 'disabled'} (dry-run={GITHUB_ISSUES.dry_run})",
+        f"Spotify account: {'ready' if spotify.ready else 'disabled'}",
+        f"Google accounts: {len(google_accounts) if isinstance(google_accounts, dict) else 0} configured",
+        f"Steam: {'ready' if steam.ready else 'disabled'}",
+        f"MyAnimeList: {'ready' if mal.ready else 'disabled'}",
+        f"Letterboxd: disabled — {LetterboxdService.limitation}",
+        "Priority Speaker: manual Discord role only; discord.py cannot toggle it during playback.",
+    ]))
+
+@bot.command(name="githubissue")
+async def githubissue_cmd(ctx, *, request: str = None):
+    if not (OWNER_ID and ctx.author.id == OWNER_ID):
+        await safe_reply(ctx, "Issue creation is owner-only.")
+        return
+    if not request or request.count("|") < 2:
+        await safe_reply(ctx, "Use `!githubissue owner/repo | title | body [| confirm]`. Without `confirm`, this is a dry run.")
+        return
+    parts = [part.strip() for part in request.split("|")]
+    repository, title, body = parts[:3]
+    confirmed = len(parts) > 3 and parts[3].lower() == "confirm"
+    live_request = confirmed and not GITHUB_ISSUES.dry_run
+    if live_request:
+        allowed, remaining = await mem.consume_phrase_with_status("owner", "github_issue", 3600)
+        if not allowed:
+            await safe_reply(ctx, f"Issue creation is rate-limited for {max(1, remaining // 60)} more minute(s).")
+            return
+    try:
+        result = await GITHUB_ISSUES.create_issue(repository, title, body, confirmed=confirmed)
+        if result.get("dry_run"):
+            await safe_reply(ctx, f"Dry run only: would open **{result['title']}** in `{result['repository']}`. Add `| confirm` and disable configured dry-run to create it.")
+        else:
+            await safe_reply(ctx, f"Created issue #{result['number']}: {result['url']}")
+    except (PermissionError, ValueError, RuntimeError) as exc:
+        await safe_reply(ctx, f"Issue request refused: {str(exc)[:180]}")
+
 @bot.command(name="scene")
 async def scene_cmd(ctx):
     try:
@@ -9005,7 +9436,7 @@ async def help_cmd(ctx):
             ("!relationship / !arc", "See arc, progression, and conflict aftermath"),
             ("!duostate / !speaker", "Inspect duo mode or set the active speaker for this channel"),
             ("!pinpromise / !pinwound / !pincomfort / !pinjoke", "Pin more precise memories"),
-            ("!utility / !duoauto / !rpdepth", "Tune utility output, duo chaining, and RP depth"),
+            ("!utility / !duoauto / !rpdepth", "Tune output; games: `!report`, `!trade`, `!jointinterview`, `!stopinterview`, `!sound`; owner: `!integrations`, `!githubissue`"),
         ]: e3.add_field(name=n, value=v, inline=False)
         e3.add_field(name="💡 Hidden Systems",
             value=("• Be kind 7 days → something rare happens once\n"
