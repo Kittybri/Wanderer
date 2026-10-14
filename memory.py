@@ -2721,6 +2721,15 @@ class Memory:
             await db.execute("DELETE FROM hidden_achievements WHERE scope LIKE ?", (f"%user:{user_id}",))
             await db.execute("DELETE FROM relationship_milestones WHERE scope LIKE ?", (f"%user:{user_id}",))
             await db.commit()
+        # Clear transient conversations and approvals only after persistent reset.
+        try:
+            from conversation_references import forget_user
+            from natural_actions import forget_pending
+            forget_user(user_id, self.bot_name)
+            forget_pending(user_id, self.bot_name)
+        except ImportError:
+            pass
+
 
     async def reset_user_for_rebuild(self, user_id: int):
         async with aiosqlite.connect(DB_PATH) as db:
