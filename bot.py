@@ -5536,6 +5536,12 @@ async def _handle_message_pipeline(message):
         content = message.content.strip()
         if not content and not message.attachments:
             return
+        # Phase 1: collect bounded per-user/channel references before routing.
+        try:
+            from conversation_references import remember_direct_message
+            remember_direct_message(message, BOT_NAME, bot.user.id)
+        except Exception as e:
+            log_error("conversation_references", e)
         # Direct, explicit natural-language research (after access and mute checks).
         try:
             from natural_research import maybe_handle_natural_research
@@ -5895,6 +5901,14 @@ async def _handle_message_pipeline(message):
         except Exception as e: log_error("on_message/context", e)
 
         extra = "|".join(parts)
+        # Follow-up referents are read-only hints for the existing character AI.
+        try:
+            from conversation_references import conversation_hint
+            reference_hint = conversation_hint(message, BOT_NAME, bot.user.id)
+            if reference_hint:
+                extra = f"{extra}\\n{reference_hint}" if extra else reference_hint
+        except Exception as e:
+            log_error("conversation_hint", e)
         attachment_context = await _attachment_context_for_message(message, content, direct=bool(is_dm or direct_to_me))
         if attachment_context:
             attachment_flags = "ATTACHMENT_INTEL|CURRENT_INPUT_PRIORITY" if current_input_focus else "ATTACHMENT_INTEL"
