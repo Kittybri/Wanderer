@@ -5542,6 +5542,18 @@ async def _handle_message_pipeline(message):
             remember_direct_message(message, BOT_NAME, bot.user.id)
         except Exception as e:
             log_error("conversation_references", e)
+        # Phase 3: preview-before-write actions, before generic URL research.
+        try:
+            from natural_actions import maybe_handle_actions
+            if await maybe_handle_actions(
+                message, BOT_NAME, bot.user.id, mem, qai,
+                owner_id=OWNER_ID,
+                google_doc_reader=fetch_google_doc,
+            ):
+                return
+        except Exception as e:
+            log_error("natural_actions", e)
+
         # Direct, explicit natural-language research (after access and mute checks).
         try:
             from natural_research import maybe_handle_natural_research
