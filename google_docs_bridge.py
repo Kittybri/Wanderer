@@ -113,10 +113,12 @@ def fetch_google_doc(url_or_id: str, *, max_chars: int = 12000) -> dict[str, Any
         "doc_id": doc_id,
         "title": (doc.get("title") or "Untitled document").strip() or "Untitled document",
         "text": text,
+        "revision_id": doc.get("revisionId"),
+        "has_complex_structure": bool(doc.get("inlineObjects") or doc.get("positionedObjects") or any("table" in e or "sectionBreak" in e for e in doc.get("body", {}).get("content", []))),
     }
 
 
-def overwrite_google_doc(url_or_id: str, new_text: str) -> dict[str, Any]:
+def overwrite_google_doc(url_or_id: str, new_text: str, *, required_revision_id: str | None = None) -> dict[str, Any]:
     doc_id = extract_google_doc_id(url_or_id)
     if not doc_id:
         raise ValueError("That is not a valid Google Docs link or document id.")
@@ -149,7 +151,12 @@ def overwrite_google_doc(url_or_id: str, new_text: str) -> dict[str, Any]:
             }
         }
     )
-    service.documents().batchUpdate(documentId=doc_id, body={"requests": requests}).execute()
+    payload = {"requests": requests}
+    if required_revision_id is not None:
+        if not required_revision_id:
+            raise ValueError("Missing Google Docs revision ID.")
+        payload["writeControl"] = {"requiredRevisionId": required_revision_id}
+    service.documents().batchUpdate(documentId=doc_id, body=payload).execute()
     return {
         "doc_id": doc_id,
         "title": (doc.get("title") or "Untitled document").strip() or "Untitled document",
