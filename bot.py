@@ -5536,6 +5536,14 @@ async def _handle_message_pipeline(message):
         content = message.content.strip()
         if not content and not message.attachments:
             return
+        # Direct, explicit natural-language research (after access and mute checks).
+        try:
+            from natural_research import maybe_handle_natural_research
+            if await maybe_handle_natural_research(message, BOT_NAME, bot.user.id, qai, mem, dm_channel_id):
+                return
+        except Exception as e:
+            log_error("natural_research", e)
+
         mentioned_early = bot.user in message.mentions
         is_reply_early = (
             message.reference and message.reference.resolved and
