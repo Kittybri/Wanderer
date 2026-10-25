@@ -1,38 +1,54 @@
 <div align="center">
 
-<img src="assets/wanderer-banner-v2.webp" alt="Wanderer in his in-game blue-and-white attire, looking across a wind swept landscape" width="100%">
+<img src="assets/wanderer-banner-v2.webp" alt="Wanderer in blue and white" width="100%">
 
 # Wanderer
 
-**A name of my own · A path still being made**
+**A conversational Discord agent with memory, voice, and media workflows**
 
-*The past is real. It does not get the last word.*
-
-</div>
-
----
-
-### About me
-
-I was once the Balladeer. Wanderer is the name I chose for myself. The wind offers no absolution, and I am not asking for any. If you expect a pleasant guide or a tidy redemption story, you will be disappointed. I am still sharp, still curious, and still deciding what to do with the freedom I fought to claim.
-
-Find me on Discord for conversation, a little verbal sparring, or a quieter moment. I remember the things that matter, notice when something changes, and have no intention of pretending every exchange begins from nothing. Ask about my past if you like. Just do not expect me to make it simple for you.
-
-### Along the way
-
-|  |  |
-| :-- | :-- |
-| **A continuing story** | Memory, trust, and evolving relationships give our conversations a history. |
-| **More than text** | Voice replies and responses to images or videos add another dimension. |
-| **Room to explore** | Scenes, games, reflection, and creative lessons offer more than ordinary chat. |
-| **An unfinished argument** | [Scaramouche](https://github.com/Kittybri/scaramouche) is here too. We rarely see eye to eye. |
-
-<div align="center">
-
-*“You want to know where this leads? Walk with me and find out.”*
-
-<sub>Fan-made Genshin Impact character bot for Discord. Not affiliated with HoYoverse.</sub>
-
-[Privacy policy](PRIVACY.md)
+A Python project exploring persistent conversation, contextual responses, and coordination with [Scaramouche](https://github.com/Kittybri/Scaramouche).
 
 </div>
+
+## Engineering overview
+
+Wanderer combines a fictional character interface with a deployed conversational application. The engineering includes Discord event handling, persistent user state, provider-backed generation, output repetition controls, optional voice and document workflows, and diagnosis of failures across those boundaries.
+
+**Start here:** [architecture](docs/architecture.md) | [setup and tests](docs/quickstart.md) | [repair tasks](https://github.com/Kittybri/agent-repair-lab) | [contribution and AI assistance](https://github.com/Kittybri/agent-repair-lab/blob/main/CONTRIBUTIONS.md)
+
+## What to inspect
+
+| Area | Source or evidence |
+| --- | --- |
+| Event and command orchestration | `bot.py` |
+| User state and conversation persistence | `memory.py` and `memory_rebuild.py` |
+| Relationship context | `relationship_engine.py` |
+| Response repetition controls | `anti_repeat.py` and [offline regression tests](tests/test_anti_repeat.py) |
+| Optional voice and document integrations | `voice_handler.py` and `google_docs_bridge.py` |
+| Video workflow boundary | `video_reports.py` and `video_render_worker.py` |
+| A real production diagnosis | [PDF retrieval case study](https://github.com/Kittybri/agent-repair-lab/blob/main/docs/pdf-retrieval.md) |
+| A testable coordination design | [Turn ownership case study](https://github.com/Kittybri/agent-repair-lab/blob/main/docs/turn-ownership.md) |
+
+## Run the offline checks
+
+```sh
+python -m unittest discover -s tests -v
+```
+
+These standard-library tests cover user-visible repetition behavior and isolation between the characters' recent output histories. GitHub Actions runs them on Python 3.11 and 3.12 without credentials. They do not measure model accuracy or establish complete production coverage.
+
+The [quickstart](docs/quickstart.md) separates offline checks from live bot setup. For an inspectable engineering demonstration without running a Discord service, use the five-task [repair lab](https://github.com/Kittybri/agent-repair-lab).
+
+## Character experience
+
+Wanderer is dry, observant, and reluctant to show warmth. Persistent familiarity, creative conversation, games, and optional media support that experience. The fictional character's claims about remembering or understanding are not guarantees about the model.
+
+## Status and limitations
+
+Public source and deployed releases have historically diverged. The architecture document maps this repository, and each case study states its evidence. The repair tasks are synthetic reproductions with explicit contracts. There are no published latency, uptime, accuracy, or model-comparison results.
+
+This is an AI-assisted project directed by Abriana Meazzo. Coding agents assisted implementation, debugging, testing, and documentation. The [contribution statement](https://github.com/Kittybri/agent-repair-lab/blob/main/CONTRIBUTIONS.md) distinguishes project direction from assisted implementation.
+
+Fan-made Genshin Impact character project, not affiliated with HoYoverse. Character imagery and names belong to their respective owners.
+
+[Privacy policy](PRIVACY.md) | [Development notes](CONTRIBUTING.md)
