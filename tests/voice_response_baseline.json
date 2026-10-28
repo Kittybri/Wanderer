@@ -19,11 +19,11 @@
   "files": {
     "voice_conversation/personality.py": "d62f2d66f87ab9585468633084243443a5a7178d8554bc5db9e87aefefeee351",
     "voice_conversation/receive.py": "06b5d5ed0da70e30714539b658e937a2e2fafaa8d23ffd961ab88706a6cf7486",
-    "voice_conversation/session.py": "facf3b2f61a24a3da5c3093374098b1db5f352f65c39a57ad6124ce9a3f2c91c",
+    "voice_conversation/session.py": "9067d3eb42ab2a22298db311f8a967ef5a23c5c4cfd407010de900a0dc8fe129",
     "voice_conversation/__init__.py": "e0e256653d3c9c49d185782f27fe386d183749233311ab9ba6cb98054b9b83b5",
     "voice_conversation/features.py": "7e3d94c77aab4355c14c44fed50d5a5fe00af71f7126cac9d0479ff7d73cc99d",
     "voice_conversation/games.py": "79d996f1f382d91ef2e49a94640b39938b8410b0b69e29a3ab1b2f109260fd8c",
-    "voice_conversation/integration.py": "536ce7cfa4c897981b3c301513aedd64899c468e0015ddc4cb9e70a4509d0768",
+    "voice_conversation/integration.py": "adfe4a9c75b7228ce7f58ee64fc049a0b76c8b1c5c6af1687c89626b11197feb",
     "voice_conversation/social_store.py": "10d8f9f1d4573fad169bef4b6f7c80bbbf684a337d1719b5876bf93a6cec75e3",
     "voice_conversation/speech.py": "fb6121d79e0ff782ba871e63337bbaef414e9057589bbe632b0d8859691a4950",
     "voice_conversation/smoke.py": "7745dd08edf189d8ac0bf1860e7529b53e007ec88aa13f6bb9034a398b0043da",
