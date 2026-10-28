@@ -23,7 +23,7 @@
     "voice_conversation/__init__.py": "e0e256653d3c9c49d185782f27fe386d183749233311ab9ba6cb98054b9b83b5",
     "voice_conversation/features.py": "7e3d94c77aab4355c14c44fed50d5a5fe00af71f7126cac9d0479ff7d73cc99d",
     "voice_conversation/games.py": "79d996f1f382d91ef2e49a94640b39938b8410b0b69e29a3ab1b2f109260fd8c",
-    "voice_conversation/integration.py": "45032fd0626ffcbdea276aad800c370d32d73a23f4c80f1bfe5bc04e3278f8fd",
+    "voice_conversation/integration.py": "536ce7cfa4c897981b3c301513aedd64899c468e0015ddc4cb9e70a4509d0768",
     "voice_conversation/social_store.py": "10d8f9f1d4573fad169bef4b6f7c80bbbf684a337d1719b5876bf93a6cec75e3",
     "voice_conversation/speech.py": "fb6121d79e0ff782ba871e63337bbaef414e9057589bbe632b0d8859691a4950",
     "voice_conversation/smoke.py": "7745dd08edf189d8ac0bf1860e7529b53e007ec88aa13f6bb9034a398b0043da",

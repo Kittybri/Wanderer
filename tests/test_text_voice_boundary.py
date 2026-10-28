@@ -1,7 +1,9 @@
-"""Lock the original voice semantics to release 537bc0d, not a new expectation.
+"""Lock response semantics to release 537bc0d and reviewed voice dependencies.
 
 Project explicit text-policy flags to False, then compare the ENTIRE remaining
-function AST with the pre-repair release. This covers prompts, provider routes,
+function AST with the pre-repair release. The integration file digest reflects the
+2026-10-28 user-requested removal of the channel-ID join allowlist only. This
+covers prompts, provider routes,
 fallbacks, anti-repeat, memory/defer semantics and all return/error paths.
 """
 import ast
