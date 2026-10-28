@@ -6136,6 +6136,8 @@ async def _handle_message_pipeline(message):
 
         content = message.content.strip()
         safety = classify_safety(content)
+        if not safety.protective and await VOICE_COMMANDS.maybe_join(message, ctx):
+            return
         mentioned_early = human_mentions_bot(message, bot.user.id)
         is_reply_early = (
             message.reference and message.reference.resolved and
