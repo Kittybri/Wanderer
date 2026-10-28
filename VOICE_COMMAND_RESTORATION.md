@@ -19,7 +19,7 @@ Existing !voice commands, voice engine, receive/STT/Fish/playback, dependencies,
 privacy, Tarot and Google integration remain unchanged.
 
 ## Validation
-- Full suite: 490 passed, 1 skipped.
+- Final full suite including registration-race regression: 491 passed, 1 skipped.
 - Focused registration, voice integration, preservation and Tarot suite plus voice-boundary tests: 92 passed, 1 skipped.
 - Runtime preservation: zero errors; 179 prefix commands, 27 slash entries.
 - compileall and git diff --check passed.
@@ -34,5 +34,14 @@ Alternatively select the intended application's /join.
 Use !leave with an optional character name, or that application's /leave.
 The existing !voice start / stop / diagnostics commands continue to work.
 
-Deployment evidence will be appended after verifying the live registrations.
+## Live staging result
+- Deployed code SHA: `2d8ee2ee928fabcbc908307e6537476591908772`.
+- Service active; automatic restart count 0; gateway ready, no startup traceback
+  and no voice registration error after a controlled restart.
+- Discord global commands contain exactly one `/join` and one `/leave` after
+  the registration race fix. Existing Tarot, Google, dashboard, duo,
+  preferences and world entries remain.
+- Shared and both bot SQLite `quick_check` results: `ok`.
+- Callback service and protected configuration remained unchanged.
+- Spoken audio was not tested as part of this command restoration.
 
