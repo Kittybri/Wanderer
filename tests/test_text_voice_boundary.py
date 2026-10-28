@@ -2,8 +2,8 @@
 
 Project explicit text-policy flags to False, then compare the ENTIRE remaining
 function AST with the pre-repair release. The integration file digest reflects the
-2026-10-28 user-requested removal of the channel-ID join allowlist only. This
-covers prompts, provider routes,
+2026-10-28 user-requested removal of the channel-ID join allowlist and live-VC
+preference/Discord notice requirements. This covers prompts, provider routes,
 fallbacks, anti-repeat, memory/defer semantics and all return/error paths.
 """
 import ast

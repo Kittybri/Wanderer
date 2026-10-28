@@ -5940,6 +5940,11 @@ async def _handle_message_pipeline(message):
             else:
                 return
 
+        # A participant's direct leave request outranks optional channel modes,
+        # RPG suppression, and ambient-response gates.
+        if message.guild and await VOICE_COMMANDS.maybe_leave(message, await bot.get_context(message)):
+            return
+
         # Keep only one bot's RPG active in a channel at a time.
         if PARTNER_BOT_ID and not message.author.bot:
             try:
