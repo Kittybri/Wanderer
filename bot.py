@@ -9971,6 +9971,24 @@ async def slash_world_add(
         await _interaction_reply(interaction, "Something went wrong updating the world state.")
 
 
+@world_group.command(name="prefs", description="Manage your grudge and lullaby world settings privately.")
+@app_commands.describe(setting="status, grudges, lullaby, or lullaby_hour", value="on/off, or an hour from 20 to 23")
+async def slash_world_prefs(interaction: discord.Interaction, setting: str = "status", value: str = ""):
+    try:
+        await interaction.response.defer(ephemeral=True)
+        if await PRIVACY_DELETION.is_pending(interaction.user.id):
+            await interaction.followup.send("Your privacy reset is still finishing.", ephemeral=True)
+            return
+        result = await WORLD.preferences(interaction.user.id, setting.strip().lower(), value.strip().lower())
+        await interaction.followup.send(result, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+    except Exception as e:
+        log_error("slash_world_prefs", e)
+        if interaction.response.is_done():
+            await interaction.followup.send("World settings are unavailable right now.", ephemeral=True)
+        else:
+            await interaction.response.send_message("World settings are unavailable right now.", ephemeral=True)
+
+
 @prefs_group.command(name="voice", description="Turn voice-note replies on or off.")
 @app_commands.choices(mode=[
     app_commands.Choice(name="On", value="on"),

@@ -1635,6 +1635,10 @@
       "group": false,
       "module": "bot"
     },
+    "world prefs": {
+      "group": false,
+      "module": "bot"
+    },
     "world state": {
       "group": false,
       "module": "bot"
@@ -1853,9 +1857,6 @@
     "!weathervideo",
     "!whisper",
     "!wipe",
-    "!world",
-    "!worldadd",
-    "!worldprefs",
     "!write"
   ],
   "owner_commands": [
