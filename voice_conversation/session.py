@@ -12,7 +12,40 @@ import time
 from collections import Counter, deque
 from enum import Enum
 
+from .personality import interruption_kind
 from .speech import Limits, Segmenter, chunks
+
+INTERRUPTION_ACK_PLAYBACK_TIMEOUT = 10
+_NO_INTERRUPTION_QUIP = re.compile(
+    r"\b(?:help|emergency|seizure|stroke|hospital|ambulance|medical|doctor|"
+    r"injur(?:y|ed)|hurt|bleed(?:ing)?|poison|fire|danger|unsafe|pain|"
+    r"breath(?:e|ing)|heart attack|dying|dead|overdose|abuse|trauma|"
+    r"collaps(?:e|ed|ing)|faint(?:ed|ing)?|unresponsive|passed out|"
+    r"not waking|not breathing|attack(?:ed|ing)?|"
+    r"crying|scared|panic|suicid(?:e|al)|password|secret)\b",
+    re.I,
+)
+
+
+def names_wander_alias_in_opening(text: str, name: str) -> bool:
+    """Accept the shortened spoken name only as an opening address, not a verb."""
+    if name.lower() != "wanderer":
+        return False
+    words = re.findall(r"[a-z0-9]+", (text or "").lower())
+    while words and words[0] in {"hey", "okay", "ok", "um", "uh", "please"}:
+        words.pop(0)
+    # Keep ordinary "wander through/around ..." from calling the bot.
+    return bool(
+        words
+        and words[0] == "wander"
+        and (
+            len(words) == 1
+            or words[1] not in {
+                "through", "around", "about", "into", "across", "off",
+                "over", "along", "back", "away", "up", "out", "down", "to",
+            }
+        )
+    )
 
 
 def is_interrupt_keyword(text: str, name: str) -> bool:
@@ -37,14 +70,24 @@ def is_interrupt_keyword(text: str, name: str) -> bool:
     aliases = {name.lower()}
     if name.lower() == "scaramouche":
         aliases.add("scara")
+    if name.lower() == "wanderer":
+        aliases.add("wander")
+        if opening[0] == "wander" and not names_wander_alias_in_opening(text, name):
+            return False
     # Preserve the old name-only barge-in while accepting common ways speech
     # recognition splits or slightly misspells the character name.
     for width in range(1, min(3, len(opening)) + 1):
         candidate = "".join(opening[:width])
         for alias in aliases:
+            if alias == "wander" and not names_wander_alias_in_opening(text, name):
+                continue
             if candidate == alias:
                 return True
-            if len(candidate) >= 7 and SequenceMatcher(None, candidate, alias).ratio() >= 0.78:
+            if (
+                len(candidate) >= 7
+                and candidate[0] == alias[0]
+                and SequenceMatcher(None, candidate, alias).ratio() >= 0.78
+            ):
                 return True
     return False
 
@@ -54,6 +97,8 @@ def names_bot_in_opening(text: str, name: str) -> bool:
     words = re.findall(r"[a-z0-9]+", (text or "").lower())
     while words and words[0] in {"hey", "okay", "ok", "um", "uh", "please"}:
         words.pop(0)
+    if names_wander_alias_in_opening(text, name):
+        return True
     aliases = {name.lower()}
     if name.lower() == "scaramouche":
         aliases.add("scara")
@@ -175,6 +220,8 @@ class Session:
         self.metrics = Counter()
         self.events = deque(maxlen=16)
         self.interruption = None
+        self.interruption_ack_index = 0
+        self.interruption_ack_playing = False
         self.completed, self.total = 0, 0
         self.last_speech, self.started = 0.0, time.monotonic()
         self.reported_failures = set()
@@ -365,6 +412,7 @@ class Session:
         addressed = addressed or (
             self.name == "scaramouche" and bool(re.search(r"\bscara\b", text.lower()))
         )
+        addressed = addressed or names_wander_alias_in_opening(text, self.name)
         interrupted = self.interruption and self.interruption["user_id"] == uid
         focused = uid == self.focus and time.monotonic() < self.focus_until
         return bool(
@@ -589,6 +637,45 @@ class Session:
         task.add_done_callback(finished)
         return await asyncio.wait_for(asyncio.shield(task), 90)
 
+    async def speak_interruption_ack(self, uid, generation, epoch, started):
+        """Speak a short reaction while the full answer is generated separately."""
+        lines = (
+            "You interrupted me. Is something wrong?",
+            "I was mid-thought. What do you need?",
+            "You cut in. Go ahead; I'm listening.",
+        )
+        line = lines[self.interruption_ack_index % len(lines)]
+        self.interruption_ack_index += 1
+        self.state = State.SYNTHESIZING
+        audio = await asyncio.wait_for(
+            self.provider("tts", lambda: self.synthesize(uid, line)), 5
+        )
+        if not audio or not self.current(generation, uid, epoch):
+            return False
+        self.state = State.BOT_SPEAKING
+        first_audio_ms = round((time.monotonic() - started) * 1000)
+        self.metrics["interruption_ack_first_audio_ms"] = first_audio_ms
+        self.metrics["first_audio_ms"] = first_audio_ms
+        self.interruption_ack_playing = True
+        try:
+            delivered = await asyncio.wait_for(
+                self.playback.play(audio), INTERRUPTION_ACK_PLAYBACK_TIMEOUT
+            )
+        finally:
+            self.interruption_ack_playing = False
+        if not delivered or not self.current(generation, uid, epoch):
+            self.decision("interruption_ack_not_delivered", uid)
+            return False
+        self.decision("interruption_ack_delivered", uid)
+        self.decision("playback_completed", uid)
+        self.metrics["spoken_chunks"] += 1
+        self.recent_outputs.append(re.sub(r"\W+", " ", line.lower()).strip())
+        try:
+            await self.remember(uid, line)
+        except Exception:
+            self.decision("interruption_ack_memory_failed", uid)
+        return True
+
     async def answer(
         self,
         uid,
@@ -603,13 +690,27 @@ class Session:
     ):
         start = time.monotonic()
         self.completed, self.total = 0, 0
+        reply_task = None
+        prelude_delivered = False
         context = "Voice conversation: output spoken dialogue only; no narration or stage directions. No artificial sentence limit."
         context += " " + feature_context
+        quick_ack = False
         if self.interruption and self.interruption["user_id"] == uid:
+            quick_ack = bool(
+                self.interruption.get("playback_was_active")
+                and not self.interruption.get("ack_was_playing")
+                and interruption_kind(text, 0) in {"normal", "playful"}
+                and not _NO_INTERRUPTION_QUIP.search(text)
+                and not feature_kind
+                and reply_override is None
+                and audio_override is None
+            )
             context += (
                 " You were interrupted; only completed chunks were heard. Respond to the new utterance naturally. "
                 "Normal interruptions are not grievances; genuine distress takes priority."
             )
+            if quick_ack:
+                context += " A brief interruption reaction may play separately. Do not repeat or refer to it; answer the new utterance."
             context += (
                 f" Completed chunk fraction: {self.interruption['progress']:.2f}."
             )
@@ -627,13 +728,30 @@ class Session:
                 return
             self.state = State.THINKING
             tick = time.monotonic()
-            reply = (
-                reply_override
-                if reply_override is not None
-                else await self.provider(
-                    "llm", lambda: self.respond(uid, text, context)
+            if reply_override is not None:
+                reply = reply_override
+            else:
+                reply_task = asyncio.create_task(
+                    self.provider("llm", lambda: self.respond(uid, text, context))
                 )
-            )
+                if quick_ack:
+                    try:
+                        prelude_delivered = await self.speak_interruption_ack(
+                            uid, generation, epoch, start
+                        )
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        self.decision("interruption_ack_failed", uid)
+                    if self.current(generation, uid, epoch):
+                        self.state = State.THINKING
+                reply = await reply_task
+                if quick_ack and not prelude_delivered and not re.search(
+                    r"\binterrupt(?:ed|ion)?\b|\bcut (?:me |you )?off\b",
+                    reply[:120],
+                    re.I,
+                ):
+                    reply = "You interrupted me. Is something wrong? " + reply
             self.metrics["response_latency_ms"] = round(
                 (time.monotonic() - tick) * 1000
             )
@@ -661,7 +779,7 @@ class Session:
                 if not audio:
                     raise RuntimeError("tts_unavailable")
                 self.state = State.BOT_SPEAKING
-                if not self.completed:
+                if not self.completed and not prelude_delivered:
                     self.metrics["first_audio_ms"] = round(
                         (time.monotonic() - start) * 1000
                     )
@@ -694,6 +812,10 @@ class Session:
                     await self.playback.stop()
             await self.failure("response_or_playback_unavailable")
         finally:
+            if reply_task:
+                if not reply_task.done():
+                    reply_task.cancel()
+                await asyncio.gather(reply_task, return_exceptions=True)
             if generation == self.generation and self.active:
                 self.state = State.LISTENING
 
@@ -705,6 +827,16 @@ class Session:
         ):
             return
         confirmed = time.monotonic()
+        is_playing = getattr(getattr(self.playback, "vc", None), "is_playing", None)
+        try:
+            playback_was_active = bool(
+                self.state == State.BOT_SPEAKING
+                and getattr(self.playback, "source", None) is not None
+                and (not callable(is_playing) or is_playing())
+            )
+        except Exception:
+            playback_was_active = False
+        ack_was_playing = self.interruption_ack_playing
         self.clear_pending_response()
         self.state = State.INTERRUPTING
         self.generation += 1
@@ -725,6 +857,8 @@ class Session:
             "confirmed_at": confirmed,
             "stop_called_at": stopped_at,
             "playback_stopped_at": actually_stopped,
+            "playback_was_active": playback_was_active,
+            "ack_was_playing": ack_was_playing,
         }
         self.events.append(dict(self.interruption))
         await self.feature_event("bot_interrupted", uid, data=dict(self.interruption))

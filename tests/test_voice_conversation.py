@@ -6,9 +6,10 @@ from types import SimpleNamespace as NS
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+import voice_conversation.session as voice_session
 
 from voice_conversation.receive import ReceiveBackend, eligible
-from voice_conversation.session import Session, State, Playback, is_interrupt_keyword, is_spoken_leave_command
+from voice_conversation.session import Session, State, Playback, is_interrupt_keyword, is_spoken_leave_command, names_bot_in_opening
 from voice_conversation.speech import Limits, Segmenter, Utterance, chunks, GroqSTT
 
 
@@ -53,6 +54,7 @@ def setup(**kwargs):
     ("scaramouche", "scaramouche leave voice channel.", True),
     ("scaramouche", "Scaramouche, leave voice channel.", True),
     ("wanderer", "Wanderer leave voice channel", True),
+    ("wanderer", "Wander leave voice channel", False),
     ("scaramouche", "scara leave voice channel", False),
     ("scaramouche", "hey scaramouche leave voice channel", False),
     ("scaramouche", "wanderer leave voice channel", False),
@@ -61,6 +63,26 @@ def setup(**kwargs):
 ])
 def test_spoken_leave_phrase_is_exact(name, spoken, expected):
     assert is_spoken_leave_command(spoken, name) is expected
+
+
+@pytest.mark.parametrize("spoken,expected", [
+    ("Wander, can you hear me?", True),
+    ("Hey, Wander, are you there?", True),
+    ("Um, wander, what do you think?", True),
+    ("I wander around when I think.", False),
+    ("Wander through the woods.", False),
+    ("Wander over to the house.", False),
+    ("I wonder what he thinks.", False),
+])
+def test_short_wander_name_only_targets_direct_opening(spoken, expected):
+    async def check():
+        s = setup(name="wanderer")
+        s.focus = None
+        assert bool(s.relevant(1, spoken)) is expected
+        assert names_bot_in_opening(spoken, "wanderer") is expected
+        await s.stop()
+
+    run(check())
 
 
 def test_exact_spoken_leave_consumes_transcript_without_normal_reply():
@@ -575,6 +597,200 @@ def test_keyword_recognizer_accepts_spoken_stt_variants(transcript):
 )
 def test_keyword_recognizer_rejects_unrelated_conversation(transcript):
     assert not is_interrupt_keyword(transcript, "wanderer")
+
+
+def test_wander_alias_interrupts_only_when_spoken_as_an_address():
+    assert is_interrupt_keyword("Wander, wait", "wanderer")
+    assert is_interrupt_keyword("hey Wander", "wanderer")
+    assert not is_interrupt_keyword("I wander around when I think", "wanderer")
+    assert not is_interrupt_keyword("Wander through the woods", "wanderer")
+    assert not is_interrupt_keyword("Wander over to the house", "wanderer")
+
+
+def test_confirmed_playback_interruption_gets_quick_wanderer_reaction():
+    async def check():
+        model_started, release_model = asyncio.Event(), asyncio.Event()
+        contexts = []
+
+        async def slow_response(uid, text, context):
+            contexts.append(context)
+            model_started.set()
+            await release_model.wait()
+            return "I heard your question."
+
+        s = setup(name="wanderer", respond=slow_response)
+        s.state = State.BOT_SPEAKING
+        s.playback.source = object()
+        s.response_task = asyncio.create_task(asyncio.sleep(30))
+        await s.interrupt(1, time.monotonic())
+        assert s.interruption["playback_was_active"]
+        task = asyncio.create_task(s.answer(1, "Wander, are you there?", s.generation, 0))
+        await asyncio.wait_for(model_started.wait(), 1)
+        for _ in range(100):
+            if s.metrics["interruption_ack_delivered"]:
+                break
+            await asyncio.sleep(0.01)
+        assert s.metrics["interruption_ack_delivered"] == 1
+        assert s.metrics["playback_completed"] == 1
+        first_audio_ms = s.metrics["first_audio_ms"]
+        assert s.playback.play.await_count == 1
+        assert s.remember.await_count == 1  # Only the spoken prelude so far.
+        assert not task.done()  # The full answer is still generating.
+        assert "may play separately" in contexts[0]
+        release_model.set()
+        await asyncio.wait_for(task, 1)
+        assert s.playback.play.await_count == 2
+        assert s.remember.await_count == 2
+        assert s.metrics["playback_completed"] == 2
+        assert s.metrics["first_audio_ms"] == first_audio_ms
+        assert s.metrics["interruption_ack_first_audio_ms"] >= 0
+        await s.stop()
+
+    run(check())
+
+
+def test_interrupted_wanderer_reaction_does_not_chain_another_reaction():
+    async def check():
+        s = setup(name="wanderer")
+        s.state = State.BOT_SPEAKING
+        s.playback.source = object()
+        s.interruption_ack_playing = True
+        s.response_task = asyncio.create_task(asyncio.sleep(30))
+        await s.interrupt(1, time.monotonic())
+        assert s.interruption["ack_was_playing"]
+        await s.answer(1, "Wander, I have another question", s.generation, 0)
+        assert s.metrics["interruption_ack_delivered"] == 0
+        assert s.playback.play.await_count == 1
+        await s.stop()
+
+    run(check())
+
+
+def test_failed_interruption_reaction_does_not_block_answer_or_fake_delivery():
+    async def check():
+        s = setup(name="wanderer")
+        s.state = State.BOT_SPEAKING
+        s.playback.source = object()
+        s.playback.play.side_effect = [False, True]
+        s.response_task = asyncio.create_task(asyncio.sleep(30))
+        await s.interrupt(1, time.monotonic())
+        await s.answer(1, "Wander, are you there?", s.generation, 0)
+        assert s.metrics["interruption_ack_not_delivered"] == 1
+        assert s.metrics["interruption_ack_delivered"] == 0
+        assert s.metrics["playback_completed"] == 1
+        assert s.metrics["spoken_chunks"] == 1
+        assert s.remember.await_count == 1
+        assert s.remember.call_args.args[1].startswith("You interrupted me.")
+        await s.stop()
+
+    run(check())
+
+
+def test_interruption_reaction_tts_failure_falls_back_to_full_answer():
+    async def check():
+        s = setup(name="wanderer")
+        s.state = State.BOT_SPEAKING
+        s.playback.source = object()
+        s.synthesize.side_effect = [RuntimeError("synthetic TTS failure"), b"audio"]
+        s.response_task = asyncio.create_task(asyncio.sleep(30))
+        await s.interrupt(1, time.monotonic())
+        await s.answer(1, "Wander, can you hear me?", s.generation, 0)
+        assert s.metrics["interruption_ack_failed"] == 1
+        assert s.metrics["interruption_ack_delivered"] == 0
+        assert s.metrics["playback_completed"] == 1
+        assert s.remember.await_count == 1
+        assert s.remember.call_args.args[1].startswith("You interrupted me.")
+        await s.stop()
+
+    run(check())
+
+
+def test_interruption_reaction_playback_timeout_falls_back_to_answer(monkeypatch):
+    monkeypatch.setattr(voice_session, "INTERRUPTION_ACK_PLAYBACK_TIMEOUT", 0.02)
+
+    async def check():
+        s = setup(name="wanderer")
+        s.state = State.BOT_SPEAKING
+        s.playback.source = object()
+        calls = 0
+
+        async def play(audio):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                await asyncio.Event().wait()
+            return True
+
+        s.playback.play = play
+        s.response_task = asyncio.create_task(asyncio.sleep(30))
+        await s.interrupt(1, time.monotonic())
+        await asyncio.wait_for(
+            s.answer(1, "Wander, can you hear me?", s.generation, 0), 1
+        )
+        assert s.metrics["interruption_ack_failed"] == 1
+        assert s.metrics["interruption_ack_delivered"] == 0
+        assert s.metrics["playback_completed"] == 1
+        assert s.remember.await_count == 1
+        assert s.remember.call_args.args[1].startswith("You interrupted me.")
+        await s.stop()
+
+    run(check())
+
+
+def test_no_reaction_when_playback_source_is_stale_or_feature_owns_turn():
+    async def check():
+        for stale_source, feature_kind in ((True, ""), (False, "interrogate")):
+            s = setup(name="wanderer")
+            s.state = State.BOT_SPEAKING
+            s.playback.source = object()
+            s.playback.vc = NS(is_playing=lambda: not stale_source)
+            s.feature_router = NS(
+                permit=AsyncMock(return_value=True),
+                handle_event=AsyncMock(return_value={}),
+            )
+            s.response_task = asyncio.create_task(asyncio.sleep(30))
+            await s.interrupt(1, time.monotonic())
+            await s.answer(
+                1,
+                "Wander, another question",
+                s.generation,
+                0,
+                feature_kind=feature_kind,
+            )
+            assert s.metrics["interruption_ack_delivered"] == 0
+            assert s.playback.play.await_count == 1
+            await s.stop()
+
+    run(check())
+
+
+@pytest.mark.parametrize("spoken,playing", [
+    ("Stop, this is serious", True),
+    ("Sorry, go ahead", True),
+    ("My friend is having a seizure, help me", True),
+    ("I think my dad is having a stroke", True),
+    ("I need to get to a hospital now", True),
+    ("My friend collapsed", True),
+    ("I think I might faint", True),
+    ("My mother is not waking up", True),
+    ("Someone attacked my friend", True),
+    ("Wander, are you there?", False),
+])
+def test_no_quick_reaction_for_urgent_accidental_or_not_playing(spoken, playing):
+    async def check():
+        s = setup(name="wanderer")
+        s.state = State.BOT_SPEAKING if playing else State.THINKING
+        if playing:
+            s.playback.source = object()
+        s.response_task = asyncio.create_task(asyncio.sleep(30))
+        await s.interrupt(1, time.monotonic())
+        await s.answer(1, spoken, s.generation, 0)
+        assert s.metrics["interruption_ack_delivered"] == 0
+        assert s.playback.play.await_count == 1
+        assert s.remember.await_count == 1
+        await s.stop()
+
+    run(check())
 
 
 def test_keyword_diagnostics_distinguish_detection_from_late_arrival():

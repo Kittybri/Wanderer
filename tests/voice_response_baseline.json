@@ -1,6 +1,6 @@
 {
   "base": "537bc0d4b9ac462f7df3d743bc5c5d7d9a96264c",
-  "voice_revision": "2026-10-28 live-voice repair: partner filtering, cross-speaker keyword interruption, empty-channel join, optional arrival greeting, and Wanderer voice-only duplicate self-edit removal with sanitized stage timings; text behavior remains unchanged",
+  "voice_revision": "2026-10-28 live-voice repair: partner filtering, cross-speaker keyword interruption, empty-channel join, optional arrival greeting, and Wanderer voice-only duplicate self-edit removal with sanitized stage timings. 2026-10-29: opening-only Wander alias and fast, delivered-only interruption reaction during concurrent answer generation; text behavior remains unchanged",
   "functions": {
     "_provider_pause_reply": "fa73401756b5dcfdda2418fb81510191ee6db0e1a5bba66f37eb562eb7b9fd96",
     "_guarded_fallback_reply": "9253eebdf5e596bff9c828e152072d867cd96133c7f67c029ee824f5b8b1ccaa",
@@ -20,7 +20,7 @@
   "files": {
     "voice_conversation/personality.py": "d62f2d66f87ab9585468633084243443a5a7178d8554bc5db9e87aefefeee351",
     "voice_conversation/receive.py": "06b5d5ed0da70e30714539b658e937a2e2fafaa8d23ffd961ab88706a6cf7486",
-    "voice_conversation/session.py": "f19e5c06304eaa8af14204b85077fa36e1e60feda0c62f3c8a3dccddc549ffd4",
+    "voice_conversation/session.py": "bdaff42e1300913294cfc2ac6335f2dc6d86b2f9b37efb9e610a80e1122f0a20",
     "voice_conversation/__init__.py": "e0e256653d3c9c49d185782f27fe386d183749233311ab9ba6cb98054b9b83b5",
     "voice_conversation/features.py": "7e3d94c77aab4355c14c44fed50d5a5fe00af71f7126cac9d0479ff7d73cc99d",
     "voice_conversation/games.py": "79d996f1f382d91ef2e49a94640b39938b8410b0b69e29a3ab1b2f109260fd8c",
