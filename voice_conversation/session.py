@@ -49,6 +49,22 @@ def is_interrupt_keyword(text: str, name: str) -> bool:
     return False
 
 
+def names_bot_in_opening(text: str, name: str) -> bool:
+    """A nonfocused speaker must address this bot to interrupt others."""
+    words = re.findall(r"[a-z0-9]+", (text or "").lower())
+    while words and words[0] in {"hey", "okay", "ok", "um", "uh", "please"}:
+        words.pop(0)
+    aliases = {name.lower()}
+    if name.lower() == "scaramouche":
+        aliases.add("scara")
+    return any(
+        word == alias
+        or (len(word) >= 7 and SequenceMatcher(None, word, alias).ratio() >= 0.78)
+        for word in words[:3]
+        for alias in aliases
+    )
+
+
 def is_spoken_leave_command(text: str, name: str) -> bool:
     """Only the character's exact spoken leave phrase ends a live session."""
     # ASR may insert punctuation (notably a comma after the name), but no
@@ -413,7 +429,9 @@ class Session:
                 continue
             mode = self.user_interrupt.get(uid, self.interrupt_mode)
             if mode == "KEYWORD":
-                keyword = is_interrupt_keyword(text, self.name)
+                keyword = is_interrupt_keyword(text, self.name) and (
+                    uid == self.focus or names_bot_in_opening(text, self.name)
+                )
                 if keyword:
                     self.decision("interrupt_keyword_detected", uid)
                     if self.busy():

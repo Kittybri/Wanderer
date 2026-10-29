@@ -620,6 +620,28 @@ def test_keyword_barge_in_from_enrolled_nonfocused_speaker():
     run(check())
 
 
+def test_nonfocused_speaker_saying_no_does_not_interrupt():
+    async def check():
+        s = setup()
+        s.consent(2, True)
+        s.focus, s.focus_until = 1, time.monotonic() + 90
+        s.stt.transcribe.return_value = "No, I don't think so"
+        s.response_task = asyncio.create_task(asyncio.sleep(30))
+        worker = asyncio.create_task(s.transcribe_loop())
+        s.enqueue(Utterance(2, b"audio", time.monotonic(), time.monotonic()))
+        for _ in range(50):
+            if s.metrics["stt_success"]:
+                break
+            await asyncio.sleep(0.01)
+        assert s.metrics["stt_success"] == 1
+        assert s.metrics["interrupt_attempted"] == 0
+        s.playback.stop.assert_not_awaited()
+        await s.stop()
+        worker.cancel()
+        await asyncio.gather(worker, return_exceptions=True)
+    run(check())
+
+
 def test_failure_notifies_once_and_cleans_up():
     async def check():
         s = setup()

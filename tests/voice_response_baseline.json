@@ -20,7 +20,7 @@
   "files": {
     "voice_conversation/personality.py": "d62f2d66f87ab9585468633084243443a5a7178d8554bc5db9e87aefefeee351",
     "voice_conversation/receive.py": "06b5d5ed0da70e30714539b658e937a2e2fafaa8d23ffd961ab88706a6cf7486",
-    "voice_conversation/session.py": "bcaa0a50b139e4945fd4507c81e5419f3dae420bbdfc18d65ac8458fd4e6a7b0",
+    "voice_conversation/session.py": "f19e5c06304eaa8af14204b85077fa36e1e60feda0c62f3c8a3dccddc549ffd4",
     "voice_conversation/__init__.py": "e0e256653d3c9c49d185782f27fe386d183749233311ab9ba6cb98054b9b83b5",
     "voice_conversation/features.py": "7e3d94c77aab4355c14c44fed50d5a5fe00af71f7126cac9d0479ff7d73cc99d",
     "voice_conversation/games.py": "79d996f1f382d91ef2e49a94640b39938b8410b0b69e29a3ab1b2f109260fd8c",
