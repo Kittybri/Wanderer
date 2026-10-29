@@ -597,6 +597,29 @@ def test_keyword_diagnostics_distinguish_detection_from_late_arrival():
     run(check())
 
 
+def test_keyword_barge_in_from_enrolled_nonfocused_speaker():
+    async def check():
+        s = setup(name="wanderer")
+        s.consent(2, True)
+        s.focus, s.focus_until = 1, time.monotonic() + 90
+        s.stt.transcribe.return_value = "Wanderer, stop"
+        s.response_task = asyncio.create_task(asyncio.sleep(30))
+        worker = asyncio.create_task(s.transcribe_loop())
+        s.enqueue(Utterance(2, b"audio", time.monotonic(), time.monotonic()))
+        for _ in range(50):
+            if s.metrics["interrupt_attempted"]:
+                break
+            await asyncio.sleep(0.01)
+        assert s.metrics["interrupt_keyword_detected"] == 1
+        assert s.metrics["interrupt_attempted"] == 1
+        assert s.playback.stop.await_count >= 1
+        await s.stop()
+        worker.cancel()
+        await asyncio.gather(worker, return_exceptions=True)
+
+    run(check())
+
+
 def test_failure_notifies_once_and_cleans_up():
     async def check():
         s = setup()

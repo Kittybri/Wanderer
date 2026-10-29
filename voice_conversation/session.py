@@ -412,7 +412,7 @@ class Session:
             if self.leave_requested:
                 continue
             mode = self.user_interrupt.get(uid, self.interrupt_mode)
-            if mode == "KEYWORD" and uid == self.focus:
+            if mode == "KEYWORD":
                 keyword = is_interrupt_keyword(text, self.name)
                 if keyword:
                     self.decision("interrupt_keyword_detected", uid)
