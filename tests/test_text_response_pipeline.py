@@ -115,6 +115,30 @@ def test_actual_text_generation_keeps_question_and_answer(runtime, monkeypatch, 
     assert not loop.run_until_complete(mod.mem.get_history(101, 202))[-1]["role"] == "assistant"
 
 
+def test_voice_response_skips_duplicate_self_edit_and_reports_stage_times(runtime, monkeypatch):
+    mod, loop, user = runtime
+    monkeypatch.setattr(mod, "groq_call", AsyncMock(return_value="Yes, I can hear you."))
+    edit = AsyncMock(side_effect=lambda reply, **_kwargs: reply)
+    monkeypatch.setattr(mod, "_maybe_self_edit_reply", edit)
+    metrics = {}
+    reply = loop.run_until_complete(mod.get_response(
+        101, 202, "Wanderer, can you hear me?", user, "Synthetic", "<@101>",
+        defer_delivery=True, _voice_metrics=metrics,
+    ))
+    assert reply == "Yes, I can hear you."
+    assert edit.await_count == 1
+    assert all(isinstance(metrics[key], int) and metrics[key] >= 0 for key in (
+        "voice_context_ms", "voice_generation_ms", "voice_post_ms",
+    ))
+
+    edit.reset_mock()
+    loop.run_until_complete(mod.get_response(
+        101, 202, "Can you still hear me?", user, "Synthetic", "<@101>",
+        defer_delivery=True,
+    ))
+    assert edit.await_count == 2  # The non-voice legacy response path is untouched.
+
+
 @pytest.mark.parametrize("drafts,expected", [
     (["", "Paris."], "Paris."),
     (["Say what you mean.", "Paris."], "Paris."),

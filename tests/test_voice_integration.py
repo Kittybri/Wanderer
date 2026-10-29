@@ -222,6 +222,8 @@ def test_start_callbacks_and_automatic_membership_shutdown(monkeypatch):
         await session.respond(2, "Scaramouche, hello", "Voice context")
         assert service.respond.call_args.args[0] == 2
         assert service.respond.call_args.args[4] == "Other"
+        assert isinstance(service.respond.call_args.kwargs["_voice_metrics"], dict)
+        assert session.metrics["voice_user_lookup_ms"] >= 0
         reply = await session.respond(
             1, "Scaramouche, I can't breathe", "Voice context"
         )

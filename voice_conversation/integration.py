@@ -446,25 +446,35 @@ class VoiceConversation:
                 vc = await channel.connect(cls=client_class, self_deaf=False)
 
                 async def respond(uid, text, extra):
+                    lookup_started = time.monotonic()
                     member = ctx.guild.get_member(uid)
                     if not member or uid not in session.participants:
                         return ""
                     await self.mem.upsert_user(uid, str(member), member.display_name)
                     user = await self.mem.get_user(uid) or {}
-                    safety = protective_prompt(self.name, classify_safety(text))
-                    return await self.respond(
-                        uid,
-                        channel.id,
-                        text,
-                        user,
-                        member.display_name,
-                        member.mention,
-                        extra_context=extra + "\n" + safety,
-                        is_owner=uid == self.owner_id,
-                        channel_obj=channel,
-                        is_dm=False,
-                        defer_delivery=True,
+                    session.metrics["voice_user_lookup_ms"] = round(
+                        (time.monotonic() - lookup_started) * 1000
                     )
+                    safety = protective_prompt(self.name, classify_safety(text))
+                    timings = {}
+                    try:
+                        return await self.respond(
+                            uid,
+                            channel.id,
+                            text,
+                            user,
+                            member.display_name,
+                            member.mention,
+                            extra_context=extra + "\n" + safety,
+                            is_owner=uid == self.owner_id,
+                            channel_obj=channel,
+                            is_dm=False,
+                            defer_delivery=True,
+                            _voice_metrics=timings,
+                        )
+                    finally:
+                        for key, value in timings.items():
+                            session.metrics[key] = value
 
                 async def synthesize(uid, text):
                     user = await self.mem.get_user(uid) or {}

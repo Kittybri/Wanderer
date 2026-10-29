@@ -3827,7 +3827,9 @@ def _sanitize_partner_dialogue_reply(text: str, guild, *, partner_mention: str =
 # ── Core AI response ──────────────────────────────────────────────────────────
 async def get_response(user_id, channel_id, user_message, user, display_name,
                        author_mention, use_search=False, extra_context="",
-                       is_owner=False, channel_obj=None, is_dm=False, direct_to_me=True, defer_delivery=False, *, _text_policy=False):
+                       is_owner=False, channel_obj=None, is_dm=False, direct_to_me=True, defer_delivery=False, *, _text_policy=False, _voice_metrics=None):
+    voice_started = time.monotonic() if _voice_metrics is not None else None
+    voice_generation_started = voice_started
     recent_replies: list[str] = []
     search_sources = ""
     rate_limited = False
@@ -4093,6 +4095,9 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
             duo_mode=(duo_session or {}).get("mode", ""),
             has_lore=bool(lore_hook or lore_tree or unlock_scene),
         )
+        if _voice_metrics is not None:
+            _voice_metrics["voice_context_ms"] = round((time.monotonic() - voice_started) * 1000)
+            voice_generation_started = time.monotonic()
         reply = ""
         if groq_client.is_exhausted():
             rate_limited = True
@@ -4182,6 +4187,12 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
                 scope_tag="response:error",
                 protective=protective_input,
             )
+
+    if _voice_metrics is not None:
+        _voice_metrics["voice_generation_ms"] = round(
+            (time.monotonic() - voice_generation_started) * 1000
+        )
+        voice_post_started = time.monotonic()
 
     try:
         await mem.add_message(user_id, channel_id, "user", user_message)
@@ -4326,7 +4337,10 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
         conflict_open=(refreshed_user or user or {}).get("conflict_open", False),
         preserve_content=_text_policy,
     )
-    if not _text_policy and not protective_input and not rate_limited:
+    # Voice already checked and, when needed, rewrote the draft above. A second
+    # self-edit sends another LLM request before audio can start, without adding
+    # a distinct quality check. Keep the existing text path unchanged.
+    if not _text_policy and _voice_metrics is None and not protective_input and not rate_limited:
         reply = await _maybe_self_edit_reply(
             reply,
             recent_replies=recent_replies,
@@ -4365,6 +4379,8 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
     if is_dm and HOME.client.enabled:
         try: await HOME.roommate(user_id, reply, user or {})
         except Exception: pass
+    if _voice_metrics is not None:
+        _voice_metrics["voice_post_ms"] = round((time.monotonic() - voice_post_started) * 1000)
     return reply
 
 
