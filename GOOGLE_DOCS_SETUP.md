@@ -56,6 +56,20 @@ Example:
 !fixdoc https://docs.google.com/document/d/your-doc-id/edit tighten the wording but keep the meaning
 ```
 
+`!fixdoc` is limited to the bot operator (`OWNER_ID`) and only works in a DM with the bot: the service account can
+edit every document shared with it, so anyone who saw a link could otherwise have rewritten it. The bot sends the
+complete proposed text as a private attachment; nothing is written until you send `!fixdoc confirm <token>` in the
+same DM within 10 minutes, and the edit is refused if the document changed since the preview. Documents over 10,000
+characters are not previewed. Editing through the worker is not used for this, because it cannot show a preview.
+
+## Worker security
+
+The worker refuses to start without `VIDEO_RENDER_SECRET` (at least 16 characters, in its environment or in
+`video_render_worker.env`), and every request must carry the same value. It listens on `127.0.0.1` by default, which
+is what the cloudflared tunnel in `start_video_render_stack.bat` connects to; set `VIDEO_RENDER_HOST=0.0.0.0` only if
+the bot must reach it directly over your network. Requests may only set the voice-related `env_overrides` the bot
+sends; anything else is ignored.
+
 ## Worker usage
 
 If your worker is exposed through your tunnel, call:

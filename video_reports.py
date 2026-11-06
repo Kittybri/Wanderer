@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import doc_extract
 import asyncio
 import json
 import os
@@ -466,21 +467,11 @@ async def extract_teaching_material(attachment, *, topic: str = "", bot_name: st
         file_bytes = await download_attachment_bytes(attachment)
 
         if "pdf" in content_type or filename.endswith(".pdf"):
+            # documents are parsed in a resource-limited child process (doc_extract.py), never on the event loop
             try:
-                import io as _io
-                import pdfplumber
-
-                with pdfplumber.open(_io.BytesIO(file_bytes)) as pdf:
-                    material_content = "\n".join(page.extract_text() or "" for page in pdf.pages)[:8000]
-            except Exception:
-                try:
-                    import io as _io
-                    import PyPDF2
-
-                    reader = PyPDF2.PdfReader(_io.BytesIO(file_bytes))
-                    material_content = "\n".join(page.extract_text() or "" for page in reader.pages)[:8000]
-                except Exception as exc:
-                    raise RuntimeError(f"Couldn't read the PDF: {exc}") from exc
+                material_content = (await doc_extract.extract_text_isolated("pdf", file_bytes))[:8000]
+            except Exception as exc:
+                raise RuntimeError(f"Couldn't read the PDF: {exc}") from exc
 
         elif "image" in content_type or filename.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif")):
             try:
@@ -500,35 +491,13 @@ async def extract_teaching_material(attachment, *, topic: str = "", bot_name: st
 
         elif filename.endswith((".pptx", ".ppt")):
             try:
-                import io as _io
-                from pptx import Presentation as _Prs
-
-                prs = _Prs(_io.BytesIO(file_bytes))
-                parts = []
-                for index, slide in enumerate(prs.slides, start=1):
-                    slide_texts = []
-                    for shape in slide.shapes:
-                        if hasattr(shape, "text") and shape.text.strip():
-                            slide_texts.append(shape.text.strip())
-                    if slide_texts:
-                        parts.append(f"[Slide {index}]\n" + "\n".join(slide_texts))
-                material_content = "\n\n".join(parts)[:6000]
+                material_content = (await doc_extract.extract_text_isolated("pptx", file_bytes))[:6000]
             except Exception as exc:
                 raise RuntimeError(f"Couldn't read the PowerPoint: {exc}") from exc
 
         elif filename.endswith((".docx", ".doc")):
             try:
-                import io as _io
-                import docx as _docx
-
-                doc = _docx.Document(_io.BytesIO(file_bytes))
-                parts = [paragraph.text.strip() for paragraph in doc.paragraphs if paragraph.text.strip()]
-                for table in doc.tables:
-                    for row in table.rows:
-                        row_text = " | ".join(cell.text.strip() for cell in row.cells if cell.text.strip())
-                        if row_text:
-                            parts.append(row_text)
-                material_content = "\n".join(parts)[:6000]
+                material_content = (await doc_extract.extract_text_isolated("docx", file_bytes))[:6000]
             except Exception as exc:
                 raise RuntimeError(f"Couldn't read the Word document: {exc}") from exc
 

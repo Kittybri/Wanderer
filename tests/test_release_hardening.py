@@ -42,13 +42,14 @@ def test_unrestricted_command_reads_and_writes_renamed_preference(
     monkeypatch, tmp_path, mode, current, expected
 ):
     runtime, loop = load_runtime(monkeypatch, tmp_path)
-    setup = AsyncMock(return_value={"unrestricted_mode": current})
+    # (turning it on needs a DM or an age-restricted channel and a stored 18+ confirmation; see the tests below)
+    setup = AsyncMock(return_value={"unrestricted_mode": current, "adult_confirmed": True})
     set_mode = AsyncMock()
     reply = AsyncMock()
     monkeypatch.setattr(runtime, "_setup", setup)
     monkeypatch.setattr(runtime.mem, "set_mode", set_mode)
     monkeypatch.setattr(runtime, "safe_reply", reply)
-    ctx = SimpleNamespace(author=SimpleNamespace(id=73))
+    ctx = SimpleNamespace(author=SimpleNamespace(id=73), guild=None, channel=None, reply=AsyncMock())
 
     try:
         loop.run_until_complete(

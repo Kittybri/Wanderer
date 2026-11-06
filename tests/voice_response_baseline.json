@@ -1,6 +1,6 @@
 {
   "base": "537bc0d4b9ac462f7df3d743bc5c5d7d9a96264c",
-  "voice_revision": "2026-10-28 live-voice repair: partner filtering, cross-speaker keyword interruption, empty-channel join, optional arrival greeting, and Wanderer voice-only duplicate self-edit removal with sanitized stage timings. 2026-10-29: opening-only Wander alias and fast, delivered-only interruption reaction during concurrent answer generation; text behavior remains unchanged",
+  "voice_revision": "2026-10-28 live-voice repair: partner filtering, cross-speaker keyword interruption, empty-channel join, optional arrival greeting, and Wanderer voice-only duplicate self-edit removal with sanitized stage timings. 2026-10-29: opening-only Wander alias and fast, delivered-only interruption reaction during concurrent answer generation; text behavior remains unchanged; 2026-11-06 reviewed audit fix: get_response gains allow_unrestricted (derived from channel_obj/is_dm when not passed) so unrestricted mode applies only in DMs and age-restricted channels after an 18+ confirmation; prompts, provider routes, fallbacks and memory semantics are otherwise unchanged",
   "functions": {
     "_provider_pause_reply": "fa73401756b5dcfdda2418fb81510191ee6db0e1a5bba66f37eb562eb7b9fd96",
     "_guarded_fallback_reply": "9253eebdf5e596bff9c828e152072d867cd96133c7f67c029ee824f5b8b1ccaa",
@@ -12,7 +12,7 @@
     "groq_call": "b9e6c4870aa119f9b2a19014f246617dfabbb2a3b1affe77f6ab22fc9ac5bcfe",
     "_groq_quick_blocking": "9b316f173f3a694a702b99406bb6053cebee128c34b7ec52e3a4ee85217f2d40",
     "qai": "03765bcddd1d704e1471eb98c96df5eb95744447a86d0ec751223c3d024ad9d9",
-    "get_response": "acb2da9c763d452e5333166f8cd35a1f5cf84dd7b40932bf35fd43dbaf8fc711",
+    "get_response": "9931f4b1e5b18bdcfa5ad5cced2b0cbbfabfb949fb816fd7e88ff0149a4b653d",
     "get_audio_with_mood": "e83ad6daae1693f1fc207348d2d61c3b390cc926a660cfc7b780b69c9fa7c14f",
     "send_voice": "8d54a54ff68a9387c410449fc04836887fbb6c29f683b3e2b95a70af07023029",
     "voice_cmd": "4336697447c1adecd9ba75c1438dce35ba7295e794a955b2f4a758ac484ab1e6"

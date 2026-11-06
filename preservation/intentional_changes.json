@@ -54,5 +54,13 @@
     "replacement": "Wanderer already had /world state and /world add. Add /world prefs; preserve the old prefix commands as callable compatibility paths.",
     "privacy_impact": "Weather location and world preferences use private slash responses. Prefix behavior, user ownership, and deletion boundaries remain intact.",
     "validation": "Slash registration and behavior tests, runtime preservation manifest and diff checks, full suites, and live staging slash-registration inspection."
+  },
+  {
+    "authorization": "Current owner request (November 2026): \"Now audit wanderer bot on github, look for errors then fix them.\"",
+    "removed_surfaces": ["behavior:docfix_natural_language_trigger", "behavior:docfix_for_any_member", "behavior:unrestricted_mode_anywhere"],
+    "reason": "Audit fixes. !fixdoc let any member overwrite any Google Doc shared with the service account and could start from a heuristic phrase match; the owner's own fix from branch fix/wanderer-docfix-confirmation (operator only, DM only, full private preview, revision-bound confirmation) is merged. Unrestricted mode applied in public channels for anyone; it now needs a DM or an age-restricted channel and a stored 18+ confirmation.",
+    "replacement": "!fixdoc and its aliases stay registered; the operator uses them in a DM and confirms with !fixdoc confirm <token>. !unrestricted stays registered and asks for the 18+ confirmation once. !voice replies stay restricted because its legacy get_response call takes no keywords.",
+    "privacy_impact": "Positive: document previews are private, pending previews are cancelled by privacy deletion, and !memories, profiling commands, !rank and the stored relationship summary no longer surface DM content in servers.",
+    "validation": "tests/test_audit_fixes.py, tests/test_docfix_safety.py, updated unrestricted-command test, reviewed get_response baseline digest with voice_revision note, preservation and Tarot suites, full offline suite on Python 3.11."
   }
 ]
