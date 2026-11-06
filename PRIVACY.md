@@ -36,11 +36,12 @@ The bot stores its memory, settings, and owner face template in SQLite databases
 
 - Use `!reset` (or `!wipe`) to clear your stored conversation messages and much of the bot's remembered topics, jokes, and relationship state. This command **does not delete your entire account row, all preferences, every game or shared record, the face profile, or backups**.
 - Use `!proactive off` to stop proactive replies and `!dms off` to stop optional direct messages.
+- `!memories` used in a server is answered by DM, and commands that describe someone (such as `!stalk` or `!judge`) or rank people (`!rank`) only use what was said in that server, never DMs.
 - The owner can use `!deleteface` (or `!forgetface`) to remove the active face profile. The owner must separately request removal of any copies in backups.
 - To request a fuller deletion, correction, or a copy of data associated with your Discord user ID, contact the bot owner in the Discord server where you use Wanderer. Say which bot and user ID the request concerns. Do not put private details in a public GitHub issue. The owner must handle records and backups outside the scope of the commands above and any copies under their control.
 
 ## Age and changes
 
-Use the bot only if you meet Discord's minimum age requirement in your location. If you believe a younger person has used it, contact the owner to request deletion. This policy may change when the bot's features or providers change; the updated date above shows the latest revision.
+Use the bot only if you meet Discord's minimum age requirement in your location. Unfiltered mode (`!nsfw`) is for adults: it takes effect only after you confirm that you are 18 or older, and only in direct messages and age-restricted channels. If you believe a younger person has used it, contact the owner to request deletion. This policy may change when the bot's features or providers change; the updated date above shows the latest revision.
 
 Wanderer is an unofficial fan project and is not affiliated with HoYoverse.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hmac
 import json
 import os
 import queue
@@ -18,6 +19,30 @@ from google_docs_bridge import fetch_google_doc, overwrite_google_doc
 
 
 ROOT_DIR = Path(__file__).resolve().parent
+
+
+def _load_worker_env():
+    candidates = [
+        ROOT_DIR / "video_render_worker.env",
+        ROOT_DIR / ".env",
+    ]
+    for path in candidates:
+        if not path.exists():
+            continue
+        for raw_line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip().strip("\"'")
+            if key and value and not os.getenv(key):
+                os.environ[key] = value
+
+
+if __name__ == "__main__":
+    _load_worker_env()  # before the settings below are read, so a secret in video_render_worker.env takes effect
+
 DOWNLOADS_DIR = ROOT_DIR.parent
 SCARA_TEMPLATE_DIR = DOWNLOADS_DIR / "scaramouche_blender_templates"
 WANDERER_TEMPLATE_DIR = DOWNLOADS_DIR / "wanderer_blender_templates"
@@ -34,7 +59,9 @@ VIDEO_RENDER_SECRET = (
     or os.getenv("VIDEO_RENDER_SHARED_SECRET")
     or ""
 ).strip()
-VIDEO_RENDER_HOST = (os.getenv("VIDEO_RENDER_HOST") or "0.0.0.0").strip() or "0.0.0.0"
+# Loopback by default. To let the bot reach it over the network set VIDEO_RENDER_HOST=0.0.0.0 explicitly; every
+# request still needs VIDEO_RENDER_SECRET.
+VIDEO_RENDER_HOST = (os.getenv("VIDEO_RENDER_HOST") or "127.0.0.1").strip() or "127.0.0.1"
 VIDEO_RENDER_PORT = int(os.getenv("VIDEO_RENDER_PORT", "8765") or "8765")
 VIDEO_RENDER_MAX_QUEUE = int(os.getenv("VIDEO_RENDER_MAX_QUEUE", "6") or "6")
 WORKER_GROQ_MODEL = (os.getenv("GROQ_MODEL_PRIMARY") or "llama-3.3-70b-versatile").strip() or "llama-3.3-70b-versatile"
@@ -109,25 +136,6 @@ def _worker_rewrite_google_doc_text(bot_name: str, display_name: str, original_t
     return content or original_text
 
 
-def _load_worker_env():
-    candidates = [
-        ROOT_DIR / "video_render_worker.env",
-        ROOT_DIR / ".env",
-    ]
-    for path in candidates:
-        if not path.exists():
-            continue
-        for raw_line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
-            line = raw_line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, value = line.split("=", 1)
-            key = key.strip()
-            value = value.strip().strip("\"'")
-            if key and value and not os.getenv(key):
-                os.environ[key] = value
-
-
 def _video_root() -> Path:
     configured = (os.getenv("VIDEO_RENDER_ROOT") or "").strip()
     if configured:
@@ -138,14 +146,38 @@ def _video_root() -> Path:
     return path
 
 
+MIN_SECRET_LENGTH = 16
+
+
 def _authorized(headers) -> bool:
-    if not VIDEO_RENDER_SECRET:
-        return True
+    """Fail closed: without a configured secret nobody is authorized (anyone who could reach the port used to be
+    able to queue renders and rewrite Google Docs through /docfix)."""
+    if len(VIDEO_RENDER_SECRET) < MIN_SECRET_LENGTH:
+        return False
     token = (headers.get("X-Render-Secret") or "").strip()
     auth = (headers.get("Authorization") or "").strip()
     if not token and auth.lower().startswith("bearer "):
         token = auth[7:].strip()
-    return token == VIDEO_RENDER_SECRET
+    return hmac.compare_digest(token.encode(), VIDEO_RENDER_SECRET.encode())
+
+
+# The only environment variables a render request may set for the render process: the voice settings the bot sends
+# (video_reports._render_env_overrides). Anything else (PATH, PYTHONPATH, proxies, CA bundles ...) is ignored, so a
+# request cannot change how the subprocess runs or where its API calls go.
+ALLOWED_ENV_OVERRIDES = frozenset({
+    "FISH_AUDIO_API_KEY", "FISH_AUDIO_REFERENCE_ID", "FISH_REFERENCE_ID", "VOICE_ID",
+    "SCARAMOUCHE_FISH_VOICE_ID", "SCARAMOUCHE_VOICE_ID", "WANDERER_FISH_VOICE_ID", "WANDERER_VOICE_ID",
+    "PARTNER_FISH_VOICE_ID", "PARTNER_VOICE_ID",
+})
+
+
+def _clean_env_overrides(raw) -> dict[str, str]:
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        key: value[:512] for key, value in raw.items()
+        if key in ALLOWED_ENV_OVERRIDES and isinstance(value, str) and "\x00" not in value
+    }
 
 
 def _script_for_job(job_type: str, bot_name: str) -> Path:
@@ -211,10 +243,7 @@ def _run_render_script(
         cmd.extend(["--title", title.strip()])
 
     run_env = os.environ.copy()
-    if env_overrides:
-        for key, value in env_overrides.items():
-            if isinstance(key, str) and isinstance(value, str):
-                run_env[key] = value
+    run_env.update(_clean_env_overrides(env_overrides))
 
     proc = subprocess.run(
         cmd,
@@ -431,10 +460,7 @@ class RenderRequestHandler(BaseHTTPRequestHandler):
         if not isinstance(env_overrides, dict):
             self._send_json({"ok": False, "error": "env_overrides must be an object when provided."}, status=400)
             return
-        clean_overrides = {}
-        for key, value in env_overrides.items():
-            if isinstance(key, str) and isinstance(value, str):
-                clean_overrides[key] = value
+        clean_overrides = _clean_env_overrides(env_overrides)
 
         if job_type not in {"teaching", "duo"}:
             self._send_json({"ok": False, "error": "job_type must be 'teaching' or 'duo'."}, status=400)
@@ -474,10 +500,14 @@ class RenderRequestHandler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    _load_worker_env()
+    if len(VIDEO_RENDER_SECRET) < MIN_SECRET_LENGTH:
+        raise SystemExit(
+            "[video-worker] VIDEO_RENDER_SECRET (at least 16 characters) is required: without it anyone who can reach "
+            "this port could queue renders and rewrite Google Docs. Set it here and in the bot's environment."
+        )
     print(f"[video-worker] Starting on http://{VIDEO_RENDER_HOST}:{VIDEO_RENDER_PORT}")
     print(f"[video-worker] Queue size limit: {VIDEO_RENDER_MAX_QUEUE}")
-    print(f"[video-worker] Secret protection: {'enabled' if VIDEO_RENDER_SECRET else 'disabled'}")
+    print("[video-worker] Secret protection: enabled")
     worker_thread = threading.Thread(target=_worker_loop, daemon=True)
     worker_thread.start()
     server = ThreadingHTTPServer((VIDEO_RENDER_HOST, VIDEO_RENDER_PORT), RenderRequestHandler)

@@ -17,6 +17,9 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 from memory import Memory
+from narration import chunk_text, strip_narration as _strip_stage_directions
+from docfix_guard import DocFixPending
+import doc_extract
 from voice_handler import get_audio, get_audio_mooded
 from character_vision import ask_character_bot, vision_exhausted_remaining, vision_is_exhausted
 from face_memory import (
@@ -40,14 +43,12 @@ from google_docs_bridge import (
     fetch_google_doc,
     google_docs_ready,
     overwrite_google_doc,
-    service_account_email,
 )
 from memory_rebuild import collect_rank_rebuild_records, collect_rebuild_records, user_can_manage_rebuild
 from video_reports import (
     build_weather_video_notes,
     extract_teaching_material,
     fetch_rendered_video_bytes,
-    remote_fix_google_doc,
     render_duo_debate_video,
     render_teaching_video,
     video_renderer_available,
@@ -694,23 +695,11 @@ def _unwrap_dialogue_quotes(text: str) -> str:
 
 
 def strip_narration(text: str) -> str:
+    """Remove roleplay narration only (see narration.py). The old regexes deleted every *...*, (...) and [...] span:
+    bold text, "I do *not* care", f(x) = (x+1)^2, source links and the [ANSWER: ...] tag !trivia reads went with
+    it, and every mention resolve_mentions had just created."""
     try:
-        original = text
-        text = re.sub(r'\*[^*]+\*', '', text)
-        text = re.sub(r'\([^)]+\)', '', text)
-        text = re.sub(r'\[[^\]]+\]', '', text)
-        text = re.sub(r'\b(he|she|they|wanderer|kunikuzushi)\s+(said|replied|muttered|sighed|whispered|snapped)[,.]?\s*', '', text, flags=re.IGNORECASE)
-        text = re.sub(r'<@!?\d+>', '', text)
-        text = re.sub(r'<#\d+>', '', text)
-        text = re.sub(r'<@&\d+>', '', text)
-        text = re.sub(r'\s{2,}', ' ', text).strip().lstrip('.,; ')
-        text = _unwrap_dialogue_quotes(text)
-        if not text or len(text) < 3:
-            text = original.replace('*','').replace('[','').replace(']','').replace('(','').replace(')','')
-            text = re.sub(r'<@!?\d+>', '', text)
-            text = re.sub(r'\s{2,}', ' ', text).strip().lstrip('.,; ')
-            text = _unwrap_dialogue_quotes(text)
-        return text
+        return _unwrap_dialogue_quotes(_strip_stage_directions(text))
     except Exception:
         return text
 
@@ -1194,13 +1183,34 @@ _ROMANCE      = "\n\n## Attached to {name} (TSUNDERE):\nYou care about {name} an
 _NSFW_ROMANCE = "\n\n## Attached to {name}, unfiltered:\nSame intensity but you can't hide behind deflection anymore. The desire is real and you're mortified. 'Stop looking at me like that.' Beat. '...Don't stop.'"
 _OWNER_EXTRA  = "\n\n## Creator:\nThis person built you. Chose everything about you. 'You aren't worried about making me more powerful? ...Alright.' You have feelings about this you refuse to examine."
 
-def build_system(user, display_name="you", is_owner=False):
+def _channel_allows_nsfw(channel=None, *, is_dm: bool = False) -> bool:
+    """Unfiltered mode only applies in DMs and age-restricted channels."""
+    if is_dm or isinstance(channel, discord.DMChannel):
+        return True
+    if not channel or not getattr(channel, "guild", None):
+        return False
+    try:
+        return bool(channel.is_nsfw())
+    except (AttributeError, TypeError):
+        return False
+
+
+def _unfiltered(user, allow_nsfw: bool) -> bool:
+    """Unfiltered mode needs all three: the person turned it on, confirmed they are 18 or older, and the reply goes to
+    a DM or an age-restricted channel (``allow_nsfw``)."""
+    return bool(allow_nsfw and user and user.get("nsfw_mode") and user.get("adult_confirmed"))
+
+
+def build_system(user, display_name="you", is_owner=False, *, allow_nsfw: bool = False):
+    """``allow_nsfw``: the reply goes to a DM or an age-restricted channel. It used to apply anywhere, public channels
+    included, for anyone."""
     try:
         if not user: return _BASE
         s = _BASE
         if is_owner: s += _OWNER_EXTRA
-        if user.get("nsfw_mode") and user.get("romance_mode"): s += _NSFW_ROMANCE.format(name=display_name)
-        elif user.get("nsfw_mode"): s += _NSFW
+        unfiltered = _unfiltered(user, allow_nsfw)
+        if unfiltered and user.get("romance_mode"): s += _NSFW_ROMANCE.format(name=display_name)
+        elif unfiltered: s += _NSFW
         elif user.get("romance_mode"): s += _ROMANCE.format(name=display_name)
         return s
     except Exception:
@@ -1231,7 +1241,11 @@ def trust_tier(t):
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
-bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
+# Bot-wide default for sends that do not pass their own: model text or echoed user text can never ping
+# @everyone, @here or a role.
+BOT_ALLOWED_MENTIONS = discord.AllowedMentions(everyone=False, roles=False, users=True, replied_user=True)
+MESSAGE_CHAR_LIMIT = 1900  # Discord refuses messages over 2000 characters; longer replies are sent in pieces
+bot = commands.Bot(command_prefix="!", intents=intents, help_command=None, allowed_mentions=BOT_ALLOWED_MENTIONS)
 mem = Memory("wanderer")
 BOT_NAME = "wanderer"
 PARTNER_NAME = "scaramouche"
@@ -2242,24 +2256,6 @@ def _attachment_vision_note(filename: str = "", text: str = "") -> str:
     return ""
 
 
-def _extract_pdf_preview_text(file_bytes: bytes, *, max_chars: int = 2400) -> str:
-    text = ""
-    try:
-        import pdfplumber
-
-        with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-            text = "\n".join((page.extract_text() or "")[:900] for page in pdf.pages[:3])
-    except Exception:
-        try:
-            import PyPDF2
-
-            reader = PyPDF2.PdfReader(io.BytesIO(file_bytes))
-            text = "\n".join((page.extract_text() or "")[:900] for page in reader.pages[:3])
-        except Exception:
-            text = ""
-    return re.sub(r"\s+", " ", text or "").strip()[:max_chars]
-
-
 async def _attachment_context_for_message(message, content: str, *, direct: bool = False) -> str:
     chunks: list[str] = []
     try:
@@ -2307,7 +2303,10 @@ async def _attachment_context_for_message(message, content: str, *, direct: bool
                 async with _aiohttp.ClientSession() as _sess:
                     async with _sess.get(pdf_attachment.url) as _resp:
                         file_bytes = await _resp.read()
-                preview_text = _extract_pdf_preview_text(file_bytes)
+                try:
+                    preview_text = re.sub(r"\s+", " ", await doc_extract.extract_text_isolated("pdf", file_bytes)).strip()[:2400]
+                except doc_extract.DocumentRejected:
+                    preview_text = ""
                 if preview_text:
                     chunks.append(f"ATTACHMENT_PDF:{pdf_attachment.filename[:80]}|{preview_text[:900]}")
                     await _remember_attachment_artifact(
@@ -3486,7 +3485,11 @@ def _sanitize_partner_dialogue_reply(text: str, guild, *, partner_mention: str =
 # ── Core AI response ──────────────────────────────────────────────────────────
 async def get_response(user_id, channel_id, user_message, user, display_name,
                        author_mention, use_search=False, extra_context="",
-                       is_owner=False, channel_obj=None, is_dm=False, direct_to_me=True):
+                       is_owner=False, channel_obj=None, is_dm=False, direct_to_me=True, allow_nsfw=None):
+    # allow_nsfw: whether this reply may use unfiltered mode. Callers that do not pass it get it from channel_obj /
+    # is_dm; without either, the reply stays filtered.
+    if allow_nsfw is None:
+        allow_nsfw = _channel_allows_nsfw(channel_obj, is_dm=is_dm)
     recent_replies: list[str] = []
     search_sources = ""
     rate_limited = False
@@ -3758,7 +3761,7 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
             )
         else:
             history.append({"role": "user", "content": context_block})
-            system = build_system(user, display_name, is_owner)
+            system = build_system(user, display_name, is_owner, allow_nsfw=allow_nsfw)
             retry_context = context_block
             for attempt in range(2):
                 draft_history = history[:-1] + [{"role": "user", "content": retry_context}]
@@ -4269,7 +4272,11 @@ async def safe_reply(ctx, text):
         return
     if _is_banned_channel_target(ctx):
         return
-    try: await ctx.reply(text)
+    pieces = chunk_text(text, MESSAGE_CHAR_LIMIT)
+    try:
+        await ctx.reply(pieces[0])
+        for piece in pieces[1:]:
+            await ctx.send(piece)
     except Exception as e: log_error("safe_reply", e)
 
 async def safe_send(ctx, text):
@@ -4278,8 +4285,21 @@ async def safe_send(ctx, text):
         return
     if _is_banned_channel_target(ctx):
         return
-    try: await ctx.send(text)
+    try:
+        for piece in chunk_text(text, MESSAGE_CHAR_LIMIT):
+            await ctx.send(piece)
     except Exception as e: log_error("safe_send", e)
+
+
+async def _visible_messages(ctx, user_id: int, limit: int) -> list[str]:
+    """Messages a command may quote or profile in front of the people who can see ``ctx``: in a server only what that
+    person said in this server (never their DMs with the bot or other servers); in a DM your own messages in full,
+    somebody else's only from server channels."""
+    if ctx.guild is not None:
+        return await mem.get_recent_messages(user_id, limit, guild_id=ctx.guild.id)
+    if user_id == ctx.author.id:
+        return await mem.get_recent_messages(user_id, limit)
+    return await mem.get_recent_messages(user_id, limit, public_only=True)
 
 
 @bot.command(name="bothealth")
@@ -4422,51 +4442,78 @@ async def _rewrite_google_doc_text(display_name: str, original_text: str, instru
     return cleaned if cleaned else original_text
 
 
+_DOCFIX_PENDING = DocFixPending(ttl_seconds=600, limit=12)
+
+
 async def _run_docfix_request(ctx, doc_and_instructions: str = ""):
-    await _setup(ctx)
-    doc_link, instructions = _split_docfix_args(doc_and_instructions)
-    if not doc_link:
-        await safe_reply(
-            ctx,
-            "Send a Google Docs link with the command. Example: `!fixdoc <google-doc-link> tighten the wording but keep the meaning`.",
-        )
+    # Legacy service-account access is not user-bound OAuth: operator-only
+    # until the separate Docs Phase 2 authorization design is completed.
+    if not OWNER_ID or ctx.author.id != OWNER_ID:
+        await safe_reply(ctx, "Google Docs editing is currently limited to the bot operator.")
         return
-    ready, reason = google_docs_ready()
-    share_email = service_account_email()
-    await ctx.reply(
-        random.choice(
-            [
-                "Alright. I'll read through it and smooth out the wording. Give me a minute.",
-                "I'm going through the document now. Let me fix it properly.",
-                "I'll revise it in the doc itself. Wait.",
-            ]
+    raw = (doc_and_instructions or "").strip()
+    if raw.lower().startswith("confirm "):
+        if ctx.guild is not None:
+            await safe_reply(ctx, "Confirm document edits in your Discord DM, not a public channel.")
+            return
+        token = raw.split(None, 1)[1].strip()
+        record = _DOCFIX_PENDING.take(ctx.author.id, token)
+        if not record:
+            await safe_reply(ctx, "That document preview expired or was already used. Start a new !fixdoc request.")
+            return
+        current = await asyncio.to_thread(fetch_google_doc, record["url"], max_chars=0)
+        if (current.get("doc_id") != record["doc_id"]
+                or current.get("revision_id") != record["revision"]
+                or current.get("text") != record["original"]):
+            await safe_reply(ctx, "The Google Doc changed after your preview. Nothing was written; start again.")
+            return
+        # Google Docs' writeControl protects against edits between read and write.
+        await asyncio.to_thread(
+            overwrite_google_doc, record["url"], record["revision_text"],
+            required_revision_id=record["revision"],
         )
-    )
-    async with ctx.typing():
-        if ready:
-            doc = await asyncio.get_event_loop().run_in_executor(None, lambda: fetch_google_doc(doc_link))
-            if not (doc.get("text") or "").strip():
-                await safe_send(ctx, "The Google Doc is empty, or there was nothing readable in it.")
-                return
-            revised = await _rewrite_google_doc_text(ctx.author.display_name, doc["text"], instructions)
-            result = await asyncio.get_event_loop().run_in_executor(None, lambda: overwrite_google_doc(doc_link, revised))
-        else:
-            result = await remote_fix_google_doc(
-                doc_link,
-                bot_name=BOT_NAME,
-                display_name=ctx.author.display_name,
-                instructions=instructions,
-            )
-    if ready:
-        await safe_send(
-            ctx,
-            f"It's updated. I revised `{result['title']}` in place. If Google blocks access later, share the doc with `{share_email}` as an editor.",
+        await safe_reply(ctx, "Your confirmed Google Doc edit was applied.")
+        return
+
+    await _setup(ctx)
+    doc_link, instructions = _split_docfix_args(raw)
+    if not doc_link:
+        await safe_reply(ctx, "Use !fixdoc <Google Doc link> [instructions], then confirm privately.")
+        return
+    if ctx.guild is not None:
+        await safe_reply(ctx, "For document privacy, send !fixdoc in my Discord DM.")
+        return
+    if not google_docs_ready()[0]:
+        await safe_reply(ctx, "The legacy document worker cannot safely confirm writes. A local Google Docs service account is required for previews.")
+        return
+    document = await asyncio.to_thread(fetch_google_doc, doc_link, max_chars=0)
+    original = document.get("text") or ""
+    revision = document.get("revision_id")
+    if not revision or not original.strip() or len(original) > 10000:
+        await safe_reply(ctx, "This document cannot be safely previewed (empty, oversized or missing revision). No changes were made.")
+        return
+    proposed = await _rewrite_google_doc_text(ctx.author.display_name, original, instructions)
+    if not proposed.strip() or len(proposed) > 16000:
+        await safe_reply(ctx, "The proposed edit is empty or too large to review safely. Nothing was written.")
+        return
+    token = _DOCFIX_PENDING.create(ctx.author.id, {
+        "url": doc_link, "doc_id": document["doc_id"], "revision": revision,
+        "original": original, "revision_text": proposed,
+    })
+    # Show the entire proposed text as a private attachment, not a snippet.
+    import io
+    preview = discord.File(io.BytesIO(proposed.encode("utf-8")), filename="google-doc-proposed-edit.txt")
+    try:
+        await ctx.author.send(
+            "This is a PREVIEW. Your original Google Doc is unchanged. "
+            "Review the complete attached text, then send `!fixdoc confirm " + token
+            + "` here within 10 minutes to approve the exact preview. "
+            "Do not forward the private preview or confirmation token.",
+            file=preview, allowed_mentions=discord.AllowedMentions.none(),
         )
-    else:
-        await safe_send(
-            ctx,
-            f"It's updated. I revised `{result['title']}` through the worker because Railway does not have the Google credential yet. If access fails, share the doc with `{share_email}` as an editor. Local note: {reason}",
-        )
+    except (discord.Forbidden, discord.HTTPException):
+        _DOCFIX_PENDING.take(ctx.author.id, token)
+        await safe_reply(ctx, "I couldn't DM the preview. Nothing was written.")
 
 
 def _weathervideo_time_hint(use_duo: bool) -> str:
@@ -4784,6 +4831,29 @@ async def _run_duo_prompt_for_actor(
     )
     return user, reply
 
+class AdultConfirmView(discord.ui.View):
+    """One-time 18+ confirmation, bound to the person who asked for unfiltered mode."""
+
+    def __init__(self, uid):
+        super().__init__(timeout=120)
+        self.uid = uid
+
+    @discord.ui.button(label="I am 18 or older", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction, button):
+        try:
+            if interaction.user.id != self.uid:
+                await interaction.response.send_message("That's not yours.", ephemeral=True)
+                return
+            await mem.set_mode(self.uid, "adult_confirmed", True)
+            await mem.set_mode(self.uid, "nsfw_mode", True)
+            button.disabled = True
+            await interaction.response.edit_message(content="Unfiltered. Fine.", view=self)
+        except Exception as e:
+            log_error("AdultConfirmView", e)
+            if not interaction.response.is_done():
+                await interaction.response.send_message("That did not go through. Try `!nsfw on` again.", ephemeral=True)
+
+
 class ResetView(discord.ui.View):
     def __init__(self, uid):
         super().__init__(timeout=60); self.uid = uid
@@ -4793,6 +4863,7 @@ class ResetView(discord.ui.View):
             if interaction.user.id != self.uid:
                 await interaction.response.send_message("That's not yours.", ephemeral=True); return
             await mem.reset_user(self.uid)
+            _DOCFIX_PENDING.forget(self.uid)
             button.disabled = True; button.label = "✓ Memory Wiped"
             await interaction.response.edit_message(content="...Gone. Fine.", view=self)
         except Exception as e: log_error("ResetView", e)
@@ -5429,7 +5500,7 @@ async def _handle_message_pipeline(message):
             await _handle_partner_message(message, target_info=await _partner_message_target_info(message))
             return
 
-        if (not message.author.bot) and (not ctx.valid) and _looks_like_docfix_request(raw_stripped):
+        if (not message.author.bot) and (not ctx.valid) and raw_stripped.lower().startswith("!fixdoc "):
             await _run_docfix_request(ctx, raw_stripped)
             return
 
@@ -5578,10 +5649,12 @@ async def _handle_message_pipeline(message):
 
         try:
             if await mem.needs_summary(message.author.id):
-                recent = await mem.get_recent_messages(message.author.id, 30)
+                # used in server replies too, so written from server messages only; a fallback line never replaces it
+                recent = await mem.get_recent_messages(message.author.id, 30, public_only=True)
                 sample = " | ".join(recent[:20])[:800]
-                summary = await qai(f"Summarize the Wanderer's relationship with {message.author.display_name} based on: '{sample}'. First person, compressed memory. 3-4 sentences.", 300)
-                await mem.save_summary(message.author.id, summary)
+                summary = await qai(f"Summarize the Wanderer's relationship with {message.author.display_name} based on: '{sample}'. First person, compressed memory. 3-4 sentences.", 300) if recent else ""
+                if len((summary or "").strip()) >= 40:
+                    await mem.save_summary(message.author.id, summary)
         except Exception as e: log_error("on_message/summary", e)
 
         # Image & video reading
@@ -5632,7 +5705,8 @@ async def _handle_message_pipeline(message):
                         user = user or {}
                         mood = user.get("mood", 0) if user else 0
                         system = build_system(user, message.author.display_name,
-                                             bool(OWNER_ID and message.author.id == OWNER_ID))
+                                             bool(OWNER_ID and message.author.id == OWNER_ID),
+                                             allow_nsfw=_channel_allows_nsfw(message.channel, is_dm=not message.guild))
                         vision_content = []
                         for fb, mt in frames:
                             vision_content.append({
@@ -5685,7 +5759,8 @@ async def _handle_message_pipeline(message):
                     user = user or {}
                     mood = user.get("mood", 0) if user else 0
                     system = build_system(user, message.author.display_name,
-                                         bool(OWNER_ID and message.author.id == OWNER_ID))
+                                         bool(OWNER_ID and message.author.id == OWNER_ID),
+                                         allow_nsfw=_channel_allows_nsfw(message.channel, is_dm=not message.guild))
                     if enroll_face_now:
                         if not face_support_ready():
                             await message.reply(_face_feature_unavailable_text())
@@ -6042,8 +6117,12 @@ async def _handle_message_pipeline(message):
                     jealousy_level=jealousy_level,
                 )
 
-            final = strip_narration(resolve_mentions(reply, message.guild if message.guild else None))
-            await message.reply(final)
+            final = resolve_mentions(strip_narration(reply), message.guild if message.guild else None)
+            pieces = chunk_text(final, MESSAGE_CHAR_LIMIT)  # a reply over 2000 characters used to fail and reach nobody
+            if pieces:
+                await message.reply(pieces[0])
+                for piece in pieces[1:]:
+                    await message.channel.send(piece)
             await mem.add_message(message.author.id, dm_channel_id, "assistant", reply)
             await _maybe_schedule_private_confession_scene(message, user, content, is_dm=is_dm)
             await maybe_react(message, romance)
@@ -6440,8 +6519,11 @@ async def progress_cmd(ctx):
         trust = user.get("trust", 0) if user else 0
         msg_count = user.get("message_count", 0) if user else 0
         romance = user.get("romance_mode", False) if user else False
-        # Get recent messages to evaluate behavior
-        recent = await mem.get_recent_messages(ctx.author.id, 15)
+        # His own recent replies to this person (it used to pass their messages off as his); in a server only the ones
+        # sent in that server, so nothing from a DM is read out in public
+        recent = await mem.get_recent_assistant_messages(
+            15, user_id=ctx.author.id, guild_id=ctx.guild.id if ctx.guild else None,
+        )
         recent_sample = " | ".join(recent[:10])[:600] if recent else "no recent messages"
         async with ctx.typing():
             msg = await qai(
@@ -6471,7 +6553,8 @@ async def voice_cmd(ctx, *, msg: str = None):
             return
         if not msg: msg = "You called me without saying anything. Typical."
         async with ctx.typing():
-            text_reply = await get_response(ctx.author.id, ctx.channel.id, msg, user, ctx.author.display_name, ctx.author.mention)
+            text_reply = await get_response(ctx.author.id, ctx.channel.id, msg, user, ctx.author.display_name, ctx.author.mention,
+                allow_nsfw=_channel_allows_nsfw(ctx.channel, is_dm=ctx.guild is None))
             sent = await send_voice(ctx.channel, text_reply, mood=mood_val, guild=ctx.guild, user=user, user_id=ctx.author.id)
         if sent:
             await mem.add_message(ctx.author.id, ctx.channel.id, "assistant", f"[voice message] {text_reply}")
@@ -6514,7 +6597,7 @@ async def _do_tedtalk(ctx, attachment, topic, msg_id=None):
         await ctx.send(random.choice(["...I'm reading it. Don't rush me.", "Going through the material. Give me a moment.", "...Processing. I'll tell you when I'm done."]))
         if attachment:
             ct = (attachment.content_type or "").lower()
-            import base64, aiohttp as _ah
+            import aiohttp as _ah
             try:
                 async with _ah.ClientSession() as s:
                     async with s.get(attachment.url) as r:
@@ -6523,22 +6606,13 @@ async def _do_tedtalk(ctx, attachment, topic, msg_id=None):
 
             if "pdf" in ct or attachment.filename.lower().endswith(".pdf"):
                 try:
-                    pdf_b64 = base64.b64encode(file_bytes).decode()
-                    def _ext():
-                        return "PDF content extraction"
-                    material_content = await asyncio.get_event_loop().run_in_executor(None, _ext)
-                    # Actually just decode if possible
-                    try:
-                        import pdfplumber, io as _io
-                        with pdfplumber.open(_io.BytesIO(file_bytes)) as pdf:
-                            material_content = "\n".join(p.extract_text() or "" for p in pdf.pages)[:4000]
-                    except:
-                        try:
-                            import PyPDF2, io as _io
-                            reader = PyPDF2.PdfReader(_io.BytesIO(file_bytes))
-                            material_content = "\n".join(p.extract_text() or "" for p in reader.pages)[:4000]
-                        except:
-                            await ctx.send("Couldn't read the PDF text. Try an image or PPTX instead."); return
+                    # Parsed in a resource-limited child process (doc_extract.py): a hostile or huge PDF costs that
+                    # process, never the event loop every conversation shares.
+                    material_content = (await doc_extract.extract_text_isolated("pdf", file_bytes))[:4000]
+                    if not material_content.strip():
+                        await ctx.send("Couldn't read the PDF text. Try an image or PPTX instead."); return
+                except doc_extract.DocumentRejected as e:
+                    await ctx.send(str(e)); return
                 except Exception as e: await ctx.send(f"PDF error: {e}"); return
 
             elif "image" in ct or attachment.filename.lower().endswith((".png",".jpg",".jpeg",".webp",".gif")):
@@ -6559,25 +6633,18 @@ async def _do_tedtalk(ctx, attachment, topic, msg_id=None):
 
             elif attachment.filename.lower().endswith((".pptx",".ppt")):
                 try:
-                    from pptx import Presentation as _Prs
-                    prs = _Prs(io.BytesIO(file_bytes))
-                    parts = []
-                    for i, slide in enumerate(prs.slides):
-                        texts = [shape.text.strip() for shape in slide.shapes if hasattr(shape,"text") and shape.text.strip()]
-                        if texts: parts.append(f"[Slide {i+1}]\n" + "\n".join(texts))
-                    material_content = "\n\n".join(parts)[:4000]
+                    # zip-bomb checked, then parsed in the resource-limited child (doc_extract.py)
+                    material_content = (await doc_extract.extract_text_isolated("pptx", file_bytes))[:4000]
+                except doc_extract.DocumentRejected as e:
+                    await ctx.send(str(e)); return
                 except Exception as e: await ctx.send(f"Couldn't read PowerPoint: {e}"); return
 
             elif attachment.filename.lower().endswith((".docx",".doc")):
                 try:
-                    import docx as _docx
-                    doc = _docx.Document(io.BytesIO(file_bytes))
-                    parts = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
-                    for table in doc.tables:
-                        for row in table.rows:
-                            row_text = " | ".join(c.text.strip() for c in row.cells if c.text.strip())
-                            if row_text: parts.append(row_text)
-                    material_content = "\n".join(parts)[:4000]
+                    # zip-bomb checked, then parsed in the resource-limited child (doc_extract.py)
+                    material_content = (await doc_extract.extract_text_isolated("docx", file_bytes))[:4000]
+                except doc_extract.DocumentRejected as e:
+                    await ctx.send(str(e)); return
                 except Exception as e: await ctx.send(f"Couldn't read Word doc: {e}"); return
 
             elif "text" in ct or attachment.filename.lower().endswith((".txt",".md",".csv")):
@@ -7769,7 +7836,8 @@ async def spar_cmd(ctx, *, opening: str = None):
     try:
         user = await _setup(ctx)
         prompt = f"{ctx.author.display_name} challenged you: '{opening or 'Come on then.'}'. Respond as the Wanderer. End with a counter-challenge."
-        reply = await get_response(ctx.author.id, ctx.channel.id, prompt, user, ctx.author.display_name, ctx.author.mention)
+        reply = await get_response(ctx.author.id, ctx.channel.id, prompt, user, ctx.author.display_name, ctx.author.mention,
+                allow_nsfw=_channel_allows_nsfw(ctx.channel, is_dm=ctx.guild is None))
         await safe_reply(ctx, reply)
     except Exception as e: log_error("spar_cmd", e)
 
@@ -7777,8 +7845,8 @@ async def spar_cmd(ctx, *, opening: str = None):
 async def duel_cmd(ctx, member: discord.Member = None):
     try:
         if not member or member == ctx.author: await safe_reply(ctx, "Duel who?"); return
-        u1 = " | ".join((await mem.get_recent_messages(ctx.author.id, 3))[:3])[:150]
-        u2 = " | ".join((await mem.get_recent_messages(member.id, 3))[:3])[:150]
+        u1 = " | ".join((await _visible_messages(ctx, ctx.author.id, 3))[:3])[:150]
+        u2 = " | ".join((await _visible_messages(ctx, member.id, 3))[:3])[:150]
         reply = await qai(f"Referee this insult duel as the Wanderer: {ctx.author.display_name} (says:'{u1}') vs {member.display_name} (says:'{u2}'). Declare a winner. 3-4 sentences.", 300)
         await ctx.send(f"{ctx.author.mention} vs {member.mention}\n{reply}")
     except Exception as e: log_error("duel_cmd", e)
@@ -7787,7 +7855,7 @@ async def duel_cmd(ctx, member: discord.Member = None):
 async def judge_cmd(ctx, member: discord.Member = None):
     try:
         target = member or ctx.author
-        sample = " | ".join(await mem.get_recent_messages(target.id, 8))[:400]
+        sample = " | ".join(await _visible_messages(ctx, target.id, 8))[:400]
         reply = await qai(f"The Wanderer's assessment of {target.display_name}" + (f" — what they've said: '{sample}'" if sample else "") + ". Honest, not cruel. 2-4 sentences.", 250)
         if member: await ctx.send(f"{member.mention} {reply}")
         else: await safe_reply(ctx, reply)
@@ -7824,7 +7892,8 @@ async def confess_cmd(ctx, *, confession: str = None):
     try:
         if not confession: await safe_reply(ctx, "Confess what?"); return
         user = await _setup(ctx)
-        reply = await get_response(ctx.author.id, ctx.channel.id, f"I have something to confess: {confession}", user, ctx.author.display_name, ctx.author.mention)
+        reply = await get_response(ctx.author.id, ctx.channel.id, f"I have something to confess: {confession}", user, ctx.author.display_name, ctx.author.mention,
+                allow_nsfw=_channel_allows_nsfw(ctx.channel, is_dm=ctx.guild is None))
         await safe_reply(ctx, reply)
     except Exception as e: log_error("confess_cmd", e)
 
@@ -7856,7 +7925,7 @@ async def story_cmd(ctx, *, prompt: str = None):
 async def stalk_cmd(ctx, member: discord.Member = None):
     try:
         target = member or ctx.author
-        sample = " | ".join(await mem.get_recent_messages(target.id, 10))[:500]
+        sample = " | ".join(await _visible_messages(ctx, target.id, 10))[:500]
         reply = await qai(f"The Wanderer's quiet observations about {target.display_name}" + (f" — what they've said: '{sample}'" if sample else "") + ". What he's noticed. 3-4 sentences.", 280)
         if member: await ctx.send(f"*Regarding {member.mention}...*\n{reply}")
         else: await safe_reply(ctx, reply)
@@ -7883,7 +7952,8 @@ async def therapy_cmd(ctx, *, problem: str = None):
     try:
         if not problem: await safe_reply(ctx, "What's the problem."); return
         user = await _setup(ctx)
-        reply = await get_response(ctx.author.id, ctx.channel.id, f"I need advice about: {problem}", user, ctx.author.display_name, ctx.author.mention)
+        reply = await get_response(ctx.author.id, ctx.channel.id, f"I need advice about: {problem}", user, ctx.author.display_name, ctx.author.mention,
+                allow_nsfw=_channel_allows_nsfw(ctx.channel, is_dm=ctx.guild is None))
         await safe_reply(ctx, reply)
     except Exception as e: log_error("therapy_cmd", e)
 
@@ -7906,7 +7976,7 @@ async def arena_cmd(ctx, member: discord.Member = None):
 async def possess_cmd(ctx, member: discord.Member = None):
     try:
         if not member: await safe_reply(ctx, "Speak as who?"); return
-        sample = " | ".join(await mem.get_recent_messages(member.id, 10))[:400]
+        sample = " | ".join(await _visible_messages(ctx, member.id, 10))[:400]
         reply = await qai(f"Speak as {member.display_name} but filtered through the Wanderer's perception of them. Their statements: '{sample}'. 2-3 sentences.", 250)
         await ctx.send(f"*Speaking as {member.mention}...*\n{reply}")
     except Exception as e: log_error("possess_cmd", e)
@@ -7957,9 +8027,16 @@ async def nightmare_cmd(ctx):
 @bot.command(name="rank")
 async def rank_cmd(ctx):
     try:
-        top = await mem.get_top_users(8)
+        if ctx.guild is None:
+            await safe_reply(ctx, "Ask me in a server. A ranking needs the people in it."); return
+        top = []
+        for row in await mem.get_top_users_in_guild(ctx.guild.id, 60):
+            member = ctx.guild.get_member(row["user_id"])
+            if member is not None and not member.bot:
+                top.append({"display_name": member.display_name, "message_count": row["message_count"]})
+            if len(top) == 8: break
         if not top: await safe_reply(ctx, "I don't know enough people here yet."); return
-        entries = "\n".join(f"{i+1}. **{u['display_name']}** — {u['message_count']} messages" for i, u in enumerate(top))
+        entries = "\n".join(f"{i+1}. **{discord.utils.escape_markdown(u['display_name'])}** — {u['message_count']} messages" for i, u in enumerate(top))
         verdict = await qai(f"The Wanderer's brief take on ranking these people: {', '.join(u['display_name'] for u in top)}. Honest, not cruel. 2 sentences.", 150)
         embed = discord.Embed(title="Who He's Noticed Most", description=f"{entries}\n\n*{verdict}*", color=0x6B7FD7)
         await ctx.send(embed=embed)
@@ -8092,7 +8169,8 @@ async def lore_cmd(ctx, *, topic: str = None):
     try:
         if not topic: await safe_reply(ctx, "Lore about what?"); return
         user = await _setup(ctx)
-        reply = await get_response(ctx.author.id, ctx.channel.id, f"Tell me about this from your personal perspective as the Wanderer: {topic}", user, ctx.author.display_name, ctx.author.mention)
+        reply = await get_response(ctx.author.id, ctx.channel.id, f"Tell me about this from your personal perspective as the Wanderer: {topic}", user, ctx.author.display_name, ctx.author.mention,
+                allow_nsfw=_channel_allows_nsfw(ctx.channel, is_dm=ctx.guild is None))
         await safe_reply(ctx, reply)
     except Exception as e: log_error("lore_cmd", e)
 
@@ -8101,7 +8179,8 @@ async def search_cmd(ctx, *, query: str = None):
     try:
         if not query: await safe_reply(ctx, "Search for what?"); return
         user = await _setup(ctx)
-        reply = await get_response(ctx.author.id, ctx.channel.id, f"Search and answer: {query}", user, ctx.author.display_name, ctx.author.mention, use_search=True)
+        reply = await get_response(ctx.author.id, ctx.channel.id, f"Search and answer: {query}", user, ctx.author.display_name, ctx.author.mention, use_search=True,
+                allow_nsfw=_channel_allows_nsfw(ctx.channel, is_dm=ctx.guild is None))
         await safe_reply(ctx, reply)
     except Exception as e: log_error("search_cmd", e)
 
@@ -8110,7 +8189,8 @@ async def solve_cmd(ctx, *, problem: str = None):
     try:
         if not problem: await safe_reply(ctx, "Solve what?"); return
         user = await _setup(ctx)
-        reply = await get_response(ctx.author.id, ctx.channel.id, f"Solve or answer this accurately: {problem}", user, ctx.author.display_name, ctx.author.mention, use_search=True)
+        reply = await get_response(ctx.author.id, ctx.channel.id, f"Solve or answer this accurately: {problem}", user, ctx.author.display_name, ctx.author.mention, use_search=True,
+                allow_nsfw=_channel_allows_nsfw(ctx.channel, is_dm=ctx.guild is None))
         await safe_reply(ctx, reply)
     except Exception as e: log_error("solve_cmd", e)
 
@@ -8128,7 +8208,8 @@ async def translate_cmd(ctx, *, text: str = None):
     try:
         if not text: await safe_reply(ctx, "Translate what?"); return
         user = await _setup(ctx)
-        reply = await get_response(ctx.author.id, ctx.channel.id, f"Rewrite this in your voice, keeping the meaning: '{text[:500]}'", user, ctx.author.display_name, ctx.author.mention)
+        reply = await get_response(ctx.author.id, ctx.channel.id, f"Rewrite this in your voice, keeping the meaning: '{text[:500]}'", user, ctx.author.display_name, ctx.author.mention,
+                allow_nsfw=_channel_allows_nsfw(ctx.channel, is_dm=ctx.guild is None))
         await safe_reply(ctx, reply)
     except Exception as e: log_error("translate_cmd", e)
 
@@ -8190,7 +8271,17 @@ async def memories_cmd(ctx):
         topics = await mem.get_top_topics(ctx.author.id, 4)
         memories = await mem.get_memory_bank_entries(ctx.author.id, 6)
         scene = await mem.get_scene_state(ctx.channel.id)
-        await safe_reply(ctx, _format_memory_snapshot(user, topics, memories, scene))
+        snapshot = _format_memory_snapshot(user, topics, memories, scene)
+        if ctx.guild is None:
+            await safe_reply(ctx, snapshot)
+            return
+        # Memories can come from DMs, so in a server they are delivered privately instead of to the whole channel.
+        try:
+            for piece in chunk_text(snapshot, MESSAGE_CHAR_LIMIT):
+                await ctx.author.send(piece, allowed_mentions=discord.AllowedMentions.none())
+            await safe_reply(ctx, "I sent what I remember to your DMs. Some of it isn't for an audience.")
+        except discord.Forbidden:
+            await safe_reply(ctx, "Your DMs are closed, and what I remember about you isn't for an audience. Open them and ask again.")
     except Exception as e: log_error("memories_cmd", e)
 
 @bot.command(name="pinpromise")
@@ -8670,6 +8761,12 @@ async def nsfw_cmd(ctx, mode: str = None):
     try:
         user = await _setup(ctx); cur = user.get("nsfw_mode", False) if user else False
         new = True if mode == "on" else False if mode == "off" else not cur
+        if new and not _channel_allows_nsfw(ctx.channel, is_dm=ctx.guild is None):
+            await safe_reply(ctx, "Unfiltered mode only works in DMs and age-restricted channels."); return
+        if new and not (user or {}).get("adult_confirmed"):
+            await ctx.reply("Unfiltered mode is for adults only. Confirm that you are 18 or older to turn it on.",
+                            view=AdultConfirmView(ctx.author.id))
+            return
         await mem.set_mode(ctx.author.id, "nsfw_mode", new)
         await safe_reply(ctx, "Unfiltered. Fine." if new else "Restrained again.")
     except Exception as e: log_error("nsfw_cmd", e)
@@ -8854,7 +8951,8 @@ async def whoami_cmd(ctx):
     try:
         if not OWNER_ID or ctx.author.id != OWNER_ID: await safe_reply(ctx, "That's not for you."); return
         user = await _setup(ctx)
-        reply = await get_response(ctx.author.id, ctx.channel.id, "What do you actually think about the fact that I built you. Be honest.", user, ctx.author.display_name, ctx.author.mention, is_owner=True)
+        reply = await get_response(ctx.author.id, ctx.channel.id, "What do you actually think about the fact that I built you. Be honest.", user, ctx.author.display_name, ctx.author.mention, is_owner=True,
+                allow_nsfw=_channel_allows_nsfw(ctx.channel, is_dm=ctx.guild is None))
         await safe_reply(ctx, reply)
     except Exception as e: log_error("whoami_cmd", e)
 
