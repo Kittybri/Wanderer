@@ -2889,7 +2889,8 @@ async def _pin_memory(ctx, kind: str, text: str | None, weight: int, *, shared_j
     await safe_reply(ctx, f"...Alright. I pinned that as a {kind}.")
 
 
-async def _user_memory_context(user_id: int, user: dict | None) -> list[str]:
+async def _user_memory_context(user_id: int, user: dict | None, *, audience=None) -> list[str]:
+    """``audience``: channels whose old messages may be recalled (``None`` in a DM: any of the person's own)."""
     parts: list[str] = []
     try:
         topics = await mem.get_top_topics(user_id, 3)
@@ -2905,7 +2906,7 @@ async def _user_memory_context(user_id: int, user: dict | None) -> list[str]:
         memory_event = await mem.get_weighted_memory_event(user_id)
         if memory_event and random.random() < 0.25:
             parts.append(f"MEMORY_BANK:{memory_event.get('kind','memory')}|{memory_event.get('memory','')[:140]}")
-        old_line = await mem.get_random_old_message(user_id)
+        old_line = await mem.get_random_old_message(user_id, channel_ids=audience)
         if old_line and random.random() < 0.12:
             parts.append(f"RECALL:{old_line[:120]}")
         if user and user.get("conflict_open") and user.get("conflict_summary") and random.random() < 0.35:
@@ -4023,7 +4024,7 @@ async def get_response(user_id, channel_id, user_message, user, display_name,
                 "If you mention older context, keep it secondary and tie it back to what was just sent."
             )
         if extra_context: parts.append(extra_context)
-        parts.extend(await _user_memory_context(user_id, user))
+        parts.extend(await _user_memory_context(user_id, user, audience=_reply_audience(channel_obj, is_dm)))
         private_opinions = await _private_opinion_prompt_context(
             user_id,
             leak_partner=bool((duo_session or {}).get("mode") or _message_mentions_partner(user_message)),
@@ -4704,15 +4705,78 @@ async def safe_send(ctx, text):
     except Exception as e: log_error("safe_send", e)
 
 
+def _everyone_can_read(channel) -> bool:
+    """A server text channel, voice-channel chat or public thread that the server's @everyone role can read."""
+    guild = getattr(channel, "guild", None)
+    if guild is None:
+        return False
+    try:
+        if isinstance(channel, discord.Thread):
+            if channel.is_private():
+                return False
+            channel = channel.parent
+            if channel is None:
+                return False
+        return bool(channel.permissions_for(guild.default_role).view_channel)
+    except Exception:
+        return False
+
+
+def _audience_channel_ids(channel, guild=None) -> set[int]:
+    """Channels whose messages may be repeated in ``channel`` without showing its readers anything they could not
+    already read there: the channel itself and every channel or thread of its server (``guild`` when the channel
+    object does not say) that @everyone can read. (Scoping by server alone let what someone said in a staff-only
+    channel be quoted in a public one.)"""
+    guild = getattr(channel, "guild", None) or guild
+    if guild is None or channel is None:
+        return set()
+    ids = {channel.id}
+    for other in [*getattr(guild, "channels", ()), *getattr(guild, "threads", ())]:
+        if _everyone_can_read(other):
+            ids.add(other.id)
+    return ids
+
+
+def _reply_audience(channel, is_dm: bool):
+    """``None`` in a DM (the person's own conversation: anything of theirs may come up); otherwise the channels
+    whose text may be recalled in ``channel``."""
+    if is_dm or isinstance(channel, discord.DMChannel):
+        return None
+    return _audience_channel_ids(channel)
+
+
+def _public_channel_ids(*, member_id: int | None = None) -> set[int]:
+    """Channels @everyone can read, in every server the bot is in (or only the servers ``member_id`` is in)."""
+    ids: set[int] = set()
+    for guild in bot.guilds:
+        if member_id is not None and guild.get_member(member_id) is None:
+            continue
+        for channel in [*guild.channels, *guild.threads]:
+            if _everyone_can_read(channel):
+                ids.add(channel.id)
+    return ids
+
+
+async def _said_where_audience_can_read(user_id: int, text: str, channel) -> bool:
+    """True when ``text`` is one of the person's recent messages in a channel that ``channel``'s readers can read."""
+    recent = await mem.get_recent_messages(user_id, 20, channel_ids=_audience_channel_ids(channel))
+    return any((item or "")[:200] == (text or "")[:200] for item in recent)
+
+
 async def _visible_messages(ctx, user_id: int, limit: int) -> list[str]:
     """Messages a command may quote or profile in front of the people who can see ``ctx``: in a server only what that
-    person said in this server (never their DMs with the bot or other servers); in a DM your own messages in full,
-    somebody else's only from server channels."""
+    person said in this channel or in channels everyone in the server can read (never DMs, other servers or private
+    channels); in a DM your own messages in full, somebody else's only from channels everyone can read in the servers
+    you are in."""
     if ctx.guild is not None:
-        return await mem.get_recent_messages(user_id, limit, guild_id=ctx.guild.id)
+        return await mem.get_recent_messages(
+            user_id, limit, guild_id=ctx.guild.id, channel_ids=_audience_channel_ids(ctx.channel, ctx.guild),
+        )
     if user_id == ctx.author.id:
         return await mem.get_recent_messages(user_id, limit)
-    return await mem.get_recent_messages(user_id, limit, public_only=True)
+    return await mem.get_recent_messages(
+        user_id, limit, public_only=True, channel_ids=_public_channel_ids(member_id=ctx.author.id),
+    )
 
 
 @bot.command(name="bothealth")
@@ -5384,18 +5448,46 @@ async def status_rotation():
         await bot.change_presence(activity=act)
     except Exception as e: log_error("status_rotation", e)
 
+async def _deliver_due_reminder(r) -> None:
+    """Send one due reminder. Raises discord.NotFound / Forbidden when it can never be delivered, and other Discord
+    or network errors when it is worth trying again."""
+    u = await bot.fetch_user(r["user_id"])
+    ch = bot.get_channel(r["channel_id"])
+    if ch is None:
+        # not in the cache (a DM channel never is after a restart): ask Discord; if the channel is gone or closed to
+        # him, remind them in a DM instead of dropping it
+        try:
+            ch = await bot.fetch_channel(r["channel_id"])
+        except (discord.NotFound, discord.Forbidden):
+            ch = await u.create_dm()
+    if r["channel_id"] in _banned_channels or _is_banned_channel_target(ch):
+        return  # told not to speak there: dropped, as before
+    msg = await qai(f"Remind {u.display_name} about: '{r['reminder']}'. In the Wanderer's voice — brief, slightly wry. 1-2 sentences.", 150)
+    await _pace_discord_send(ch)
+    sent = await ch.send(f"{u.mention} {(msg or '').strip() or r['reminder']}")
+    cache = globals().get("_remember_recent_message")
+    if cache:
+        cache(sent)
+
+
 @tasks.loop(seconds=30)
 async def reminder_checker():
+    import aiohttp
     try:
         await HOME.tick()
         for r in await mem.get_due_reminders():
+            # A reminder is finished once it is sent or can never be sent; Discord or network trouble leaves it
+            # pending for the next pass (it used to be marked done before sending, so a failure lost it)
             try:
-                ch = bot.get_channel(r["channel_id"]); u = await bot.fetch_user(r["user_id"])
-                if not ch or not u: continue
-                if r["channel_id"] in _banned_channels: continue
-                msg = await qai(f"Remind {u.display_name} about: '{r['reminder']}'. In the Wanderer's voice — brief, slightly wry. 1-2 sentences.", 150)
-                await _guarded_channel_send(ch, f"{u.mention} {msg}")
-            except Exception as e: log_error("reminder_send", e)
+                await _deliver_due_reminder(r)
+            except (discord.NotFound, discord.Forbidden) as e:
+                log_error("reminder_undeliverable", e)
+            except (discord.HTTPException, aiohttp.ClientError, OSError, asyncio.TimeoutError) as e:
+                log_error("reminder_send", e)
+                continue
+            except Exception as e:
+                log_error("reminder_send", e)
+            await mem.mark_reminder_done(r["id"])
     except Exception as e: log_error("reminder_checker", e)
 
 @tasks.loop(hours=24)
@@ -6304,8 +6396,11 @@ async def _handle_message_pipeline(message):
 
         try:
             if await mem.needs_summary(message.author.id):
-                # used in server replies too, so written from server messages only; a fallback line never replaces it
-                recent = await mem.get_recent_messages(message.author.id, 30, public_only=True)
+                # used in server replies too, so written only from channels everyone in a server can read (not DMs or
+                # private channels); a fallback line never replaces it
+                recent = await mem.get_recent_messages(
+                    message.author.id, 30, public_only=True, channel_ids=_public_channel_ids(),
+                )
                 sample = " | ".join(recent[:20])[:800]
                 summary = await qai(f"Summarize the Wanderer's relationship with {message.author.display_name} based on: '{sample}'. First person, compressed memory. 3-4 sentences.", 300) if recent else ""
                 if len((summary or "").strip()) >= 40:
@@ -6613,14 +6708,19 @@ async def _handle_message_pipeline(message):
             parts.extend(await _medium_awareness_context(message, user, content, is_dm=is_dm))
             duo_session = await mem.get_duo_session(message.channel.id) if not is_dm else None
             if not current_input_focus and random.random() < .12:
-                old = await mem.get_random_old_message(message.author.id)
+                old = await mem.get_random_old_message(
+                    message.author.id, channel_ids=_reply_audience(message.channel, is_dm),
+                )
                 if old: parts.append(f'RECALL:"{old[:120]}"')
             if not current_input_focus and random.random() < .15:
                 joke = await mem.get_random_inside_joke(message.author.id)
                 if joke: parts.append(f'JOKE:"{joke[:80]}"')
             last_stmt = user.get("last_statement") if user else None
             if not current_input_focus and last_stmt and len(content) > 20 and random.random() < .08:
-                parts.append(f'CONTRADICTION:"{last_stmt[:100]}"')
+                # their latest message can be from a DM or a private channel: in a server, only quote it if it was
+                # said where these readers can read it
+                if is_dm or await _said_where_audience_can_read(message.author.id, last_stmt, message.channel):
+                    parts.append(f'CONTRADICTION:"{last_stmt[:100]}"')
             if not current_input_focus and user and user.get("trust", 0) >= 70 and random.random() < .08:
                 parts.append("TRUST_OPEN"); await mem.update_trust(message.author.id, -3)
         except Exception as e: log_error("on_message/context", e)
@@ -7230,9 +7330,10 @@ async def progress_cmd(ctx):
         msg_count = user.get("message_count", 0) if user else 0
         romance = user.get("romance_mode", False) if user else False
         # His own recent replies to this person (it used to pass their messages off as his); in a server only the ones
-        # sent in that server, so nothing from a DM is read out in public
+        # sent where its readers can read, so nothing from a DM or a private channel is read out in public
         recent = await mem.get_recent_assistant_messages(
             15, user_id=ctx.author.id, guild_id=ctx.guild.id if ctx.guild else None,
+            channel_ids=_audience_channel_ids(ctx.channel, ctx.guild) if ctx.guild else None,
         )
         recent_sample = " | ".join(recent[:10])[:600] if recent else "no recent messages"
         async with ctx.typing():

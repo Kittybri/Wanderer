@@ -36,11 +36,25 @@ class Typing:
         return False
 
 
+EVERYONE = NS(id=0, name="@everyone")
+
+
+def fake_guild(guild_id, *, public=(), private=(), members=None):
+    """A server whose @everyone can read the ``public`` channels but not the ``private`` ones."""
+    roster = members or {}
+    guild = NS(id=guild_id, get_member=lambda uid: roster.get(uid), default_role=EVERYONE, channels=[], threads=[])
+    for channel_id in (*public, *private):
+        readable = channel_id in public
+        guild.channels.append(NS(id=channel_id, guild=guild,
+                                 permissions_for=lambda role, readable=readable: NS(view_channel=readable)))
+    return guild
+
+
 def make_ctx(author_id=5, *, guild_id=None, members=None, age_restricted=False):
     guild = None
     if guild_id is not None:
-        roster = members or {}
-        guild = NS(id=guild_id, get_member=lambda uid: roster.get(uid))
+        guild = fake_guild(guild_id, public=(10,) if guild_id == 100 else (20,), private=(11,) if guild_id == 100 else (),
+                           members=members)
     author = NS(id=author_id, name=f"user{author_id}", display_name=f"user{author_id}", bot=False,
                 mention=f"<@{author_id}>", send=AsyncMock())
     channel = NS(id=9000 + author_id, guild=guild, **{"is_" + "ns" + "fw": lambda: age_restricted})
@@ -53,11 +67,13 @@ def said(ctx):
 
 
 def seed(env):
-    """User 1 talks in a DM, in server 100 (channel 10) and in server 200 (channel 20)."""
+    """User 1 talks in a DM, in server 100 (public channel 10, staff-only channel 11) and in server 200 (channel 20)."""
     env.run(env.mem.track_channel(10, 100))
+    env.run(env.mem.track_channel(11, 100))
     env.run(env.mem.track_channel(20, 200))
     env.run(env.mem.add_message(1, 1, "user", "dm secret"))
     env.run(env.mem.add_message(1, 10, "user", "said in server A"))
+    env.run(env.mem.add_message(1, 11, "user", "said in the staff channel"))
     env.run(env.mem.add_message(1, 20, "user", "said in server B"))
 
 
@@ -137,12 +153,15 @@ def test_the_confirmation_button_belongs_to_the_person_who_asked(env):
 # ── privacy ──────────────────────────────────────────────────────────────────
 def test_memory_scopes_leave_out_dms_and_other_servers(env):
     seed(env)
-    assert env.run(env.mem.get_recent_messages(1, 10, guild_id=100)) == ["said in server A"]
-    assert sorted(env.run(env.mem.get_recent_messages(1, 10, public_only=True))) == ["said in server A", "said in server B"]
-    assert len(env.run(env.mem.get_recent_messages(1, 10))) == 3
+    assert sorted(env.run(env.mem.get_recent_messages(1, 10, guild_id=100))) == ["said in server A", "said in the staff channel"]
+    assert sorted(env.run(env.mem.get_recent_messages(1, 10, public_only=True))) == [
+        "said in server A", "said in server B", "said in the staff channel"]
+    assert env.run(env.mem.get_recent_messages(1, 10, guild_id=100, channel_ids={10})) == ["said in server A"]
+    assert env.run(env.mem.get_recent_messages(1, 10, channel_ids=set())) == []
+    assert len(env.run(env.mem.get_recent_messages(1, 10))) == 4
 
 
-def test_stalk_never_quotes_dms_or_other_servers(env, monkeypatch):
+def test_stalk_quotes_only_what_this_audience_can_read(env, monkeypatch):
     seed(env)
     qai = AsyncMock(return_value="I've noticed things.")
     monkeypatch.setattr(env.bot, "qai", qai)
@@ -150,11 +169,13 @@ def test_stalk_never_quotes_dms_or_other_servers(env, monkeypatch):
     prompt = qai.await_args.args[0]
     assert "said in server A" in prompt
     assert "dm secret" not in prompt and "said in server B" not in prompt
+    assert "said in the staff channel" not in prompt  # a private channel is not quoted in a public one
 
 
 def test_progress_reads_his_own_replies_from_this_server(env, monkeypatch):
     seed(env)
-    for channel, text in ((10, "reply in server A"), (1, "reply in our DM"), (20, "reply in server B")):
+    for channel, text in ((10, "reply in server A"), (11, "reply in the staff channel"), (1, "reply in our DM"),
+                          (20, "reply in server B")):
         env.run(env.mem.add_message(1, channel, "assistant", text))
     qai = AsyncMock(return_value="I've been better.")
     monkeypatch.setattr(env.bot, "qai", qai)
@@ -162,6 +183,7 @@ def test_progress_reads_his_own_replies_from_this_server(env, monkeypatch):
     prompt = qai.await_args.args[0]
     assert "reply in server A" in prompt and "said in server A" not in prompt
     assert "reply in our DM" not in prompt and "reply in server B" not in prompt
+    assert "reply in the staff channel" not in prompt
 
 
 def test_rank_counts_only_this_servers_messages(env, monkeypatch):
@@ -244,3 +266,147 @@ def test_documents_are_parsed_in_the_isolated_reader():
 
 def test_memory_imports_random_itself():
     assert hasattr(memory_module, "random")  # mood swings used to rely on bot.py patching it in
+
+
+# ── what a server reply may bring up (second audit) ─────────────────────────
+def _age_messages(env, days=3):
+    import sqlite3
+    with sqlite3.connect(env.mem.db_path) as db:
+        db.execute("UPDATE messages SET ts=ts-?", (86400 * days,))
+
+
+def test_the_audience_is_this_channel_plus_what_everyone_can_read(env):
+    guild = fake_guild(100, public=(10, 12), private=(11,))
+    assert env.bot._audience_channel_ids(NS(id=10, guild=guild)) == {10, 12}
+    assert env.bot._audience_channel_ids(NS(id=11, guild=guild)) == {10, 11, 12}  # the staff room may hear its own
+    assert env.bot._reply_audience(NS(id=1, guild=None), True) is None             # a DM: their own conversation
+    assert env.bot._reply_audience(None, False) == set()                           # unknown place: nothing
+
+
+def test_recall_in_a_server_never_brings_up_a_dm_or_a_private_channel(env, monkeypatch):
+    seed(env)
+    _age_messages(env)
+    monkeypatch.setattr(env.bot.random, "random", lambda: 0.0)
+    public_channel = NS(id=10, guild=fake_guild(100, public=(10,), private=(11,)))
+    for _ in range(25):
+        parts = env.run(env.bot._user_memory_context(1, None, audience=env.bot._reply_audience(public_channel, False)))
+        assert [p for p in parts if p.startswith("RECALL:")] == ["RECALL:said in server A"]
+    seen = set()
+    for _ in range(80):  # in their own DM anything of theirs may come back
+        parts = env.run(env.bot._user_memory_context(1, None, audience=env.bot._reply_audience(None, True)))
+        seen.update(p for p in parts if p.startswith("RECALL:"))
+    assert "RECALL:dm secret" in seen
+
+
+def test_a_last_statement_is_only_quoted_where_it_was_readable(env):
+    seed(env)
+    guild = fake_guild(100, public=(10,), private=(11,))
+    public, staff = NS(id=10, guild=guild), NS(id=11, guild=guild)
+    assert env.run(env.bot._said_where_audience_can_read(1, "said in server A", public))
+    assert not env.run(env.bot._said_where_audience_can_read(1, "dm secret", public))
+    assert not env.run(env.bot._said_where_audience_can_read(1, "said in the staff channel", public))
+    assert env.run(env.bot._said_where_audience_can_read(1, "said in the staff channel", staff))
+
+
+# ── reminders are not lost ───────────────────────────────────────────────────
+class _ReminderChannel:
+    def __init__(self, channel_id, error=None):
+        self.id, self.guild, self.error, self.sent = channel_id, None, error, []
+
+    async def send(self, text, **kwargs):
+        if self.error:
+            raise self.error
+        self.sent.append(text)
+        return NS(id=1, channel=self, content=text)
+
+
+def _http_error(cls, status):
+    import discord
+    return getattr(discord, cls)(NS(status=status, reason="test"), "test")
+
+
+def _run_reminders(env, monkeypatch, *, cached=None, fetched=None, user_error=None, text="Water. Now.", dm=None):
+    monkeypatch.setattr(env.bot.HOME, "tick", AsyncMock())
+    monkeypatch.setattr(env.bot, "_pace_discord_send", AsyncMock())
+    monkeypatch.setattr(env.bot, "qai", AsyncMock(return_value=text))
+    monkeypatch.setattr(env.bot.bot, "get_channel", lambda channel_id: cached)
+    monkeypatch.setattr(env.bot.bot, "fetch_channel", fetched or AsyncMock(side_effect=_http_error("NotFound", 404)))
+    user = NS(id=1, display_name="Alice", mention="<@1>", create_dm=AsyncMock(return_value=dm))
+    fetch_user = AsyncMock(side_effect=user_error) if user_error else AsyncMock(return_value=user)
+    monkeypatch.setattr(env.bot.bot, "fetch_user", fetch_user)
+    env.run(env.bot.reminder_checker.coro())
+
+
+def _pending(env):
+    return [r["reminder"] for r in env.run(env.mem.get_due_reminders())]
+
+
+def test_a_reminder_in_an_uncached_channel_is_still_delivered(env, monkeypatch):
+    env.run(env.mem.add_reminder(1, 77, "drink water", 0))
+    channel = _ReminderChannel(77)
+    _run_reminders(env, monkeypatch, cached=None, fetched=AsyncMock(return_value=channel))
+    assert channel.sent == ["<@1> Water. Now."] and _pending(env) == []
+
+
+def test_a_reminder_whose_channel_is_gone_goes_to_their_dms(env, monkeypatch):
+    env.run(env.mem.add_reminder(1, 77, "drink water", 0))
+    dm = _ReminderChannel(5)
+    _run_reminders(env, monkeypatch, cached=None, dm=dm)
+    assert dm.sent == ["<@1> Water. Now."] and _pending(env) == []
+
+
+def test_a_failed_send_is_tried_again_later(env, monkeypatch):
+    env.run(env.mem.add_reminder(1, 77, "drink water", 0))
+    _run_reminders(env, monkeypatch, cached=_ReminderChannel(77, error=_http_error("HTTPException", 503)))
+    assert _pending(env) == ["drink water"]  # it used to be marked done before sending and was lost
+    channel = _ReminderChannel(77)
+    _run_reminders(env, monkeypatch, cached=channel)
+    assert channel.sent == ["<@1> Water. Now."] and _pending(env) == []
+
+
+def test_an_undeliverable_reminder_is_dropped_not_retried_forever(env, monkeypatch):
+    env.run(env.mem.add_reminder(1, 77, "drink water", 0))
+    _run_reminders(env, monkeypatch, cached=_ReminderChannel(77), user_error=_http_error("NotFound", 404))
+    assert _pending(env) == []
+
+
+def test_an_empty_reminder_line_still_reminds(env, monkeypatch):
+    env.run(env.mem.add_reminder(1, 77, "drink water", 0))
+    channel = _ReminderChannel(77)
+    _run_reminders(env, monkeypatch, cached=channel, text="")
+    assert channel.sent == ["<@1> drink water"]
+
+
+# ── the gTTS fallback does not freeze the bot ────────────────────────────────
+def test_the_gtts_fallback_runs_off_the_event_loop(monkeypatch):
+    import sys
+    import time
+    import voice_handler
+
+    seen = {}
+
+    class SlowGTTS:
+        def __init__(self, text, lang="en", slow=False, timeout=None, **kwargs):
+            seen["timeout"] = timeout
+
+        def write_to_fp(self, fp):
+            time.sleep(0.25)  # a slow request to Google
+            fp.write(b"mp3")
+
+    monkeypatch.setitem(sys.modules, "gtts", NS(gTTS=SlowGTTS))
+
+    async def scenario():
+        started = time.perf_counter()
+        ticks = []
+
+        async def ticker():
+            await asyncio.sleep(0.02)
+            ticks.append(time.perf_counter() - started)
+
+        audio, _ = await asyncio.gather(voice_handler.generate_tts_gtts("hello"), ticker())
+        return audio, ticks[0]
+
+    audio, tick = asyncio.run(scenario())
+    assert audio == b"mp3"
+    assert tick < 0.2  # the 20 ms timer fired while the request was still running (it used to wait 250 ms)
+    assert seen["timeout"] == voice_handler.GTTS_REQUEST_TIMEOUT_S

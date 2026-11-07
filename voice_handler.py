@@ -133,14 +133,23 @@ async def generate_tts_fish_audio(
     )
 
 
-async def generate_tts_gtts(text: str) -> bytes | None:
-    try:
-        from gtts import gTTS
+GTTS_REQUEST_TIMEOUT_S = 15
 
-        buf = io.BytesIO()
-        gTTS(text=text[:800], lang="en", slow=False).write_to_fp(buf)
-        buf.seek(0)
-        return buf.read()
+
+def _gtts_blocking(text: str) -> bytes:
+    from gtts import gTTS
+
+    buf = io.BytesIO()
+    gTTS(text=text[:800], lang="en", slow=False, timeout=GTTS_REQUEST_TIMEOUT_S).write_to_fp(buf)
+    return buf.getvalue()
+
+
+async def generate_tts_gtts(text: str) -> bytes | None:
+    # gTTS makes its web requests synchronously and with no timeout by default: called directly here it froze the
+    # whole bot (every message and the Discord heartbeat) for as long as Google took, so it runs in a worker thread
+    try:
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, _gtts_blocking, text)
     except Exception as e:
         print(f"[gTTS] {e}")
         return None
