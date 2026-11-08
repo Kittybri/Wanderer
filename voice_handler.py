@@ -7,6 +7,8 @@ from __future__ import annotations
 import asyncio
 import io
 import os
+import re
+import threading
 import time
 
 import httpx
@@ -73,6 +75,30 @@ def resolve_voice_id(bot_name: str | None = None, voice_id: str | None = None) -
     return VOICE_ID
 
 
+_local = threading.local()
+# A connection the server dropped while it sat idle: the request never reached Fish, so it is safe to send again.
+_RECONNECT_ERRORS = (httpx.RemoteProtocolError, httpx.ConnectError, httpx.ReadError, httpx.WriteError)
+
+
+def _fish_post(payload: bytes, headers: dict) -> httpx.Response:
+    """POST to Fish over a connection kept open per worker thread.
+
+    A new connection (and TLS handshake) for every piece of a reply added to every pause in his speech. A kept
+    connection the server has since closed is retried once on a fresh one; timeouts are not retried.
+    """
+    for attempt in (1, 2):
+        client = getattr(_local, "client", None)
+        if client is None:
+            client = _local.client = httpx.Client(timeout=60, limits=httpx.Limits(keepalive_expiry=30))
+        try:
+            return client.post(FISH_API_URL, content=payload, headers=headers)
+        except _RECONNECT_ERRORS:
+            _local.client = None
+            client.close()
+            if attempt == 2:
+                raise
+
+
 def _fish_tts_blocking(
     text: str,
     api_key: str,
@@ -80,30 +106,31 @@ def _fish_tts_blocking(
     *,
     voice_id: str | None = None,
     bot_name: str | None = None,
+    speed: float = 1.0,
 ) -> bytes | None:
     try:
         if _fish_circuit_open():
             print(f"[Fish Audio] circuit open; skipping Fish for {fish_circuit_remaining()}s")
             return None
         reference_id = resolve_voice_id(bot_name=bot_name, voice_id=voice_id)
-        payload = ormsgpack.packb(
-            {
-                "text": text[:1500],
-                "reference_id": reference_id,
-                "format": "mp3",
-                "mp3_bitrate": 192,
-                "latency": "balanced",
-                "normalize": True,
-                "chunk_length": chunk_length,
-            }
-        )
+        request = {
+            "text": text[:1500],
+            "reference_id": reference_id,
+            "format": "mp3",
+            "mp3_bitrate": 192,
+            "latency": "balanced",
+            "normalize": True,
+            "chunk_length": chunk_length,
+        }
+        if speed != 1.0:
+            request["prosody"] = {"speed": speed, "volume": 0}
+        payload = ormsgpack.packb(request)
         headers = {
             "authorization": f"Bearer {api_key}",
             "content-type": "application/msgpack",
             "model": "s2-pro",
         }
-        with httpx.Client(timeout=60) as client:
-            resp = client.post(FISH_API_URL, content=payload, headers=headers)
+        resp = _fish_post(payload, headers)
         if resp.status_code == 200:
             print(f"[Fish Audio] OK {len(resp.content):,} bytes")
             _fish_mark_success()
@@ -169,29 +196,50 @@ async def get_audio(
     return await generate_tts_gtts(text)
 
 
+# How he says it, per voice style: a Fish S2 cue (plain words in square brackets before a sentence, lasting to the
+# end of that sentence) and a small speed change. His mood used to be shown by rewriting punctuation, which dropped
+# words: in a cold mood "you and I" came out as "you. I". The words are now left alone.
+_DELIVERY = {
+    "heated": ("angry", 1.04),
+    "tense": ("tense", 1.03),
+    "combat": ("intense, focused", 1.05),
+    "cutting": ("cold, cutting", 0.97),
+    "cold": ("cool, distant", 0.98),
+    "distant": ("distant", 0.98),
+    "jealous": ("irritated, a little jealous", 1.02),
+    "mocking": ("dry, teasing", 1.0),
+    "duo_teasing": ("teasing", 1.02),
+    "curious": ("curious", 1.0),
+    "measured": ("measured", 0.98),
+    "concerned": ("concerned, gentle", 0.96),
+    "soft": ("soft", 0.97),
+    "late_night": ("quiet, late at night", 0.95),
+    "repair": ("sincere, softer", 0.97),
+    "reconciliation": ("softer", 0.97),
+    "restrained_vulnerability": ("quiet, a little vulnerable", 0.96),
+}
+
+
+def _expressive() -> bool:
+    """VOICE_EMOTION_TAGS=off turns the cues and speed changes off (plain delivery), without a code change."""
+    return (os.getenv("VOICE_EMOTION_TAGS") or "on").strip().lower() not in {"off", "0", "false", "no"}
+
+
+def _delivery(style: str) -> tuple:
+    cue, speed = _DELIVERY.get(style, ("", 1.0))
+    return (cue, speed) if _expressive() else ("", 1.0)
+
+
 def _style_tts_text(text: str, style: str = "guarded") -> str:
-    cleaned = (text or "").strip()
-    if not cleaned:
-        return ""
-    if style in {"soft", "concerned", "reconciliation", "restrained_vulnerability"}:
-        return cleaned.replace("...", ".  ").replace(" - ", ". ")
-    if style == "late_night":
-        return cleaned.replace("...", ", ").replace(" - ", ", ").replace(";", ", ")
-    if style == "repair":
-        return cleaned.replace("...", ". ").replace(" but ", ", but ")
-    if style in {"tense", "heated"}:
-        return cleaned.replace(",", ". ").replace(";", ". ")
-    if style == "combat":
-        return cleaned.replace(",", ". ").replace(" and ", ". ").replace(" but ", ". ")
-    if style == "duo_teasing":
-        return cleaned.replace("...", ". ").replace(";", ". ").replace(" and ", ", ")
-    if style == "jealous":
-        return cleaned.replace(",", ". ").replace("...", ". ").replace(" and ", ". ")
-    if style in {"cutting", "distant", "cold"}:
-        return cleaned.replace(" and ", ". ").replace(" but ", ". ")
-    if style in {"measured", "curious"}:
-        return cleaned.replace("...", ", ")
-    return cleaned
+    # Cues come only from here: square brackets in the reply itself (from the model or a user) are removed, since
+    # Fish S2 would take them as instructions.
+    cleaned = re.sub(r"\s{2,}", " ", re.sub(r"\[[^\[\]]{0,80}\]", " ", text or "")).strip()
+    cue = _delivery(style)[0]
+    if not cleaned or not cue:
+        return cleaned
+    styled = " ".join(f"[{cue}] {sentence}" for sentence in re.split(r"(?<=[.!?…])\s+", cleaned) if sentence)
+    # Fish is sent at most 1500 characters: cues never push words out, so a very long text is voiced plainly.
+    return styled if len(styled) <= 1500 else cleaned
 
 
 async def get_audio_mooded(
@@ -210,9 +258,12 @@ async def get_audio_mooded(
     chunk = 220
 
     styled_text = _style_tts_text(text, style)
+    speed = _delivery(style)[1]
 
     def _blocking():
-        return _fish_tts_blocking(styled_text, fish_audio_key, chunk, voice_id=voice_id, bot_name=bot_name)
+        return _fish_tts_blocking(
+            styled_text, fish_audio_key, chunk, voice_id=voice_id, bot_name=bot_name, speed=speed
+        )
 
     try:
         audio = await asyncio.get_event_loop().run_in_executor(None, _blocking)
