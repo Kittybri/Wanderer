@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from difflib import SequenceMatcher
 import io
 import queue
 import re
@@ -13,7 +12,8 @@ from collections import Counter, deque
 from enum import Enum
 
 from .personality import interruption_kind
-from .speech import Limits, Segmenter, chunks
+from . import names
+from .speech import Limits, Segmenter, chunks, is_phantom
 
 INTERRUPTION_ACK_PLAYBACK_TIMEOUT = 10
 _NO_INTERRUPTION_QUIP = re.compile(
@@ -50,8 +50,8 @@ def names_wander_alias_in_opening(text: str, name: str) -> bool:
 
 def is_interrupt_keyword(text: str, name: str) -> bool:
     """Recognize short spoken barge-in commands despite ordinary STT variation."""
-    words = re.findall(r"[a-z0-9]+", (text or "").lower())
-    while words and words[0] in {"hey", "okay", "ok", "um", "uh", "please"}:
+    words = names.words(text)
+    while words and words[0] in names.FILLERS:
         words.pop(0)
     if not words:
         return False
@@ -66,57 +66,21 @@ def is_interrupt_keyword(text: str, name: str) -> bool:
         for index in range(max(0, len(opening) - 1))
     ):
         return True
-
-    aliases = {name.lower()}
-    if name.lower() == "scaramouche":
-        aliases.add("scara")
-    if name.lower() == "wanderer":
-        aliases.add("wander")
-        if opening[0] == "wander" and not names_wander_alias_in_opening(text, name):
-            return False
-    # Preserve the old name-only barge-in while accepting common ways speech
-    # recognition splits or slightly misspells the character name.
-    for width in range(1, min(3, len(opening)) + 1):
-        candidate = "".join(opening[:width])
-        for alias in aliases:
-            if alias == "wander" and not names_wander_alias_in_opening(text, name):
-                continue
-            if candidate == alias:
-                return True
-            if (
-                len(candidate) >= 7
-                and candidate[0] == alias[0]
-                and SequenceMatcher(None, candidate, alias).ratio() >= 0.78
-            ):
-                return True
-    return False
+    # The old name-only barge-in, accepting the ways speech recognition splits
+    # or misspells the character name (shared rules in names.py).
+    return names.addressed_at_opening(text, name)
 
 
 def names_bot_in_opening(text: str, name: str) -> bool:
     """A nonfocused speaker must address this bot to interrupt others."""
-    words = re.findall(r"[a-z0-9]+", (text or "").lower())
-    while words and words[0] in {"hey", "okay", "ok", "um", "uh", "please"}:
-        words.pop(0)
-    if names_wander_alias_in_opening(text, name):
-        return True
-    aliases = {name.lower()}
-    if name.lower() == "scaramouche":
-        aliases.add("scara")
-    return any(
-        word == alias
-        or (len(word) >= 7 and SequenceMatcher(None, word, alias).ratio() >= 0.78)
-        for word in words[:3]
-        for alias in aliases
-    )
+    return names.addressed_at_opening(text, name)
 
 
 def is_spoken_leave_command(text: str, name: str) -> bool:
-    """Only the character's exact spoken leave phrase ends a live session."""
-    # ASR may insert punctuation (notably a comma after the name), but no
-    # extra or missing spoken words are accepted.
-    return re.findall(r"[a-z0-9]+", (text or "").lower()) == [
-        name.lower(), "leave", "voice", "channel"
-    ]
+    """A short spoken request for this character to leave (names.leave_intent): "<name>, leave the voice chat",
+    "leave the call, <name>", a plain "leave the voice channel". It used to accept only the exact words
+    "<name> leave voice channel", so anything else got an ordinary reply and he stayed."""
+    return names.leave_intent(text, name)
 
 
 class State(str, Enum):
@@ -191,6 +155,7 @@ class Session:
         on_spoken_leave=None,
         limits=Limits(),
         vad=None,
+        on_failed=None,
     ):
         self.channel_id, self.initiator, self.name = channel_id, initiator, name.lower()
         self.backend, self.stt, self.playback = backend, stt, playback
@@ -201,6 +166,8 @@ class Session:
             notify,
         )
         self.on_spoken_leave = on_spoken_leave
+        self.on_failed = on_failed
+        self.stt_failures, self.stt_failing_since = 0, 0.0
         self.leave_requested = False
         self.leave_task = None
         self.limits, self.segmenter = limits, Segmenter(limits, vad)
@@ -323,6 +290,15 @@ class Session:
             if uid == self.focus:
                 self.focus, self.focus_until = None, 0
 
+    def leave_after_failure(self, category):
+        """Hand a session that can no longer hear back to the integration, which leaves the channel and says so.
+        It used to stay connected and deaf, unable to hear even a spoken "leave", until someone typed !leave."""
+        if self.on_failed is None or self.leave_requested:
+            return
+        self.leave_requested = True
+        self.decision("left_after_failure", 0)
+        self.leave_task = asyncio.create_task(self.on_failed(category))
+
     async def start(self):
         self.active, self.state = True, State.LISTENING
         self.workers = [
@@ -370,6 +346,7 @@ class Session:
                     await self.failure("receive_unhealthy")
                     # Explicit leave/start required; never silently restart consent.
                     self.active = False
+                    self.leave_after_failure("receive_unhealthy")
                     return
                 for _ in range(self.limits.frame_queue):
                     try:
@@ -399,20 +376,19 @@ class Session:
             await self.cancel_response()
             await self.failure("receive_unhealthy")
             self.active = False
+            self.leave_after_failure("receive_unhealthy")
 
     def relevant(self, uid, text):
-        # An explicit handover releases this bot's follow-up focus. Merely
-        # discussing the other character is not a handover.
-        partner = r"wanderer|hat[ -]?guy" if self.name == "scaramouche" else r"scaramouche|scara|balladeer"
-        if re.match(r"^(?:(?:hey|okay|ok|hi|hello)\W+)?(?:" + partner + r")\b", text.strip(), re.I):
+        # An explicit handover releases this bot's follow-up focus: the other
+        # character's name opening the sentence, or closing it after a comma
+        # ("..., Wanderer?"), as speech recognition spells it too. Merely
+        # discussing the other character ("Do you like Wanderer?") is not one.
+        partner = names.partner_of(self.name)
+        if names.addressed(text, partner) and not names.addressed(text, self.name):
             if uid == self.focus:
                 self.focus, self.focus_until = None, 0
             return False
-        addressed = bool(re.search(r"\b" + re.escape(self.name) + r"\b", text.lower()))
-        addressed = addressed or (
-            self.name == "scaramouche" and bool(re.search(r"\bscara\b", text.lower()))
-        )
-        addressed = addressed or names_wander_alias_in_opening(text, self.name)
+        addressed = names.mentions(text, self.name)
         interrupted = self.interruption and self.interruption["user_id"] == uid
         focused = uid == self.focus and time.monotonic() < self.focus_until
         return bool(
@@ -448,11 +424,18 @@ class Session:
             except Exception:
                 self.decision("transcription_failed", uid)
                 await self.failure("stt_unavailable")
+                # Failing for over a minute, five times or more (no key, quota used up, provider down): he cannot
+                # hear, so he leaves. A burst of rate-limit errors that clears within the minute is not a reason.
+                self.stt_failures += 1
+                self.stt_failing_since = self.stt_failing_since or time.monotonic()
+                if self.stt_failures >= 5 and time.monotonic() - self.stt_failing_since >= 60:
+                    self.leave_after_failure("stt_unavailable")
                 self.state = State.LISTENING
                 continue
             finally:
                 utterance.pcm = b""
             self.metrics["stt_latency_ms"] = round((time.monotonic() - started) * 1000)
+            self.stt_failures, self.stt_failing_since = 0, 0.0
             if (
                 not self.active
                 or uid not in self.participants
@@ -462,6 +445,11 @@ class Session:
             if not text.strip():
                 self.metrics["empty_transcripts"] += 1
                 self.decision("discarded_empty_transcript", uid)
+                continue
+            if is_phantom(text):
+                # "Thank you.", "Thanks for watching!": what Whisper writes for silence or noise
+                self.metrics["phantom_transcripts"] += 1
+                self.decision("discarded_phantom_transcript", uid)
                 continue
             self.metrics["stt_success"] += 1
             self.events.append(
@@ -492,9 +480,9 @@ class Session:
             continuing = bool(
                 re.search(r"(?:maybe|because|and|but|so|\.\.\.)\s*$", text, re.I)
             )
-            continuing = continuing or uid in self.segmenter.users
+            continuing = continuing or uid in self.segmenter.speaking()
             # Wait through overlapping humans/continuation pauses before replying.
-            while self.active and self.segmenter.users:
+            while self.active and self.segmenter.speaking():
                 await asyncio.sleep(0.05)
                 if time.monotonic() - utterance.ended > self.limits.stale_seconds:
                     break
@@ -554,7 +542,7 @@ class Session:
                 and not plan.get("force_reply")
             ):
                 self.decision("discarded_not_addressed", uid)
-                if not self.busy() and not self.segmenter.users:
+                if not self.busy() and not self.segmenter.speaking():
                     self.state = State.LISTENING
                 continue
             # Never wait for playback inside the STT worker: the next utterance
@@ -836,6 +824,9 @@ class Session:
             )
         except Exception:
             playback_was_active = False
+        # Cut off between two sentences (the next one still being voiced) is still being cut off mid-reply; the
+        # reaction used to play only when audio happened to be coming out at that moment.
+        playback_was_active = playback_was_active or 0 < self.completed < self.total
         ack_was_playing = self.interruption_ack_playing
         self.clear_pending_response()
         self.state = State.INTERRUPTING
