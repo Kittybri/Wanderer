@@ -81,7 +81,8 @@ def test_full_legacy_function_semantics_match_release(name):
 
 @pytest.mark.parametrize("path", list(BASELINE["files"]))
 def test_voice_and_provider_dependency_files_unchanged(path):
-    assert hashlib.sha256((ROOT / path).read_bytes()).hexdigest() == BASELINE["files"][path]
+    # Line endings are normalized: a checkout made with CRLF conversion (as on the VM) has the same content.
+    assert hashlib.sha256((ROOT / path).read_bytes().replace(b"\r\n", b"\n")).hexdigest() == BASELINE["files"][path]
 
 
 def test_live_voice_and_voice_command_still_use_legacy_entry():
